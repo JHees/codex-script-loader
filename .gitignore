@@ -1,0 +1,15 @@
+# Build output
+/target/
+/dist/
+/artifacts/
+
+# Local runtime state
+/.runtime/
+*.log
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
