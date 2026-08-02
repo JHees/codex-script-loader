@@ -12,7 +12,7 @@
         ├─ Script Registry
         ├─ Injection Runtime
         ├─ Diagnostics / Logs
-        └─ CLI / Tray Controller
+        └─ Desktop UI / CLI / Tray Controller
                  │
           loopback CDP only
                  │
@@ -125,14 +125,16 @@ window.__codexScriptLoader = {
 
 为了兼容旧 IIFE 脚本，loader 会提供包装层，但无法替脚本可靠清理其所有 DOM observer、定时器和全局 listener。因此 Bennett UI 应在迁移阶段补齐明确的 `start/stop` 生命周期。
 
-### 2.5 Controller
+### 2.5 Desktop UI 与 Controller
 
-MVP 使用 CLI。CLI 与常驻 supervisor 通过以下方式之一通信：
+首发使用 Tauri 2 桌面壳 + TypeScript 前端。UI 与常驻 supervisor 通过类型化 Tauri commands 和事件通信；CLI 通过以下方式之一连接同一个 supervisor：
 
 - Windows named pipe；
 - macOS Unix domain socket。
 
 不建议默认开放 HTTP 控制端口。控制协议仅提供枚举后的命令，禁止传入任意 JavaScript 字符串。
+
+前端只负责展示和发起意图：文件选择器返回的路径由 Rust 后端重新规范化和校验；脚本内容、进程启动、CDP WebSocket、配置写入和哈希计算都不在 WebView 中执行。窗口被关闭时，根据设置隐藏到托盘或退出 UI，supervisor 生命周期不依赖 WebView。
 
 ### 2.6 Diagnostics
 
@@ -209,4 +211,3 @@ cc-switch UI（可选）
 - 每个脚本独立超时和错误边界；
 - 连续失败脚本自动隔离，不拖慢输入框或侧边栏；
 - 不对 React store、thread API 或会话列表参数做隐式改写，除非具体脚本明确声明并由用户启用。
-

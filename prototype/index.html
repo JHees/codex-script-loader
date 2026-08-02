@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Codex Script Loader</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="主导航">
+      <div class="brand">
+        <span class="brand-mark">CS</span>
+        <span><strong>Script Loader</strong><small>for Codex</small></span>
+      </div>
+      <nav>
+        <button class="nav-item active" data-page="overview"><span>⌂</span>总览</button>
+        <button class="nav-item" data-page="scripts"><span>◇</span>脚本</button>
+        <button class="nav-item" data-page="diagnostics"><span>◉</span>诊断</button>
+        <button class="nav-item" data-page="settings"><span>⚙</span>设置</button>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="health-dot healthy"></div>
+        <span><strong>加载器正常</strong><small>原型模式</small></span>
+      </div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div>
+          <h1 id="page-title">总览</h1>
+          <p id="page-subtitle">查看 Codex 和脚本运行状态</p>
+        </div>
+        <div class="top-actions">
+          <span class="status-pill"><i></i><span id="codex-status-label">Codex 已连接</span></span>
+          <button class="button secondary" id="reload-all">重新加载全部</button>
+          <button class="button primary" id="codex-action">显示 Codex</button>
+        </div>
+      </header>
+
+      <section class="page active" id="page-overview">
+        <div class="notice hidden" id="safe-mode-notice"><strong>安全模式已启用</strong><span>所有第三方脚本已暂停。关闭安全模式后才会重新注入。</span></div>
+        <div class="metric-grid">
+          <article class="metric-card"><span class="metric-icon green">C</span><div><small>Codex</small><strong id="metric-codex">运行正常</strong><span>受加载器管理</span></div></article>
+          <article class="metric-card"><span class="metric-icon blue">↔</span><div><small>CDP 连接</small><strong>已连接</strong><span>1 个 renderer target</span></div></article>
+          <article class="metric-card"><span class="metric-icon violet">JS</span><div><small>活动脚本</small><strong id="enabled-count">1 / 2</strong><span id="failed-count">0 个错误</span></div></article>
+          <article class="metric-card"><span class="metric-icon amber">↻</span><div><small>最近注入</small><strong id="last-injection">刚刚</strong><span>耗时 84 ms</span></div></article>
+        </div>
+
+        <div class="content-grid">
+          <article class="panel">
+            <div class="panel-head"><div><h2>已安装脚本</h2><p>快速控制当前脚本</p></div><button class="text-button" data-go="scripts">管理全部 →</button></div>
+            <div id="overview-script-list" class="compact-list"></div>
+          </article>
+          <article class="panel">
+            <div class="panel-head"><div><h2>最近活动</h2><p>加载器与 renderer 事件</p></div><button class="text-button" data-go="diagnostics">查看日志 →</button></div>
+            <div id="activity-list" class="activity-list"></div>
+          </article>
+        </div>
+      </section>
+
+      <section class="page" id="page-scripts">
+        <div class="toolbar">
+          <div class="search-wrap"><span>⌕</span><input id="script-search" type="search" placeholder="搜索脚本名称或 ID"></div>
+          <select id="script-filter" aria-label="脚本状态筛选"><option value="all">全部状态</option><option value="running">运行中</option><option value="disabled">已停用</option><option value="failed">错误</option></select>
+          <input type="file" id="script-file" accept=".js,.json,.zip" hidden>
+          <button class="button secondary" id="migrate-button">从 Codex++ 导入</button>
+          <button class="button primary" id="load-script">＋ 加载本地脚本</button>
+        </div>
+        <div class="drop-zone" id="drop-zone" tabindex="0"><strong>把脚本拖到这里</strong><span>支持单个 .js、manifest 目录或本地安装包；选择后不会立即执行</span></div>
+        <div class="panel script-panel">
+          <div class="script-table-head"><span>脚本</span><span>状态</span><span>最近注入</span><span>启用</span><span></span></div>
+          <div id="script-list"></div>
+        </div>
+      </section>
+
+      <section class="page" id="page-diagnostics">
+        <div class="diagnostic-actions">
+          <div><h2>系统诊断</h2><p>检查 Codex 安装、CDP、安全边界和脚本完整性</p></div>
+          <button class="button primary" id="run-doctor">运行完整检查</button>
+        </div>
+        <div id="doctor-list" class="doctor-list"></div>
+        <div class="panel log-panel">
+          <div class="panel-head"><div><h2>实时日志</h2><p>不会记录会话正文或认证信息</p></div><div><button class="text-button" id="clear-log">清空显示</button><button class="text-button" id="export-log">导出诊断包</button></div></div>
+          <div id="log-list" class="log-list" aria-live="polite"></div>
+        </div>
+      </section>
+
+      <section class="page" id="page-settings">
+        <div class="settings-layout">
+          <section class="panel settings-card"><h2>启动与托盘</h2><label class="setting-row"><span><strong>随系统启动</strong><small>登录 Windows 后启动加载器</small></span><input type="checkbox"></label><label class="setting-row"><span><strong>自动启动 Codex</strong><small>加载器启动后打开受管 Codex</small></span><input type="checkbox" checked></label><label class="setting-row"><span><strong>关闭到托盘</strong><small>关闭窗口后继续保持脚本注入</small></span><input type="checkbox" checked></label></section>
+          <section class="panel settings-card"><h2>外观</h2><label class="setting-row"><span><strong>主题</strong><small>界面配色</small></span><select id="theme-select"><option value="system">跟随系统</option><option value="dark">深色</option><option value="light">浅色</option></select></label><label class="setting-row"><span><strong>语言</strong><small>重启 UI 后完整生效</small></span><select><option>简体中文</option><option>English</option></select></label></section>
+          <section class="panel settings-card"><h2>安全模式</h2><label class="setting-row"><span><strong>暂停所有脚本</strong><small>Codex 仍可正常启动，但不会执行用户脚本</small></span><input id="safe-mode-toggle" type="checkbox"></label></section>
+          <section class="panel settings-card"><h2>目录</h2><div class="path-row"><span><strong>脚本目录</strong><code>%APPDATA%\codex-script-loader\scripts</code></span><button class="button secondary open-folder">打开</button></div><div class="path-row"><span><strong>日志目录</strong><code>%APPDATA%\codex-script-loader\logs</code></span><button class="button secondary open-folder">打开</button></div></section>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="script-dialog">
+    <form method="dialog">
+      <button class="dialog-close" aria-label="关闭">×</button>
+      <div id="dialog-content"></div>
+    </form>
+  </dialog>
+  <div id="toast-region" class="toast-region" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>
+

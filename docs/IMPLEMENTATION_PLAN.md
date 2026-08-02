@@ -8,7 +8,8 @@
 - 序列化：Serde。
 - 文件监听：`notify`。
 - CLI：`clap`。
-- 托盘：MVP 后选择 `tray-icon` 或最小 Tauri shell，避免为脚本加载再引入完整 WebView。
+- 桌面 UI：Tauri 2 + TypeScript；首版不引入大型组件库，使用小型自有组件和系统 WebView。
+- 托盘：Tauri tray 或 `tray-icon`，窗口关闭后可继续运行 supervisor。
 - 测试：Rust unit/integration tests + 一个假的 CDP WebSocket server。
 
 Rust 的理由：单文件分发、后台资源占用低、适合 Windows AppX/进程/端口检查，并可复用 Codex++ 中 MIT 许可的少量 CDP 与 packaged activation 思路。复用时保留原许可证和归属说明，不复制 Codex++ 的 bridge、广告、供应商或数据库模块。
@@ -36,7 +37,7 @@ Rust 的理由：单文件分发、后台资源占用低、适合 Windows AppX/�
 - 不修改 `.codex` 和 CC Switch 数据；
 - 不产生重复 observer 导致输入或滚动卡顿。
 
-## Phase 1：CLI MVP
+## Phase 1：Core + Desktop UI MVP
 
 ### 1.1 仓库与核心模块
 
@@ -48,6 +49,8 @@ crates/
   loader-core/
   loader-platform/
   loader-protocol/
+src-tauri/
+ui/
 tests/
 fixtures/
 scripts/
@@ -83,14 +86,25 @@ docs/
 - 启停、排序、重复 ID 检查；
 - safe mode。
 
-### 1.5 CLI
+### 1.5 桌面管理 UI
+
+- 总览、脚本、诊断、设置四个主要页面；
+- 本地脚本加载向导和权限确认；
+- 脚本启停、单独重载、移除和错误详情；
+- Codex 启动/聚焦/受控重启；
+- 安全模式和崩溃恢复提示；
+- 实时事件流，列表虚拟化或增量更新，避免日志造成 UI 卡顿；
+- 深色/浅色跟随系统，所有文字使用高对比度语义色；
+- 中文和英文资源分离。
+
+### 1.6 CLI
 
 - `run`、`status --json`、`reload`、`enable`、`disable`；
 - `doctor`、`safe-mode`、`open-scripts`；
 - named pipe 控制常驻实例；
 - 可读错误码和中文/英文日志。
 
-验收：MVP 可作为“Codex with Scripts”快捷方式使用，连续 20 次启动/关闭和 20 次 renderer reload 无重复注入或僵尸 loader。
+验收：MVP 可作为“Codex with Scripts”快捷方式使用，UI 能完成无需终端的脚本加载与管理；连续 20 次启动/关闭和 20 次 renderer reload 无重复注入或僵尸 loader。
 
 ## Phase 2：Bennett UI 正式迁移
 
@@ -105,7 +119,7 @@ docs/
 
 验收：Codex++ 完全关闭时，Bennett UI 的目标功能可用；加载器退出或 safe mode 后 Codex 恢复原生 UI。
 
-## Phase 3：托盘与安装体验
+## Phase 3：托盘与安装体验完善
 
 - 托盘状态和脚本开关；
 - “Codex with Scripts”开始菜单/桌面快捷方式；
@@ -180,4 +194,3 @@ docs/
 - 脚本异常不会阻止 Codex 启动；
 - 卸载可恢复到官方快捷方式；
 - 许可证、第三方归属、安全说明和风险提示齐全。
-

@@ -9,6 +9,7 @@
 - 采用外部启动器 + Chrome DevTools Protocol（CDP）注入。
 - 不修改、解包或重新签名 Codex 的 `app.asar`。
 - Windows 首发，随后支持 macOS。
+- 首发版本包含独立桌面管理 UI；CLI 作为诊断和自动化接口保留。
 - 加载器与 CC Switch 分开更新；未来只提供可选的 CLI/URI 集成接口。
 - 第一批兼容脚本是 Bennett UI Improvements。
 
@@ -18,7 +19,10 @@
 - [系统架构](docs/ARCHITECTURE.md)
 - [社区方案调研](docs/RESEARCH.md)
 - [实现流程与里程碑](docs/IMPLEMENTATION_PLAN.md)
+- [桌面管理 UI 规范](docs/UI_SPEC.md)
+- [UI 与加载器后端契约](docs/UI_BACKEND_CONTRACT.md)
 - [ADR-0001：选择外部 CDP 注入](docs/adr/0001-external-cdp-loader.md)
+- [可交互 UI 原型](prototype/README.md)
 
 ## 预期命令
 
@@ -45,4 +49,3 @@ codex-script-loader migrate-codexplusplus
 ## 项目状态
 
 `Planning / 0.0.0`
-
