@@ -7,9 +7,12 @@
 ```text
 GET  /api/status
 GET  /api/scripts
+GET  /api/quarantine
 POST /api/scripts/inspect          { fileName, sourceText }
 POST /api/scripts/install          { fileName, sourceText, enabled?, overwrite? }
 POST /api/scripts/:id/enabled      { enabled }
+POST /api/scripts/:id/remove       { mode?: "quarantine" }
+POST /api/quarantine/:key/restore  {}
 POST /api/safe-mode                { enabled }
 POST /api/reload                   { ids?, live: false }
 POST /api/doctor                   {}
@@ -22,7 +25,7 @@ POST /api/doctor                   {}
 { "ok": false, "error": { "code": "stable_code", "message": "sanitized message" } }
 ```
 
-`inspect` 只校验文件名/源码大小、生成脚本描述并计算 SHA-256，不写入也不执行。`install` 由浏览器再次提交相同源码，后端只把它复制到 loader 数据目录，默认 `enabled: false`；即使启用也只是保存配置。当前 `/api/reload` 强制 dry-run，管理服务没有 injector。
+`inspect` 只校验文件名/源码大小、生成脚本描述并计算 SHA-256，不写入也不执行。`install` 由浏览器再次提交相同源码，后端只把它复制到 loader 数据目录，默认 `enabled: false`；即使启用也只是保存配置。`remove` 只接受 `quarantine`，通过同卷目录移动保留可恢复副本；没有永久删除 API。恢复遇到相同脚本 ID 时返回冲突，不覆盖已安装内容。当前 `/api/reload` 强制 dry-run，管理服务没有 injector。
 
 ## 2. 后续扩展（尚未实现）
 

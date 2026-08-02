@@ -56,9 +56,12 @@ export function createManagerApi({ baseUrl = globalThis.location?.href, fetchImp
   return Object.freeze({
     status: () => request("api/status"),
     scripts: () => request("api/scripts"),
+    quarantine: () => request("api/quarantine"),
     inspectScript: ({ fileName, sourceText }) => request("api/scripts/inspect", { method: "POST", body: { fileName, sourceText } }),
     installScript: ({ fileName, sourceText, enabled = false, overwrite = false }) => request("api/scripts/install", { method: "POST", body: { fileName, sourceText, enabled, overwrite } }),
     setScriptEnabled: (id, enabled) => request(`api/scripts/${encodeURIComponent(id)}/enabled`, { method: "POST", body: { enabled } }),
+    removeScript: id => request(`api/scripts/${encodeURIComponent(id)}/remove`, { method: "POST", body: { mode: "quarantine" } }),
+    restoreScript: key => request(`api/quarantine/${encodeURIComponent(key)}/restore`, { method: "POST", body: {} }),
     setSafeMode: enabled => request("api/safe-mode", { method: "POST", body: { enabled } }),
     reload: ids => request("api/reload", { method: "POST", body: ids ? { ids, live: false } : { live: false } }),
     doctor: () => request("api/doctor", { method: "POST", body: {} })

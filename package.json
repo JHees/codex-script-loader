@@ -9,7 +9,7 @@
   },
   "scripts": {
     "test": "node --test",
-    "check": "node --check src/cli.mjs && node --check src/manager-server.mjs && node --check prototype/api-client.js && node --check prototype/app.js",
+    "check": "node --check src/cli.mjs && node --check src/manager-server.mjs && node --check prototype/api-client.js && node --check prototype/app.js && node --check scripts/browser-smoke.mjs",
     "smoke:ui": "node scripts/browser-smoke.mjs",
     "serve": "node src/cli.mjs serve"
   },

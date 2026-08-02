@@ -27,7 +27,9 @@ Rust 不是必需条件。它在单文件分发、低后台占用和原生托盘
 5. 当前 document + future document 注入命令计划；
 6. fake CDP session 测试；
 7. UI 白名单命令和离线状态接口；
-8. 默认 dry-run CLI，避免意外连接正在运行的 Codex。
+8. 默认 dry-run CLI，避免意外连接正在运行的 Codex；
+9. loopback 管理 UI、纯文本脚本检查/安装与真实浏览器烟雾测试；
+10. 可恢复隔离区、冲突保护和同进程写操作串行化。
 
 待执行：
 

@@ -18,6 +18,7 @@ const state = {
   targetCount: api ? 0 : 1,
   safeMode: false,
   scripts: api ? [] : demoScripts,
+  quarantine: [],
   doctorChecks: null,
   activities: api
     ? [{ icon: "…", title: "正在连接本地管理服务", detail: "不会检查当前 Codex", time: "刚刚" }]
@@ -120,6 +121,16 @@ function renderScripts() {
   $("#failed-count").textContent = `${failed} 个错误`;
 }
 
+function renderQuarantine() {
+  $("#quarantine-count").textContent = `${state.quarantine.length} 项`;
+  $("#quarantine-list").innerHTML = state.quarantine.map(record => {
+    const date = new Date(record.quarantinedAt);
+    const time = Number.isNaN(date.valueOf()) ? "时间未知" : date.toLocaleString("zh-CN", { hour12: false });
+    const restoreDisabled = api && state.managerMode !== "connected";
+    return `<div class="compact-item quarantine-item" data-key="${escapeHtml(record.key)}"><span class="script-avatar">Q</span><div class="script-info"><strong>${escapeHtml(record.name)}</strong><small>${escapeHtml(record.scriptId)} · v${escapeHtml(record.version)} · ${escapeHtml(time)}</small></div><button class="button secondary restore-script" type="button" ${restoreDisabled ? "disabled" : ""}>恢复</button></div>`;
+  }).join("") || `<div class="compact-item"><span class="script-info"><strong>隔离区为空</strong><small>这里不提供永久删除；移除的脚本会保留可恢复副本</small></span></div>`;
+}
+
 function renderActivities() {
   $("#activity-list").innerHTML = state.activities.slice(0, 6).map(item => `<div class="activity-item"><span class="activity-icon">${escapeHtml(item.icon)}</span><div><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.detail)}</small></div><time>${escapeHtml(item.time)}</time></div>`).join("");
 }
@@ -186,6 +197,7 @@ function applyState() {
   $("#safe-mode-toggle").disabled = Boolean(api && !connected);
   $("#load-script").disabled = Boolean(api && !connected);
   renderScripts();
+  renderQuarantine();
   renderActivities();
   renderLogs();
   renderDoctor();
@@ -208,7 +220,7 @@ function toast(title, detail) {
 
 async function refreshManagerData({ announce = false } = {}) {
   if (!api) return;
-  const [status, scripts] = await Promise.all([api.status(), api.scripts()]);
+  const [status, scripts, quarantine] = await Promise.all([api.status(), api.scripts(), api.quarantine()]);
   state.managerMode = "connected";
   state.managerError = "";
   state.safeMode = Boolean(status.safeMode);
@@ -218,6 +230,7 @@ async function refreshManagerData({ announce = false } = {}) {
   state.cdpConnected = status.cdp === "healthy";
   state.targetCount = Number(status.targetCount || 0);
   state.scripts = scripts.map(normalizeScript);
+  state.quarantine = quarantine;
   if (announce) {
     state.activities = [{ icon: "✓", title: "本地管理服务已连接", detail: "离线安全模式；未检查 Codex/CDP", time: "刚刚" }];
     state.logs = [[new Date().toLocaleTimeString("zh-CN", { hour12: false }), "loader", "管理 UI 已读取本地状态；未接触 Codex"]];
@@ -276,7 +289,7 @@ function showScriptDetails(script) {
   const [status, label] = scriptState(script);
   const permissionText = script.permissions.length ? script.permissions.join("、") : "未声明额外权限";
   const actionLabel = api ? "验证加载计划" : "重新加载";
-  const removeAction = api ? "" : `<button class="button secondary" id="remove-script" type="button">移除</button>`;
+  const removeAction = `<button class="button secondary" id="remove-script" type="button">移入隔离区</button>`;
   $("#dialog-content").innerHTML = `<p class="eyebrow">脚本详情</p><h2>${escapeHtml(script.name)}</h2><p>${escapeHtml(script.id)}</p><dl class="detail-grid"><dt>版本</dt><dd>${escapeHtml(script.version)}</dd><dt>来源</dt><dd>${escapeHtml(script.source)}</dd><dt>状态</dt><dd><span class="state ${status}">${label}</span></dd><dt>SHA-256</dt><dd>${escapeHtml(script.hash)}</dd><dt>权限</dt><dd>${escapeHtml(permissionText)}</dd><dt>最近注入</dt><dd>${escapeHtml(script.last)}</dd></dl><div class="dialog-actions"><button class="button secondary" value="cancel">关闭</button>${removeAction}<button class="button primary" id="reload-script" type="button" ${!script.enabled || state.safeMode ? "disabled" : ""}>${actionLabel}</button></div>`;
   $("#script-dialog").showModal();
   $("#reload-script").addEventListener("click", async event => {
@@ -301,12 +314,33 @@ function showScriptDetails(script) {
       toast("验证失败", formatError(error));
     }
   });
-  $("#remove-script")?.addEventListener("click", () => {
-    state.scripts = state.scripts.filter(item => item.id !== script.id);
-    $("#script-dialog").close();
-    addActivity("脚本已从原型列表移除", script.name, "−");
-    renderScripts();
-  }, { once: true });
+  $("#remove-script")?.addEventListener("click", async event => {
+    const button = event.currentTarget;
+    if (button.dataset.confirmed !== "true") {
+      button.dataset.confirmed = "true";
+      button.textContent = "再次点击确认移入隔离区";
+      return;
+    }
+    button.disabled = true;
+    try {
+      if (api) {
+        await api.removeScript(script.id);
+        await refreshManagerData();
+      } else {
+        state.scripts = state.scripts.filter(item => item.id !== script.id);
+        state.quarantine.unshift({ key: `demo-${Date.now()}`, scriptId: script.id, name: script.name, version: script.version, enabled: script.enabled, quarantinedAt: new Date().toISOString(), status: "quarantined" });
+        applyState();
+      }
+      $("#script-dialog").close();
+      addActivity("脚本已移入隔离区", `${script.name}；仍可恢复`, "−");
+      toast("已安全移除", "没有永久删除脚本文件");
+    } catch (error) {
+      button.disabled = false;
+      button.dataset.confirmed = "false";
+      button.textContent = "移入隔离区";
+      toast("移除失败", formatError(error));
+    }
+  });
 }
 
 $$(".nav-item").forEach(button => button.addEventListener("click", () => showPage(button.dataset.page)));
@@ -350,6 +384,50 @@ $("#script-list").addEventListener("click", event => {
   const button = event.target.closest(".script-detail");
   if (!button) return;
   showScriptDetails(state.scripts.find(item => item.id === button.closest(".script-row").dataset.id));
+});
+
+$("#quarantine-list").addEventListener("click", async event => {
+  const button = event.target.closest(".restore-script");
+  if (!button) return;
+  const item = button.closest(".quarantine-item");
+  const record = state.quarantine.find(entry => entry.key === item.dataset.key);
+  button.disabled = true;
+  try {
+    if (api) {
+      await api.restoreScript(record.key);
+      await refreshManagerData();
+    } else {
+      state.quarantine = state.quarantine.filter(entry => entry.key !== record.key);
+      state.scripts.push({ id: record.scriptId, name: record.name, version: record.version, source: "原型隔离区", enabled: record.enabled, status: record.enabled ? "running" : "disabled", last: "—", hash: "原型记录", permissions: [] });
+      applyState();
+    }
+    addActivity("脚本已从隔离区恢复", record.name, "↶");
+    toast("恢复完成", "已恢复原来的启用配置，当前未执行脚本");
+  } catch (error) {
+    button.disabled = false;
+    toast("恢复失败", formatError(error));
+  }
+});
+
+$("#refresh-state").addEventListener("click", async event => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  try {
+    if (api) {
+      await refreshManagerData();
+      toast("状态已刷新", "只读取加载器数据，没有查询 Codex");
+    } else {
+      applyState();
+      toast("原型状态已刷新", "静态演示没有后端数据");
+    }
+  } catch (error) {
+    state.managerMode = "error";
+    state.managerError = formatError(error);
+    applyState();
+    toast("刷新失败", state.managerError);
+  } finally {
+    button.disabled = false;
+  }
 });
 
 $("#reload-all").addEventListener("click", async event => {

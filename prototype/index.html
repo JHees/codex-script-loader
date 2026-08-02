@@ -33,6 +33,7 @@
         </div>
         <div class="top-actions">
           <span class="status-pill"><i></i><span id="codex-status-label">Codex 已连接</span></span>
+          <button class="button secondary" id="refresh-state">刷新状态</button>
           <button class="button secondary" id="reload-all">重新加载全部</button>
           <button class="button primary" id="codex-action">显示 Codex</button>
         </div>
@@ -72,6 +73,10 @@
         <div class="panel script-panel">
           <div class="script-table-head"><span>脚本</span><span>状态</span><span>最近注入</span><span>启用</span><span></span></div>
           <div id="script-list"></div>
+        </div>
+        <div class="panel quarantine-panel">
+          <div class="panel-head"><div><h2>隔离区</h2><p>移除操作只会移动到这里，可随时恢复，不提供永久删除</p></div><span class="muted" id="quarantine-count">0 项</span></div>
+          <div id="quarantine-list" class="compact-list"></div>
         </div>
       </section>
 

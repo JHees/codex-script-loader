@@ -16,6 +16,9 @@ const COMMANDS = new Set([
   "inspect_script_text",
   "install_script",
   "install_script_text",
+  "list_quarantined",
+  "remove_script",
+  "restore_quarantined",
   "run_doctor"
 ]);
 
@@ -39,6 +42,9 @@ export class UiController {
       case "inspect_script_text": return this.inspectScriptText(payload);
       case "install_script": return this.registry.install(payload.sourcePath, payload.options || {});
       case "install_script_text": return this.registry.installSourceText(payload, payload.options || {});
+      case "list_quarantined": return this.registry.listQuarantined();
+      case "remove_script": return this.registry.quarantineScript(payload.id, { mode: payload.mode || "quarantine" });
+      case "restore_quarantined": return this.registry.restoreQuarantined(payload.key);
       case "run_doctor": return this.getDoctorReport();
       default: throw new Error(`unreachable command: ${command}`);
     }

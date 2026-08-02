@@ -55,6 +55,7 @@ node src/cli.mjs serve --data-dir .runtime\manual
 - 检查单个 `.js` 文件并预览 ID、权限声明和 SHA-256；
 - 确认复制安装，默认保持停用，安装过程不执行源码；
 - 修改脚本启用配置和全局安全模式；
+- 把脚本可恢复地移入隔离区，并在无冲突时恢复原启用配置；不提供永久删除；
 - 生成 dry-run 加载计划；
 - 运行明确跳过 Codex 进程与 CDP 的离线诊断。
 
@@ -68,7 +69,7 @@ node src/cli.mjs serve --data-dir .runtime\manual
 - `src/manager-server.mjs`：仅绑定 IPv4 loopback 的本地管理服务与白名单 JSON API；
 - `src/cli.mjs`：离线 CLI；
 - `prototype/`：已连接本地管理 API 的管理 UI；直接以文件方式打开时仍可查看静态演示；
-- `test/`：24 个 Node 内置测试，全部使用临时目录、随机本地端口或 fake session，不连接真实 Codex；另有独立的无界面浏览器烟雾测试。
+- `test/`：30 个 Node 内置测试，全部使用临时目录、随机本地端口或 fake session，不连接真实 Codex；另有独立的无界面浏览器烟雾测试。
 
 ## 本地管理服务安全边界
 
@@ -79,6 +80,7 @@ node src/cli.mjs serve --data-dir .runtime\manual
 - 请求体最多 600 KiB，脚本源码最多 512 KiB；
 - API 不返回脚本源码、安装绝对路径、CDP URL、Codex Cookie、会话正文或 CC Switch 凭据；
 - 管理服务没有 live injector，`reload` 只允许 `live: false`。
+- 移除只允许同卷移动到 loader 自己的隔离区；恢复冲突会拒绝操作，不会覆盖新安装脚本。
 
 该边界用于阻止普通网页跨源调用本地管理接口，但无法隔离同一 Windows 用户下已经能直接访问回环端口和本机文件的恶意进程。
 

@@ -152,3 +152,53 @@ test("manager rejects non-JSON mutations and unknown command-shaped routes", asy
     assert.equal(commandRoute.payload.error.code, "not_found");
   });
 });
+
+test("manager quarantine API removes recoverably, restores, and refuses conflicts", async () => {
+  await withServer(async ({ manager, cookie }) => {
+    delete globalThis.__quarantineApiMustNotExecute;
+    const sourceText = "globalThis.__quarantineApiMustNotExecute = true;";
+    await api(manager, cookie, "/api/scripts/install", {
+      method: "POST",
+      body: { fileName: "recover-api.js", sourceText, enabled: false }
+    });
+
+    const permanent = await api(manager, cookie, "/api/scripts/local.recover-api/remove", {
+      method: "POST",
+      body: { mode: "permanent" }
+    });
+    assert.equal(permanent.response.status, 400);
+    assert.equal(permanent.payload.error.code, "permanent_delete_forbidden");
+    assert.equal((await api(manager, cookie, "/api/scripts")).payload.data.length, 1);
+
+    const removed = await api(manager, cookie, "/api/scripts/local.recover-api/remove", { method: "POST", body: {} });
+    assert.equal(removed.response.status, 200);
+    assert.equal(removed.payload.data.scriptId, "local.recover-api");
+    assert.equal(removed.payload.data.status, "quarantined");
+    assert.equal("directory" in removed.payload.data, false);
+    assert.equal("source" in removed.payload.data, false);
+    assert.equal((await api(manager, cookie, "/api/scripts")).payload.data.length, 0);
+
+    const quarantine = await api(manager, cookie, "/api/quarantine");
+    assert.deepEqual(quarantine.payload.data, [removed.payload.data]);
+    const key = removed.payload.data.key;
+    const restored = await api(manager, cookie, `/api/quarantine/${encodeURIComponent(key)}/restore`, { method: "POST", body: {} });
+    assert.equal(restored.response.status, 200);
+    assert.equal(restored.payload.data.key, key);
+    assert.equal(restored.payload.data.script.id, "local.recover-api");
+    assert.equal(restored.payload.data.script.enabled, false);
+    assert.equal("source" in restored.payload.data.script, false);
+    assert.deepEqual((await api(manager, cookie, "/api/quarantine")).payload.data, []);
+
+    const removedAgain = await api(manager, cookie, "/api/scripts/local.recover-api/remove", { method: "POST", body: { mode: "quarantine" } });
+    await api(manager, cookie, "/api/scripts/install", {
+      method: "POST",
+      body: { fileName: "recover-api.js", sourceText: "globalThis.__replacementMustNotExecute = true;", enabled: true }
+    });
+    const conflict = await api(manager, cookie, `/api/quarantine/${encodeURIComponent(removedAgain.payload.data.key)}/restore`, { method: "POST", body: {} });
+    assert.equal(conflict.response.status, 409);
+    assert.equal(conflict.payload.error.code, "restore_conflict");
+    assert.equal((await api(manager, cookie, "/api/quarantine")).payload.data.length, 1);
+    assert.equal(globalThis.__quarantineApiMustNotExecute, undefined);
+    assert.equal(globalThis.__replacementMustNotExecute, undefined);
+  });
+});

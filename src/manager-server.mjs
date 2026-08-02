@@ -13,6 +13,7 @@ const TOKEN_COOKIE = "codex_loader_manager_token";
 const MAX_JSON_BYTES = 600 * 1024;
 const DEFAULT_STATIC_ROOT = fileURLToPath(new URL("../prototype/", import.meta.url));
 const SCRIPT_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,127}$/;
+const QUARANTINE_KEY_PATTERN = /^q-[a-z0-9]+-[a-f0-9]{24}$/;
 const CONTENT_TYPES = new Map([
   [".html", "text/html; charset=utf-8"],
   [".css", "text/css; charset=utf-8"],
@@ -124,6 +125,18 @@ function serializeScript(script, statusOverride) {
   return output;
 }
 
+function serializeQuarantine(record) {
+  return {
+    key: String(record.key),
+    scriptId: String(record.scriptId),
+    name: String(record.name),
+    version: String(record.version),
+    enabled: Boolean(record.enabled),
+    quarantinedAt: String(record.quarantinedAt),
+    status: "quarantined"
+  };
+}
+
 function sourcePayload(body, { install = false } = {}) {
   const allowed = new Set(install ? ["fileName", "sourceText", "enabled", "overwrite"] : ["fileName", "sourceText"]);
   assertKeys(body, allowed);
@@ -148,6 +161,13 @@ function validScriptId(encoded) {
   try { id = decodeURIComponent(encoded); } catch { throw new HttpError(400, "invalid_script_id", "invalid script id"); }
   if (!SCRIPT_ID_PATTERN.test(id)) throw new HttpError(400, "invalid_script_id", "invalid script id");
   return id;
+}
+
+function validQuarantineKey(encoded) {
+  let key;
+  try { key = decodeURIComponent(encoded); } catch { throw new HttpError(400, "invalid_quarantine_key", "invalid quarantine key"); }
+  if (!QUARANTINE_KEY_PATTERN.test(key)) throw new HttpError(400, "invalid_quarantine_key", "invalid quarantine key");
+  return key;
 }
 
 function invalidSource(error) {
@@ -197,6 +217,9 @@ async function apiRoute(request, response, url, controller) {
   if (request.method === "GET" && pathname === "/api/scripts") {
     return success(response, (await controller.dispatch("list_scripts")).map(script => serializeScript(script)));
   }
+  if (request.method === "GET" && pathname === "/api/quarantine") {
+    return success(response, (await controller.dispatch("list_quarantined")).map(record => serializeQuarantine(record)));
+  }
   if (request.method === "POST" && pathname === "/api/scripts/inspect") {
     const payload = sourcePayload(await readJson(request));
     let preview;
@@ -222,6 +245,39 @@ async function apiRoute(request, response, url, controller) {
     try { return success(response, serializeScript(await controller.dispatch("set_script_enabled", { id: validScriptId(enabledMatch[1]), enabled: body.enabled }))); }
     catch (error) {
       if (String(error.message).startsWith("unknown script:")) throw new HttpError(404, "script_not_found", "script not found");
+      throw error;
+    }
+  }
+  const removeMatch = pathname.match(/^\/api\/scripts\/([^/]+)\/remove$/u);
+  if (request.method === "POST" && removeMatch) {
+    const body = await readJson(request);
+    assertKeys(body, new Set(["mode"]));
+    if (body.mode !== undefined && body.mode !== "quarantine") {
+      throw new HttpError(400, "permanent_delete_forbidden", "only quarantine removal is supported");
+    }
+    try {
+      const record = await controller.dispatch("remove_script", { id: validScriptId(removeMatch[1]), mode: body.mode || "quarantine" });
+      return success(response, serializeQuarantine(record));
+    } catch (error) {
+      if (error instanceof HttpError) throw error;
+      if (String(error.message).startsWith("unknown script:")) throw new HttpError(404, "script_not_found", "script not found");
+      if (String(error.message) === "only quarantine removal is supported") throw new HttpError(400, "permanent_delete_forbidden", "only quarantine removal is supported");
+      if (String(error.message).startsWith("invalid installed script:")) throw new HttpError(409, "script_not_removable", "installed script cannot be quarantined safely");
+      throw error;
+    }
+  }
+  const restoreMatch = pathname.match(/^\/api\/quarantine\/([^/]+)\/restore$/u);
+  if (request.method === "POST" && restoreMatch) {
+    const body = await readJson(request);
+    assertKeys(body, new Set());
+    try {
+      const result = await controller.dispatch("restore_quarantined", { key: validQuarantineKey(restoreMatch[1]) });
+      return success(response, { key: result.key, script: serializeScript(result.script) });
+    } catch (error) {
+      if (error instanceof HttpError) throw error;
+      if (String(error.message).startsWith("unknown quarantine entry:")) throw new HttpError(404, "quarantine_not_found", "quarantine entry not found");
+      if (String(error.message).startsWith("restore conflict:")) throw new HttpError(409, "restore_conflict", "a script with this id is already installed");
+      if (String(error.message).startsWith("invalid quarantine entry:")) throw new HttpError(409, "quarantine_invalid", "quarantine entry is not restorable");
       throw error;
     }
   }

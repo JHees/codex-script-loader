@@ -51,6 +51,7 @@ try {
   assert.match(result.stdout, /id="loader-health-label">加载器正常</u);
   assert.match(result.stdout, /id="loader-mode-label">Node 本地管理服务</u);
   assert.match(result.stdout, /尚未安装脚本/u);
+  assert.match(result.stdout, /隔离区为空/u);
   assert.match(result.stdout, /未检查 Codex/u);
   process.stdout.write("Browser smoke test passed: management UI loaded its real loopback API without touching Codex.\n");
 } finally {

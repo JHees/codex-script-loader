@@ -40,6 +40,24 @@ test("manager API encodes script ids in route segments", async () => {
   assert.equal(requestedUrl, "http://127.0.0.1:43127/api/scripts/local%2Fa%20b/enabled");
 });
 
+test("manager API exposes quarantine-only remove and restore routes", async () => {
+  const calls = [];
+  const api = createManagerApi({
+    baseUrl: "http://127.0.0.1:43127/",
+    fetchImpl: async (url, options) => {
+      calls.push({ url: String(url), options });
+      return jsonResponse({ ok: true, data: {} });
+    }
+  });
+
+  await api.removeScript("local.example");
+  await api.restoreScript("q-test-0123456789abcdef01234567");
+  assert.equal(calls[0].url, "http://127.0.0.1:43127/api/scripts/local.example/remove");
+  assert.deepEqual(JSON.parse(calls[0].options.body), { mode: "quarantine" });
+  assert.equal(calls[1].url, "http://127.0.0.1:43127/api/quarantine/q-test-0123456789abcdef01234567/restore");
+  assert.deepEqual(JSON.parse(calls[1].options.body), {});
+});
+
 test("manager API exposes sanitized HTTP errors", async () => {
   const api = createManagerApi({
     baseUrl: "http://127.0.0.1:43127/",

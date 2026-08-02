@@ -119,6 +119,7 @@ select { height: 36px; color: var(--text); border: 1px solid var(--border); back
 .drop-zone span { margin-top: 4px; color: var(--muted); font-size: 11px; }
 .drop-zone.dragging { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
 .script-table-head, .script-row { display: grid; grid-template-columns: minmax(300px, 1fr) 120px 130px 70px 42px; align-items: center; gap: 12px; }
+.quarantine-panel { margin-top: 13px; }
 .script-table-head { padding: 11px 17px; border-bottom: 1px solid var(--border); background: var(--surface-2); color: var(--muted); font-size: 11px; }
 .script-row { padding: 13px 17px; border-bottom: 1px solid var(--border); }
 .script-row:last-child { border-bottom: 0; }

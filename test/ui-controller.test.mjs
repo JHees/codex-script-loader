@@ -16,6 +16,10 @@ test("UI controller exposes allowlisted commands and offline status", async () =
   assert.equal(status.codex, "stopped");
   assert.equal(status.enabledScripts, 1);
   assert.ok(listUiCommands().includes("reload_scripts"));
+  assert.ok(listUiCommands().includes("remove_script"));
+  assert.ok(listUiCommands().includes("list_quarantined"));
+  assert.ok(listUiCommands().includes("restore_quarantined"));
+  assert.equal(listUiCommands().includes("delete_script_permanently"), false);
   await assert.rejects(() => controller.dispatch("execute_script", { source: "danger" }), /unsupported UI command/);
 });
 
