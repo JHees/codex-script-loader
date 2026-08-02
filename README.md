@@ -2,7 +2,7 @@
 
 一个独立于 Codex++ 和 CC Switch 的 Codex Desktop 本地脚本加载器。
 
-当前仓库处于架构规划阶段。目标是只解决一件事：安全、稳定地把经过用户确认的本地 renderer JavaScript 加载到 Codex Desktop，不修改 Codex 会话数据库、认证信息、供应商配置或安装包。
+当前仓库正在从架构规划进入 Phase 0 原型实现。目标是只解决一件事：安全、稳定地把经过用户确认的本地 renderer JavaScript 加载到 Codex Desktop，不修改 Codex 会话数据库、认证信息、供应商配置或安装包。
 
 ## 核心结论
 
@@ -36,7 +36,17 @@ codex-script-loader open-scripts
 codex-script-loader migrate-codexplusplus
 ```
 
-这些命令目前是设计目标，尚未实现。
+其中 `status`、`scripts`、`doctor`、`safe-mode`、`install` 和默认 dry-run `reload` 已在 Node Phase 0 原型中实现；带 `--live` 的真实 Codex 启动/注入仍未启用。
+
+## 当前实现
+
+- `src/paths.mjs`：跨平台数据目录和安全路径边界；
+- `src/manifest.mjs` / `src/hash.mjs`：manifest 校验与 SHA-256；
+- `src/registry.mjs`：本地脚本安装、启停、安全模式和注入计划；
+- `src/cdp.mjs`：loopback endpoint 校验、target 过滤、CDP 命令和注入器；
+- `src/ui-controller.mjs`：与桌面 UI 对应的白名单命令；
+- `src/cli.mjs`：离线 CLI；
+- `test/`：14 个 Node 内置测试，全部不连接真实 Codex。
 
 ## 非目标
 
@@ -48,4 +58,4 @@ codex-script-loader migrate-codexplusplus
 
 ## 项目状态
 
-`Planning / 0.0.0`
+`Phase 0 prototype / 0.0.1`

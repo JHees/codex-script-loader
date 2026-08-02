@@ -2,9 +2,11 @@
 /target/
 /dist/
 /artifacts/
+/node_modules/
 
 # Local runtime state
 /.runtime/
+.conda/
 *.log
 
 # Editor and OS files
@@ -12,4 +14,3 @@
 Thumbs.db
 .idea/
 .vscode/
-

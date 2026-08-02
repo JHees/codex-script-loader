@@ -14,11 +14,26 @@
 
 Rust 的理由：单文件分发、后台资源占用低、适合 Windows AppX/进程/端口检查，并可复用 Codex++ 中 MIT 许可的少量 CDP 与 packaged activation 思路。复用时保留原许可证和归属说明，不复制 Codex++ 的 bridge、广告、供应商或数据库模块。
 
-## Phase 0：可行性原型
+当前机器尚未安装 Cargo，因此 Phase 0 使用 Node.js 20+ 内置模块实现同等安全边界和协议测试；它不安装依赖、不启动 Codex，后续迁移到 Rust/Tauri 时以这些测试作为行为基线。
 
-目标：在当前 Windows Codex 上证明完全不运行 Codex++ helper server 也能加载 Bennett UI。
+## Phase 0：可行性原型（已开始实现）
+
+目标：先在不接触当前 Codex 的前提下，完成脚本安全边界、CDP 命令计划和 UI 后端契约的离线验证；随后再单独安排真实 Codex 的受控启动测试。
 
 工作项：
+
+已完成：
+
+1. 跨平台数据目录和安全路径边界；
+2. manifest、入口文件和 SHA-256 校验；
+3. 本地脚本安装、启停和安全模式；
+4. CDP loopback target 过滤；
+5. 当前 document + future document 注入命令计划；
+6. fake CDP session 测试；
+7. UI 白名单命令和离线状态接口；
+8. 默认 dry-run CLI，避免意外连接正在运行的 Codex。
+
+待执行：
 
 1. 发现当前 Codex/ChatGPT 宿主；
 2. 分配 loopback 临时端口；
