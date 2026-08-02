@@ -1,7 +1,7 @@
 import path from "node:path";
-import { access, cp, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { access, cp, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { getLayout, assertWithinDirectory, safeScriptIdFromName } from "./paths.mjs";
-import { loadScriptDescriptor } from "./manifest.mjs";
+import { describeTextScript, loadScriptDescriptor } from "./manifest.mjs";
 import { buildInjectionSource, summarizePlan } from "./injection.mjs";
 
 const DEFAULT_CONFIG = Object.freeze({ schemaVersion: 1, globalEnabled: true, safeMode: false, scripts: {} });
@@ -84,6 +84,28 @@ export class ScriptRegistry {
     await this.saveConfig();
     if (temporaryDirectory) await rm(temporaryDirectory, { recursive: true, force: true });
     return (await this.list({ includeInvalid: false })).find(item => item.id === descriptor.id);
+  }
+
+  async installSourceText({ name, sourceText }, { enabled = false, overwrite = false } = {}) {
+    const descriptor = describeTextScript({ name, sourceText });
+    await mkdir(this.layout.dataRoot, { recursive: true });
+    const temporaryDirectory = await mkdtemp(path.join(this.layout.dataRoot, ".text-install-"));
+    try {
+      await writeFile(path.join(temporaryDirectory, "index.js"), descriptor.source, "utf8");
+      await writeFile(path.join(temporaryDirectory, "manifest.json"), JSON.stringify({
+        schemaVersion: 1,
+        id: descriptor.id,
+        name: descriptor.name,
+        version: descriptor.version,
+        entry: descriptor.entry,
+        scope: descriptor.scope,
+        runAt: descriptor.runAt,
+        permissions: descriptor.permissions
+      }), "utf8");
+      return await this.install(temporaryDirectory, { enabled, overwrite });
+    } finally {
+      await rm(temporaryDirectory, { recursive: true, force: true });
+    }
   }
 
   async setEnabled(id, enabled) {

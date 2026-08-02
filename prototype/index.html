@@ -20,8 +20,8 @@
         <button class="nav-item" data-page="settings"><span>⚙</span>设置</button>
       </nav>
       <div class="sidebar-foot">
-        <div class="health-dot healthy"></div>
-        <span><strong>加载器正常</strong><small>原型模式</small></span>
+        <div class="health-dot" id="loader-health-dot"></div>
+        <span><strong id="loader-health-label">正在连接</strong><small id="loader-mode-label">本地管理服务</small></span>
       </div>
     </aside>
 
@@ -39,12 +39,13 @@
       </header>
 
       <section class="page active" id="page-overview">
+        <div class="notice danger hidden" id="connection-notice"><strong>无法连接本地管理服务</strong><span id="connection-notice-detail">请从加载器启动此页面。</span></div>
         <div class="notice hidden" id="safe-mode-notice"><strong>安全模式已启用</strong><span>所有第三方脚本已暂停。关闭安全模式后才会重新注入。</span></div>
         <div class="metric-grid">
-          <article class="metric-card"><span class="metric-icon green">C</span><div><small>Codex</small><strong id="metric-codex">运行正常</strong><span>受加载器管理</span></div></article>
-          <article class="metric-card"><span class="metric-icon blue">↔</span><div><small>CDP 连接</small><strong>已连接</strong><span>1 个 renderer target</span></div></article>
+          <article class="metric-card"><span class="metric-icon green">C</span><div><small>Codex</small><strong id="metric-codex">等待状态</strong><span id="metric-codex-detail">当前阶段不会检查运行实例</span></div></article>
+          <article class="metric-card"><span class="metric-icon blue">↔</span><div><small>CDP 连接</small><strong id="metric-cdp">未连接</strong><span id="metric-cdp-detail">0 个 renderer target</span></div></article>
           <article class="metric-card"><span class="metric-icon violet">JS</span><div><small>活动脚本</small><strong id="enabled-count">1 / 2</strong><span id="failed-count">0 个错误</span></div></article>
-          <article class="metric-card"><span class="metric-icon amber">↻</span><div><small>最近注入</small><strong id="last-injection">刚刚</strong><span>耗时 84 ms</span></div></article>
+          <article class="metric-card"><span class="metric-icon amber">↻</span><div><small>最近注入</small><strong id="last-injection">尚未执行</strong><span id="last-injection-detail">管理服务仅生成 dry-run 计划</span></div></article>
         </div>
 
         <div class="content-grid">
@@ -62,12 +63,12 @@
       <section class="page" id="page-scripts">
         <div class="toolbar">
           <div class="search-wrap"><span>⌕</span><input id="script-search" type="search" placeholder="搜索脚本名称或 ID"></div>
-          <select id="script-filter" aria-label="脚本状态筛选"><option value="all">全部状态</option><option value="running">运行中</option><option value="disabled">已停用</option><option value="failed">错误</option></select>
-          <input type="file" id="script-file" accept=".js,.json,.zip" hidden>
-          <button class="button secondary" id="migrate-button">从 Codex++ 导入</button>
+          <select id="script-filter" aria-label="脚本状态筛选"><option value="all">全部状态</option><option value="ready">已就绪</option><option value="running">运行中</option><option value="disabled">已停用</option><option value="failed">错误</option></select>
+          <input type="file" id="script-file" accept=".js,text/javascript" hidden>
+          <button class="button secondary" id="migrate-button" title="后续阶段实现">从 Codex++ 导入</button>
           <button class="button primary" id="load-script">＋ 加载本地脚本</button>
         </div>
-        <div class="drop-zone" id="drop-zone" tabindex="0"><strong>把脚本拖到这里</strong><span>支持单个 .js、manifest 目录或本地安装包；选择后不会立即执行</span></div>
+        <div class="drop-zone" id="drop-zone" tabindex="0"><strong>把脚本拖到这里</strong><span>当前支持单个 .js；选择后先检查，安装也不会立即执行</span></div>
         <div class="panel script-panel">
           <div class="script-table-head"><span>脚本</span><span>状态</span><span>最近注入</span><span>启用</span><span></span></div>
           <div id="script-list"></div>
@@ -88,10 +89,10 @@
 
       <section class="page" id="page-settings">
         <div class="settings-layout">
-          <section class="panel settings-card"><h2>启动与托盘</h2><label class="setting-row"><span><strong>随系统启动</strong><small>登录 Windows 后启动加载器</small></span><input type="checkbox"></label><label class="setting-row"><span><strong>自动启动 Codex</strong><small>加载器启动后打开受管 Codex</small></span><input type="checkbox" checked></label><label class="setting-row"><span><strong>关闭到托盘</strong><small>关闭窗口后继续保持脚本注入</small></span><input type="checkbox" checked></label></section>
-          <section class="panel settings-card"><h2>外观</h2><label class="setting-row"><span><strong>主题</strong><small>界面配色</small></span><select id="theme-select"><option value="system">跟随系统</option><option value="dark">深色</option><option value="light">浅色</option></select></label><label class="setting-row"><span><strong>语言</strong><small>重启 UI 后完整生效</small></span><select><option>简体中文</option><option>English</option></select></label></section>
+          <section class="panel settings-card"><h2>启动与托盘（后续阶段）</h2><label class="setting-row"><span><strong>随系统启动</strong><small>需要桌面壳，当前不可用</small></span><input type="checkbox" disabled></label><label class="setting-row"><span><strong>自动启动 Codex</strong><small>live 模式启用前保持关闭</small></span><input type="checkbox" disabled></label><label class="setting-row"><span><strong>关闭到托盘</strong><small>需要桌面壳，当前不可用</small></span><input type="checkbox" disabled></label></section>
+          <section class="panel settings-card"><h2>外观</h2><label class="setting-row"><span><strong>主题</strong><small>界面配色</small></span><select id="theme-select"><option value="system">跟随系统</option><option value="dark">深色</option><option value="light">浅色</option></select></label><label class="setting-row"><span><strong>语言</strong><small>英文资源将在后续阶段加入</small></span><select disabled><option>简体中文</option><option>English</option></select></label></section>
           <section class="panel settings-card"><h2>安全模式</h2><label class="setting-row"><span><strong>暂停所有脚本</strong><small>Codex 仍可正常启动，但不会执行用户脚本</small></span><input id="safe-mode-toggle" type="checkbox"></label></section>
-          <section class="panel settings-card"><h2>目录</h2><div class="path-row"><span><strong>脚本目录</strong><code>%APPDATA%\codex-script-loader\scripts</code></span><button class="button secondary open-folder">打开</button></div><div class="path-row"><span><strong>日志目录</strong><code>%APPDATA%\codex-script-loader\logs</code></span><button class="button secondary open-folder">打开</button></div></section>
+          <section class="panel settings-card"><h2>目录</h2><div class="path-row"><span><strong>脚本目录</strong><code>%APPDATA%\codex-script-loader\scripts</code></span><button class="button secondary open-folder" disabled>稍后支持</button></div><div class="path-row"><span><strong>日志目录</strong><code>%APPDATA%\codex-script-loader\logs</code></span><button class="button secondary open-folder" disabled>稍后支持</button></div></section>
         </div>
       </section>
     </main>
@@ -104,7 +105,6 @@
     </form>
   </dialog>
   <div id="toast-region" class="toast-region" aria-live="polite"></div>
-  <script src="app.js"></script>
+  <script type="module" src="app.js"></script>
 </body>
 </html>
-

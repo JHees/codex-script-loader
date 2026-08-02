@@ -12,7 +12,7 @@
         ├─ Script Registry
         ├─ Injection Runtime
         ├─ Diagnostics / Logs
-        └─ Desktop UI / CLI / Tray Controller
+        └─ Management UI / CLI / optional desktop shell
                  │
           loopback CDP only
                  │
@@ -125,16 +125,13 @@ window.__codexScriptLoader = {
 
 为了兼容旧 IIFE 脚本，loader 会提供包装层，但无法替脚本可靠清理其所有 DOM observer、定时器和全局 listener。因此 Bennett UI 应在迁移阶段补齐明确的 `start/stop` 生命周期。
 
-### 2.5 Desktop UI 与 Controller
+### 2.5 Management UI 与 Controller
 
-首发使用 Tauri 2 桌面壳 + TypeScript 前端。UI 与常驻 supervisor 通过类型化 Tauri commands 和事件通信；CLI 通过以下方式之一连接同一个 supervisor：
+当前实现使用 Node.js 内置模块提供本地管理服务，并复用同一套 registry/controller 核心。管理页面只绑定随机的 `127.0.0.1` 端口；服务端校验精确 Host、同源 Origin、进程级随机会话凭据、JSON Content-Type 和请求体上限。它不是远程管理接口，也不允许 CORS、局域网监听或任意命令执行。
 
-- Windows named pipe；
-- macOS Unix domain socket。
+控制协议只提供枚举后的命令，禁止传入任意 JavaScript 表达式、shell 命令、CDP WebSocket URL 或 Codex 凭据。浏览器提交脚本源码时，后端先解析、计算 SHA-256 并返回安装预览；只有用户确认后的独立请求才复制到 loader 数据目录，安装本身不会执行脚本。
 
-不建议默认开放 HTTP 控制端口。控制协议仅提供枚举后的命令，禁止传入任意 JavaScript 字符串。
-
-前端只负责展示和发起意图：文件选择器返回的路径由 Rust 后端重新规范化和校验；脚本内容、进程启动、CDP WebSocket、配置写入和哈希计算都不在 WebView 中执行。窗口被关闭时，根据设置隐藏到托盘或退出 UI，supervisor 生命周期不依赖 WebView。
+Node.js 不是临时占位：它足以承载 registry、管理 UI、CLI 和 CDP supervisor，也便于快速验证安全边界。将来若需要原生托盘、自动更新或单文件安装体验，可以在不重写核心协议的前提下增加 Electron、WebView2/Tauri 或其他薄壳。是否采用 Rust 只影响分发壳和少量平台集成，不应成为脚本加载功能的前置条件。
 
 ### 2.6 Diagnostics
 
@@ -150,7 +147,7 @@ window.__codexScriptLoader = {
 
 ## 3. 为什么不直接合并进 CC Switch
 
-CC Switch 是有自己发布、签名和自动更新流程的 Tauri/Rust 应用。它不能在已安装版本中动态获得我们新增的 Rust 后端模块；除非：
+CC Switch 是有自己发布、签名和自动更新流程的 Tauri/Rust 应用。已安装版本不能动态获得我们新增的加载器后端能力；除非：
 
 1. 维护长期 fork 并自行构建发布；或者
 2. 向上游提交 PR，等待其合并并发布新版本。

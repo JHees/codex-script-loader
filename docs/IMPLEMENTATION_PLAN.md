@@ -2,19 +2,15 @@
 
 ## 总体技术选择
 
-- 生产实现：Rust。
-- 异步运行时：Tokio。
-- HTTP/CDP：`reqwest` + WebSocket client。
-- 序列化：Serde。
-- 文件监听：`notify`。
-- CLI：`clap`。
-- 桌面 UI：Tauri 2 + TypeScript；首版不引入大型组件库，使用小型自有组件和系统 WebView。
-- 托盘：Tauri tray 或 `tray-icon`，窗口关闭后可继续运行 supervisor。
-- 测试：Rust unit/integration tests + 一个假的 CDP WebSocket server。
+- 核心与首个可用版本：Node.js 20+ ESM，只使用内置模块起步；
+- HTTP/CDP：本地 loopback HTTP + 原生 fetch/WebSocket 能力；
+- CLI：同一 Node 核心的轻量命令入口；
+- 管理 UI：原生 HTML/CSS/JavaScript，由仅监听 `127.0.0.1` 的本地服务提供；
+- 桌面壳：暂不绑定技术，可在产品化阶段选择 Electron、WebView2/Tauri 或保持浏览器 UI；
+- 测试：Node 内置 test runner、临时数据目录和假的 CDP session/server；
+- 原则：开发和离线测试不启动、关闭、附加或查询用户当前正在运行的 Codex。
 
-Rust 的理由：单文件分发、后台资源占用低、适合 Windows AppX/进程/端口检查，并可复用 Codex++ 中 MIT 许可的少量 CDP 与 packaged activation 思路。复用时保留原许可证和归属说明，不复制 Codex++ 的 bridge、广告、供应商或数据库模块。
-
-当前机器尚未安装 Cargo，因此 Phase 0 使用 Node.js 20+ 内置模块实现同等安全边界和协议测试；它不安装依赖、不启动 Codex，后续迁移到 Rust/Tauri 时以这些测试作为行为基线。
+Rust 不是必需条件。它在单文件分发、低后台占用和原生托盘方面有优势，但会延长当前功能验证周期。核心协议保持与语言无关；如果未来确实需要 Rust/Tauri 壳，可以复用 HTTP/控制契约和测试行为，而不重写脚本格式与 UI。复用 Codex++ 中 MIT 许可思路时仍需保留许可证和归属，不复制其 bridge、广告、供应商或数据库模块。
 
 ## Phase 0：可行性原型（已开始实现）
 
@@ -52,23 +48,20 @@ Rust 的理由：单文件分发、后台资源占用低、适合 Windows AppX/�
 - 不修改 `.codex` 和 CC Switch 数据；
 - 不产生重复 observer 导致输入或滚动卡顿。
 
-## Phase 1：Core + Desktop UI MVP
+## Phase 1：Core + Management UI MVP
 
 ### 1.1 仓库与核心模块
 
-预期目录：
+当前/预期目录：
 
 ```text
-crates/
-  loader-cli/
-  loader-core/
-  loader-platform/
-  loader-protocol/
-src-tauri/
-ui/
-tests/
-fixtures/
-scripts/
+src/
+  cli.mjs
+  manager-server.mjs
+  registry.mjs
+  ui-controller.mjs
+prototype/
+test/
 docs/
 ```
 
@@ -101,7 +94,7 @@ docs/
 - 启停、排序、重复 ID 检查；
 - safe mode。
 
-### 1.5 桌面管理 UI
+### 1.5 本地管理 UI
 
 - 总览、脚本、诊断、设置四个主要页面；
 - 本地脚本加载向导和权限确认；

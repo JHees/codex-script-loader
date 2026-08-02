@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
 import { makeTempRoot, makeScript } from "./helpers.mjs";
-import { loadScriptDescriptor, validateManifest } from "../src/manifest.mjs";
+import { describeTextScript, loadScriptDescriptor, MAX_SOURCE_BYTES, validateManifest } from "../src/manifest.mjs";
 import { integrityLabel, sha256Text } from "../src/hash.mjs";
 
 test("manifest and source descriptor calculate integrity", async () => {
@@ -21,3 +21,8 @@ test("manifest rejects absolute and escaping entries", () => {
   assert.throws(() => validateManifest({ id: "Bad ID", entry: "index.js" }, root), /invalid script id/);
 });
 
+test("text script descriptors reject empty names and oversized UTF-8 source", () => {
+  assert.throws(() => describeTextScript({ name: ".js", sourceText: "" }), /include a name/);
+  assert.throws(() => describeTextScript({ name: "../bad.js", sourceText: "" }), /path separators/);
+  assert.throws(() => describeTextScript({ name: "large.js", sourceText: "界".repeat(Math.ceil(MAX_SOURCE_BYTES / 3) + 1) }), /exceeds/);
+});

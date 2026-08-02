@@ -2,14 +2,15 @@
 
 一个独立于 Codex++ 和 CC Switch 的 Codex Desktop 本地脚本加载器。
 
-当前仓库正在从架构规划进入 Phase 0 原型实现。目标是只解决一件事：安全、稳定地把经过用户确认的本地 renderer JavaScript 加载到 Codex Desktop，不修改 Codex 会话数据库、认证信息、供应商配置或安装包。
+当前仓库处于 Phase 0 可运行原型。目标是只解决一件事：安全、稳定地管理经过用户确认的本地 renderer JavaScript，随后再以受控方式加载到 Codex Desktop；不修改 Codex 会话数据库、认证信息、供应商配置或安装包。
 
 ## 核心结论
 
 - 采用外部启动器 + Chrome DevTools Protocol（CDP）注入。
 - 不修改、解包或重新签名 Codex 的 `app.asar`。
 - Windows 首发，随后支持 macOS。
-- 首发版本包含独立桌面管理 UI；CLI 作为诊断和自动化接口保留。
+- 当前使用 Node.js 本地管理服务 + 浏览器管理 UI；Rust/Tauri 不是必需条件，未来只作为可选分发壳评估。
+- CLI 作为诊断和自动化接口保留。
 - 加载器与 CC Switch 分开更新；未来只提供可选的 CLI/URI 集成接口。
 - 第一批兼容脚本是 Bennett UI Improvements。
 
@@ -36,7 +37,26 @@ codex-script-loader open-scripts
 codex-script-loader migrate-codexplusplus
 ```
 
-其中 `status`、`scripts`、`doctor`、`safe-mode`、`install` 和默认 dry-run `reload` 已在 Node Phase 0 原型中实现；带 `--live` 的真实 Codex 启动/注入仍未启用。
+其中 `status`、`scripts`、`doctor`、`safe-mode`、`install`、`serve` 和默认 dry-run `reload` 已在 Node Phase 0 原型中实现；带 `--live` 的真实 Codex 启动/注入仍未启用。
+
+## 运行本地管理 UI
+
+需要 Node.js 20 或更高版本，不需要安装 npm 依赖：
+
+```powershell
+npm test
+npm run check
+node src/cli.mjs serve --data-dir .runtime\manual
+```
+
+`serve` 会输出一个随机的 `http://127.0.0.1:<port>` 地址，但不会自动打开浏览器，也不会启动、停止、查询或附加当前 Codex。访问该地址后可以：
+
+- 查看离线 loader 状态和已安装脚本；
+- 检查单个 `.js` 文件并预览 ID、权限声明和 SHA-256；
+- 确认复制安装，默认保持停用，安装过程不执行源码；
+- 修改脚本启用配置和全局安全模式；
+- 生成 dry-run 加载计划；
+- 运行明确跳过 Codex 进程与 CDP 的离线诊断。
 
 ## 当前实现
 
@@ -45,8 +65,22 @@ codex-script-loader migrate-codexplusplus
 - `src/registry.mjs`：本地脚本安装、启停、安全模式和注入计划；
 - `src/cdp.mjs`：loopback endpoint 校验、target 过滤、CDP 命令和注入器；
 - `src/ui-controller.mjs`：与桌面 UI 对应的白名单命令；
+- `src/manager-server.mjs`：仅绑定 IPv4 loopback 的本地管理服务与白名单 JSON API；
 - `src/cli.mjs`：离线 CLI；
-- `test/`：14 个 Node 内置测试，全部不连接真实 Codex。
+- `prototype/`：已连接本地管理 API 的管理 UI；直接以文件方式打开时仍可查看静态演示；
+- `test/`：24 个 Node 内置测试，全部使用临时目录、随机本地端口或 fake session，不连接真实 Codex；另有独立的无界面浏览器烟雾测试。
+
+## 本地管理服务安全边界
+
+- 只绑定 `127.0.0.1`，默认使用操作系统分配的随机端口；
+- 精确校验 Host 和写请求 Origin，不启用 CORS；
+- 每个进程生成独立的 256-bit 会话 token，并通过 `HttpOnly; SameSite=Strict` Cookie 限制管理请求；
+- 写请求还必须使用指定 UI header 和 `application/json`；
+- 请求体最多 600 KiB，脚本源码最多 512 KiB；
+- API 不返回脚本源码、安装绝对路径、CDP URL、Codex Cookie、会话正文或 CC Switch 凭据；
+- 管理服务没有 live injector，`reload` 只允许 `live: false`。
+
+该边界用于阻止普通网页跨源调用本地管理接口，但无法隔离同一 Windows 用户下已经能直接访问回环端口和本机文件的恶意进程。
 
 ## 非目标
 

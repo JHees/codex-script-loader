@@ -1,7 +1,7 @@
 import path from "node:path";
 import { readFile, stat } from "node:fs/promises";
 import { summarizePlan } from "./injection.mjs";
-import { loadScriptDescriptor } from "./manifest.mjs";
+import { describeTextScript, loadScriptDescriptor } from "./manifest.mjs";
 import { safeScriptIdFromName } from "./paths.mjs";
 import { sha256Text } from "./hash.mjs";
 
@@ -13,7 +13,9 @@ const COMMANDS = new Set([
   "reload_scripts",
   "set_safe_mode",
   "inspect_script_source",
+  "inspect_script_text",
   "install_script",
+  "install_script_text",
   "run_doctor"
 ]);
 
@@ -34,7 +36,9 @@ export class UiController {
       case "set_safe_mode": return { safeMode: await this.registry.setSafeMode(payload.enabled) };
       case "reload_scripts": return this.reloadScripts(payload);
       case "inspect_script_source": return this.inspectScriptSource(payload.sourcePath);
+      case "inspect_script_text": return this.inspectScriptText(payload);
       case "install_script": return this.registry.install(payload.sourcePath, payload.options || {});
+      case "install_script_text": return this.registry.installSourceText(payload, payload.options || {});
       case "run_doctor": return this.getDoctorReport();
       default: throw new Error(`unreachable command: ${command}`);
     }
@@ -87,6 +91,10 @@ export class UiController {
       throw new Error("script source must be a directory with manifest.json or a .js file");
     }
     return { installPreview: true, script: descriptor, requiresConfirmation: true };
+  }
+
+  async inspectScriptText({ name, sourceText }) {
+    return { installPreview: true, script: describeTextScript({ name, sourceText }), requiresConfirmation: true };
   }
 
   async reloadScripts({ live = false } = {}) {

@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import { getDataRoot } from "./paths.mjs";
 import { ScriptRegistry } from "./registry.mjs";
 import { UiController, listUiCommands } from "./ui-controller.mjs";
+import { startManagerServer } from "./manager-server.mjs";
 
 function printHelp() {
   console.log(`Codex Script Loader 0.0.1
@@ -13,6 +14,7 @@ Usage:
   codex-script-loader status [--data-dir <path>]
   codex-script-loader scripts [--data-dir <path>]
   codex-script-loader doctor [--data-dir <path>]
+  codex-script-loader serve [--data-dir <path>] [--port <port>]
   codex-script-loader run [--data-dir <path>] [--live]
   codex-script-loader reload [--data-dir <path>] [--live]
   codex-script-loader safe-mode <on|off> [--data-dir <path>]
@@ -21,6 +23,7 @@ Usage:
 Safety:
   reload is a dry-run unless --live is explicitly supplied.
   This prototype never launches, stops, or attaches to Codex by default.
+  serve binds only 127.0.0.1 and does not open a browser or inspect Codex.
 
 UI command allowlist:
   ${listUiCommands().join(", ")}`);
@@ -45,6 +48,20 @@ async function main(argv = process.argv.slice(2)) {
   const [command, ...args] = argv;
   if (!command || command === "help" || command === "--help") {
     printHelp();
+    return 0;
+  }
+  if (command === "serve") {
+    const root = option(args, "--data-dir") || getDataRoot();
+    const portValue = option(args, "--port");
+    if (has(args, "--port") && portValue === undefined) throw new Error("--port expects a number");
+    const port = portValue === undefined ? 0 : Number(portValue);
+    const manager = await startManagerServer({ dataRoot: path.resolve(root), port });
+    console.log(JSON.stringify({ origin: manager.origin, offline: true, codexInspected: false, cdpInspected: false }, null, 2));
+    await new Promise(resolve => {
+      process.once("SIGINT", resolve);
+      process.once("SIGTERM", resolve);
+    });
+    await manager.close();
     return 0;
   }
   const controller = await createController(args);
@@ -94,4 +111,3 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
 }
 
 export { main };
-

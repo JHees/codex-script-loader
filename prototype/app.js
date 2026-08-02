@@ -1,20 +1,38 @@
+import { createManagerApi } from "./api-client.js";
+
+const isManagerPage = location.protocol === "http:" && location.hostname === "127.0.0.1";
+const api = isManagerPage ? createManagerApi() : null;
+
+const demoScripts = [
+  { id: "com.bennett.ui-improvements", name: "Bennett UI Improvements", version: "1.2.4", source: "Codex++ 迁移", enabled: true, status: "running", last: "刚刚", hash: "sha256-4f7c…b318", permissions: ["DOM", "Codex renderer bridge"] },
+  { id: "local.hidden-message-fix", name: "Hidden Message Visibility Fix", version: "0.2.0", source: "本地文件", enabled: false, status: "disabled", last: "—", hash: "sha256-187a…9d20", permissions: ["DOM"] }
+];
+
 const state = {
-  codexRunning: true,
+  managerMode: api ? "connecting" : "demo",
+  managerError: "",
+  codexRunning: !api,
+  codexInspected: !api,
+  cdpConnected: !api,
+  cdpInspected: !api,
+  targetCount: api ? 0 : 1,
   safeMode: false,
-  scripts: [
-    { id: "com.bennett.ui-improvements", name: "Bennett UI Improvements", version: "1.2.4", source: "Codex++ 迁移", enabled: true, status: "running", last: "刚刚", hash: "sha256-4f7c…b318", permissions: ["DOM", "Codex renderer bridge"] },
-    { id: "local.hidden-message-fix", name: "Hidden Message Visibility Fix", version: "0.2.0", source: "本地文件", enabled: false, status: "disabled", last: "—", hash: "sha256-187a…9d20", permissions: ["DOM"] }
-  ],
-  activities: [
-    { icon: "✓", title: "Bennett UI 注入成功", detail: "renderer target 1 · 84 ms", time: "刚刚" },
-    { icon: "↔", title: "CDP 已连接", detail: "仅监听 127.0.0.1", time: "1 分钟前" },
-    { icon: "C", title: "Codex 受管实例已启动", detail: "ChatGPT.exe · 原型状态", time: "2 分钟前" }
-  ],
-  logs: [
-    ["14:32:08", "loader", "加载器已就绪"],
-    ["14:32:09", "cdp", "发现 1 个可信 Codex renderer target"],
-    ["14:32:09", "script", "com.bennett.ui-improvements 注入成功（84 ms）"]
-  ]
+  scripts: api ? [] : demoScripts,
+  doctorChecks: null,
+  activities: api
+    ? [{ icon: "…", title: "正在连接本地管理服务", detail: "不会检查当前 Codex", time: "刚刚" }]
+    : [
+        { icon: "✓", title: "Bennett UI 注入成功", detail: "renderer target 1 · 84 ms", time: "刚刚" },
+        { icon: "↔", title: "CDP 已连接", detail: "仅监听 127.0.0.1", time: "1 分钟前" },
+        { icon: "C", title: "Codex 受管实例已启动", detail: "浏览器原型状态", time: "2 分钟前" }
+      ],
+  logs: api
+    ? [[new Date().toLocaleTimeString("zh-CN", { hour12: false }), "ui", "正在连接本地管理服务"]]
+    : [
+        ["14:32:08", "loader", "加载器已就绪"],
+        ["14:32:09", "cdp", "发现 1 个可信 Codex renderer target"],
+        ["14:32:09", "script", "com.bennett.ui-improvements 注入成功（84 ms）"]
+      ]
 };
 
 const pages = {
@@ -24,8 +42,38 @@ const pages = {
   settings: ["设置", "配置启动、外观和安全模式"]
 };
 
+const checkNames = {
+  "loader-data": "加载器数据目录",
+  "script-integrity": "脚本完整性",
+  "codex-process": "Codex 进程",
+  cdp: "CDP 连接"
+};
+
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>'"]/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[character]);
+}
+
+function formatError(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function normalizeScript(script) {
+  const fingerprint = typeof script.fingerprint === "string" ? script.fingerprint : "";
+  return {
+    id: String(script.id),
+    name: String(script.name || script.id),
+    version: String(script.version || "local"),
+    source: script.sourceLabel || script.sourceType || "加载器数据目录",
+    enabled: Boolean(script.enabled),
+    status: script.status || "ready",
+    last: script.lastInjectedAt || "尚未注入",
+    hash: script.integrity || (fingerprint ? `sha256-${fingerprint}` : "—"),
+    permissions: Array.isArray(script.permissions) ? script.permissions.map(String) : []
+  };
+}
 
 function showPage(id) {
   $$(".nav-item").forEach(button => button.classList.toggle("active", button.dataset.page === id));
@@ -35,9 +83,10 @@ function showPage(id) {
 }
 
 function scriptState(script) {
-  if (state.safeMode || !script.enabled) return ["disabled", "已停用"];
+  if (state.safeMode || !script.enabled) return ["disabled", state.safeMode && script.enabled ? "安全模式暂停" : "已停用"];
   if (script.status === "failed") return ["failed", "错误"];
-  return ["running", "运行中"];
+  if (script.status === "running") return ["running", "运行中"];
+  return ["ready", "已就绪"];
 }
 
 function renderScripts() {
@@ -50,19 +99,20 @@ function renderScripts() {
 
   $("#script-list").innerHTML = filtered.map(script => {
     const [status, label] = scriptState(script);
-    return `<div class="script-row" data-id="${script.id}">
+    const controlsDisabled = state.safeMode || (api && state.managerMode !== "connected");
+    return `<div class="script-row" data-id="${escapeHtml(script.id)}">
       <div class="script-name-cell"><span class="script-avatar">JS</span><div class="script-info"><strong>${escapeHtml(script.name)}</strong><small>${escapeHtml(script.id)} · v${escapeHtml(script.version)}</small></div></div>
       <span class="state ${status}">${label}</span>
-      <span class="muted">${script.last}</span>
-      <input class="toggle script-toggle" type="checkbox" ${script.enabled && !state.safeMode ? "checked" : ""} ${state.safeMode ? "disabled" : ""} aria-label="启用 ${escapeHtml(script.name)}">
+      <span class="muted">${escapeHtml(script.last)}</span>
+      <input class="toggle script-toggle" type="checkbox" ${script.enabled ? "checked" : ""} ${controlsDisabled ? "disabled" : ""} aria-label="启用 ${escapeHtml(script.name)}">
       <button class="icon-button script-detail" aria-label="查看详情">•••</button>
     </div>`;
-  }).join("") || `<div class="compact-item"><span class="script-info"><strong>没有符合条件的脚本</strong><small>更改搜索或筛选条件</small></span></div>`;
+  }).join("") || `<div class="compact-item"><span class="script-info"><strong>${state.managerMode === "connecting" ? "正在读取脚本…" : "没有符合条件的脚本"}</strong><small>${state.managerMode === "connecting" ? "" : "可加载一个本地 .js 文件"}</small></span></div>`;
 
   $("#overview-script-list").innerHTML = state.scripts.slice(0, 4).map(script => {
     const [status, label] = scriptState(script);
     return `<div class="compact-item"><span class="script-avatar">JS</span><div class="script-info"><strong>${escapeHtml(script.name)}</strong><small>${escapeHtml(script.id)} · v${escapeHtml(script.version)}</small></div><span class="state ${status}">${label}</span></div>`;
-  }).join("");
+  }).join("") || `<div class="compact-item"><span class="script-info"><strong>尚未安装脚本</strong><small>安装操作默认停用且不会执行</small></span></div>`;
 
   const enabled = state.safeMode ? 0 : state.scripts.filter(script => script.enabled).length;
   const failed = state.scripts.filter(script => script.status === "failed" && script.enabled).length;
@@ -71,33 +121,70 @@ function renderScripts() {
 }
 
 function renderActivities() {
-  $("#activity-list").innerHTML = state.activities.slice(0, 6).map(item => `<div class="activity-item"><span class="activity-icon">${item.icon}</span><div><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.detail)}</small></div><time>${item.time}</time></div>`).join("");
+  $("#activity-list").innerHTML = state.activities.slice(0, 6).map(item => `<div class="activity-item"><span class="activity-icon">${escapeHtml(item.icon)}</span><div><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.detail)}</small></div><time>${escapeHtml(item.time)}</time></div>`).join("");
 }
 
 function renderLogs() {
-  $("#log-list").innerHTML = state.logs.map(row => `<div class="log-row"><time>${row[0]}</time><span class="log-source">${row[1]}</span><span>${escapeHtml(row[2])}</span></div>`).join("") || `<div class="compact-item"><span class="script-info"><strong>当前显示中没有日志</strong></span></div>`;
+  $("#log-list").innerHTML = state.logs.map(row => `<div class="log-row"><time>${escapeHtml(row[0])}</time><span class="log-source">${escapeHtml(row[1])}</span><span>${escapeHtml(row[2])}</span></div>`).join("") || `<div class="compact-item"><span class="script-info"><strong>当前显示中没有日志</strong></span></div>`;
   $("#log-list").scrollTop = $("#log-list").scrollHeight;
 }
 
-function renderDoctor(running = false) {
-  const checks = [
-    ["Codex 安装", running ? "检查中…" : "已发现官方安装"],
-    ["CDP 监听", running ? "检查中…" : "仅限 loopback"],
-    ["Renderer target", running ? "检查中…" : "1 个可信 target"],
-    ["脚本完整性", running ? "检查中…" : `${state.scripts.length} 个脚本通过`],
-    ["会话数据边界", running ? "检查中…" : "没有读写 .codex"],
-    ["安全模式", running ? "检查中…" : state.safeMode ? "已启用" : "未启用"]
+function defaultDoctorChecks() {
+  if (!api) {
+    return [
+      { id: "loader-data", status: "pass", detail: "原型数据" },
+      { id: "script-integrity", status: "pass", detail: `${state.scripts.length} 个原型脚本` },
+      { id: "codex-process", status: "pass", detail: "原型状态" },
+      { id: "cdp", status: "pass", detail: "原型状态" }
+    ];
+  }
+  return [
+    { id: "loader-data", status: state.managerMode === "connected" ? "pass" : "pending", detail: state.managerMode === "connected" ? "本地管理服务可用" : "等待连接" },
+    { id: "script-integrity", status: "pending", detail: "运行诊断后检查" },
+    { id: "codex-process", status: "skipped", detail: "离线阶段不检查当前 Codex" },
+    { id: "cdp", status: "skipped", detail: "离线阶段不查询任何 CDP 端口" }
   ];
-  $("#doctor-list").innerHTML = checks.map(([name, detail]) => `<div class="doctor-item"><span class="doctor-result">${running ? "…" : "✓"}</span><span><strong>${name}</strong><small>${detail}</small></span></div>`).join("");
+}
+
+function renderDoctor(running = false) {
+  const checks = state.doctorChecks || defaultDoctorChecks();
+  const icons = { pass: "✓", warn: "!", failed: "×", skipped: "—", pending: "…" };
+  $("#doctor-list").innerHTML = checks.map(check => {
+    const status = running ? "pending" : check.status;
+    return `<div class="doctor-item"><span class="doctor-result">${icons[status] || "·"}</span><span><strong>${escapeHtml(checkNames[check.id] || check.id)}</strong><small>${escapeHtml(running ? "检查中…" : check.detail)}</small></span></div>`;
+  }).join("");
 }
 
 function applyState() {
-  $("#codex-status-label").textContent = state.codexRunning ? "Codex 已连接" : "Codex 未运行";
-  $("#codex-action").textContent = state.codexRunning ? "显示 Codex" : "启动 Codex";
-  $("#metric-codex").textContent = state.codexRunning ? "运行正常" : "未运行";
-  $("#reload-all").disabled = !state.codexRunning || state.safeMode;
+  const connected = state.managerMode === "connected";
+  const failed = state.managerMode === "error";
+  $("#loader-health-dot").className = `health-dot ${connected || state.managerMode === "demo" ? "healthy" : failed ? "failed" : ""}`;
+  $("#loader-health-label").textContent = failed ? "加载器连接失败" : connected ? "加载器正常" : state.managerMode === "demo" ? "交互原型" : "正在连接";
+  $("#loader-mode-label").textContent = state.managerMode === "demo" ? "静态演示模式" : "Node 本地管理服务";
+  $("#connection-notice").classList.toggle("hidden", !failed);
+  $("#connection-notice-detail").textContent = state.managerError || "请从加载器启动此页面。";
   $("#safe-mode-notice").classList.toggle("hidden", !state.safeMode);
+
+  let codexLabel = "未检查 Codex";
+  let codexMetric = "未检查";
+  let codexDetail = "当前阶段不会检查运行实例";
+  if (state.codexInspected) {
+    codexLabel = state.codexRunning ? "Codex 已连接" : "Codex 未运行";
+    codexMetric = state.codexRunning ? "运行正常" : "未运行";
+    codexDetail = state.codexRunning ? "受加载器管理" : "没有受管实例";
+  }
+  $("#codex-status-label").textContent = codexLabel;
+  $("#metric-codex").textContent = codexMetric;
+  $("#metric-codex-detail").textContent = codexDetail;
+  $("#metric-cdp").textContent = state.cdpInspected ? (state.cdpConnected ? "已连接" : "未连接") : "未检查";
+  $("#metric-cdp-detail").textContent = state.cdpInspected ? `${state.targetCount} 个 renderer target` : "未查询任何调试端口";
+  $("#codex-action").textContent = api ? "暂不接管 Codex" : state.codexRunning ? "显示 Codex" : "启动 Codex";
+  $("#codex-action").disabled = Boolean(api);
+  $("#reload-all").textContent = api ? "验证加载计划" : "重新加载全部";
+  $("#reload-all").disabled = state.safeMode || (api ? !connected : !state.codexRunning);
   $("#safe-mode-toggle").checked = state.safeMode;
+  $("#safe-mode-toggle").disabled = Boolean(api && !connected);
+  $("#load-script").disabled = Boolean(api && !connected);
   renderScripts();
   renderActivities();
   renderLogs();
@@ -119,35 +206,107 @@ function toast(title, detail) {
   setTimeout(() => element.remove(), 3200);
 }
 
-function escapeHtml(value) {
-  return String(value).replace(/[&<>'"]/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]);
+async function refreshManagerData({ announce = false } = {}) {
+  if (!api) return;
+  const [status, scripts] = await Promise.all([api.status(), api.scripts()]);
+  state.managerMode = "connected";
+  state.managerError = "";
+  state.safeMode = Boolean(status.safeMode);
+  state.codexInspected = status.codexInspected !== false;
+  state.cdpInspected = status.cdpInspected !== false;
+  state.codexRunning = status.codex === "healthy" || status.codex === "starting";
+  state.cdpConnected = status.cdp === "healthy";
+  state.targetCount = Number(status.targetCount || 0);
+  state.scripts = scripts.map(normalizeScript);
+  if (announce) {
+    state.activities = [{ icon: "✓", title: "本地管理服务已连接", detail: "离线安全模式；未检查 Codex/CDP", time: "刚刚" }];
+    state.logs = [[new Date().toLocaleTimeString("zh-CN", { hour12: false }), "loader", "管理 UI 已读取本地状态；未接触 Codex"]];
+  }
+  applyState();
 }
 
-function inspectFile(file) {
-  if (!file) return;
-  const valid = /\.(js|json|zip)$/i.test(file.name);
-  if (!valid) return toast("不支持的文件", "请选择 .js、manifest.json 或本地安装包");
-  const name = file.name.replace(/\.(js|json|zip)$/i, "").replace(/[-_]+/g, " ");
-  $("#dialog-content").innerHTML = `<p class="eyebrow">加载本地脚本</p><h2>${escapeHtml(file.name)}</h2><p class="dialog-section">选择文件只会进入检查阶段，不会立即执行。真实版本将由 Rust 后端验证入口、权限、冲突和 SHA-256。</p><dl class="detail-grid"><dt>来源</dt><dd>本地文件</dd><dt>大小</dt><dd>${Math.max(1, Math.round(file.size / 1024))} KB</dd><dt>权限</dt><dd>等待 manifest 检查</dd><dt>状态</dt><dd>原型验证通过</dd></dl><div class="dialog-actions"><button class="button secondary" value="cancel">取消</button><button class="button primary" id="confirm-install" value="default">复制并安装</button></div>`;
+function showInstallPreview(preview, file, sourceText) {
+  const script = normalizeScript(preview.script);
+  const permissionText = script.permissions.length ? script.permissions.join("、") : "未声明额外权限";
+  $("#dialog-content").innerHTML = `<p class="eyebrow">检查本地脚本</p><h2>${escapeHtml(file.name)}</h2><p class="dialog-section">后端已检查名称、大小并计算 SHA-256。确认安装只会把源码复制到加载器目录；脚本默认停用，本阶段也不会连接 Codex 执行它。</p><dl class="detail-grid"><dt>脚本 ID</dt><dd>${escapeHtml(script.id)}</dd><dt>大小</dt><dd>${Math.max(1, Math.round(file.size / 1024))} KB</dd><dt>完整性</dt><dd>${escapeHtml(script.hash)}</dd><dt>权限声明</dt><dd>${escapeHtml(permissionText)}</dd><dt>状态</dt><dd>等待用户确认</dd></dl><div class="dialog-actions"><button class="button secondary" value="cancel">取消</button><button class="button primary" id="confirm-install" type="button">复制并安装（保持停用）</button></div>`;
   $("#script-dialog").showModal();
-  $("#confirm-install").addEventListener("click", event => {
-    event.preventDefault();
-    const id = `local.${file.name.toLowerCase().replace(/[^a-z0-9]+/g, ".").replace(/^\.|\.$/g, "")}`;
-    if (state.scripts.some(script => script.id === id)) return toast("脚本已存在", "请先移除旧版本或使用更新流程");
-    state.scripts.push({ id, name, version: "local", source: "本地文件", enabled: false, status: "disabled", last: "—", hash: "等待后端计算", permissions: ["等待检查"] });
-    $("#script-dialog").close();
-    renderScripts();
-    addActivity("脚本已安装但未启用", file.name, "＋");
-    toast("安装完成", "脚本尚未执行，请检查后手动启用");
+  $("#confirm-install").addEventListener("click", async event => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      if (api) {
+        await api.installScript({ fileName: file.name, sourceText, enabled: false, overwrite: false });
+        await refreshManagerData();
+        $("#script-dialog").close();
+        addActivity("脚本已安装但未启用", `${file.name}；源码未执行`, "＋");
+        toast("安装完成", "脚本保持停用，尚未执行");
+      } else {
+        if (state.scripts.some(item => item.id === script.id)) throw new Error("脚本已存在");
+        state.scripts.push(script);
+        $("#script-dialog").close();
+        addActivity("脚本已安装但未启用", file.name, "＋");
+        renderScripts();
+        toast("原型安装完成", "静态原型未写入本机文件");
+      }
+    } catch (error) {
+      button.disabled = false;
+      toast("安装失败", formatError(error));
+    }
   }, { once: true });
+}
+
+async function inspectFile(file) {
+  if (!file) return;
+  if (!/\.js$/i.test(file.name)) return toast("不支持的文件", "当前版本请选择单个 .js 文件");
+  if (file.size > 512 * 1024) return toast("文件过大", "单个脚本不能超过 512 KiB");
+  try {
+    const sourceText = await file.text();
+    const preview = api
+      ? await api.inspectScript({ fileName: file.name, sourceText })
+      : { script: { id: `local.${file.name.toLowerCase().replace(/\.js$/i, "").replace(/[^a-z0-9]+/g, "-")}`, name: file.name.replace(/\.js$/i, ""), version: "local", enabled: false, status: "disabled", fingerprint: "prototype", permissions: [] } };
+    showInstallPreview(preview, file, sourceText);
+  } catch (error) {
+    toast("脚本检查失败", formatError(error));
+  } finally {
+    $("#script-file").value = "";
+  }
 }
 
 function showScriptDetails(script) {
   const [status, label] = scriptState(script);
-  $("#dialog-content").innerHTML = `<p class="eyebrow">脚本详情</p><h2>${escapeHtml(script.name)}</h2><p>${escapeHtml(script.id)}</p><dl class="detail-grid"><dt>版本</dt><dd>${escapeHtml(script.version)}</dd><dt>来源</dt><dd>${escapeHtml(script.source)}</dd><dt>状态</dt><dd><span class="state ${status}">${label}</span></dd><dt>SHA-256</dt><dd>${escapeHtml(script.hash)}</dd><dt>权限</dt><dd>${script.permissions.map(escapeHtml).join("、")}</dd><dt>最近注入</dt><dd>${script.last}</dd></dl><div class="dialog-actions"><button class="button secondary" value="cancel">关闭</button><button class="button secondary" id="remove-script" value="default">移除</button><button class="button primary" id="reload-script" value="default" ${!script.enabled || state.safeMode ? "disabled" : ""}>重新加载</button></div>`;
+  const permissionText = script.permissions.length ? script.permissions.join("、") : "未声明额外权限";
+  const actionLabel = api ? "验证加载计划" : "重新加载";
+  const removeAction = api ? "" : `<button class="button secondary" id="remove-script" type="button">移除</button>`;
+  $("#dialog-content").innerHTML = `<p class="eyebrow">脚本详情</p><h2>${escapeHtml(script.name)}</h2><p>${escapeHtml(script.id)}</p><dl class="detail-grid"><dt>版本</dt><dd>${escapeHtml(script.version)}</dd><dt>来源</dt><dd>${escapeHtml(script.source)}</dd><dt>状态</dt><dd><span class="state ${status}">${label}</span></dd><dt>SHA-256</dt><dd>${escapeHtml(script.hash)}</dd><dt>权限</dt><dd>${escapeHtml(permissionText)}</dd><dt>最近注入</dt><dd>${escapeHtml(script.last)}</dd></dl><div class="dialog-actions"><button class="button secondary" value="cancel">关闭</button>${removeAction}<button class="button primary" id="reload-script" type="button" ${!script.enabled || state.safeMode ? "disabled" : ""}>${actionLabel}</button></div>`;
   $("#script-dialog").showModal();
-  $("#reload-script").addEventListener("click", event => { event.preventDefault(); script.last = "刚刚"; $("#script-dialog").close(); addActivity(`${script.name} 已重新加载`, "原型操作完成"); renderScripts(); toast("重新加载完成", script.name); }, { once: true });
-  $("#remove-script").addEventListener("click", event => { event.preventDefault(); state.scripts = state.scripts.filter(item => item.id !== script.id); $("#script-dialog").close(); addActivity("脚本已移到回收区", script.name, "−"); renderScripts(); toast("已移除", "真实版本默认保留可恢复副本"); }, { once: true });
+  $("#reload-script").addEventListener("click", async event => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      if (api) {
+        const result = await api.reload([script.id]);
+        $("#script-dialog").close();
+        $("#last-injection").textContent = "未执行（dry-run）";
+        addActivity("脚本加载计划已验证", `${result.summary?.length || 0} 个脚本；0 个真实 target`, "↻");
+        toast("验证完成", "没有连接或修改当前 Codex");
+      } else {
+        script.last = "刚刚";
+        $("#script-dialog").close();
+        addActivity(`${script.name} 已重新加载`, "原型操作完成");
+        renderScripts();
+        toast("重新加载完成", script.name);
+      }
+    } catch (error) {
+      button.disabled = false;
+      toast("验证失败", formatError(error));
+    }
+  });
+  $("#remove-script")?.addEventListener("click", () => {
+    state.scripts = state.scripts.filter(item => item.id !== script.id);
+    $("#script-dialog").close();
+    addActivity("脚本已从原型列表移除", script.name, "−");
+    renderScripts();
+  }, { once: true });
 }
 
 $$(".nav-item").forEach(button => button.addEventListener("click", () => showPage(button.dataset.page)));
@@ -157,33 +316,135 @@ $("#script-filter").addEventListener("change", renderScripts);
 $("#load-script").addEventListener("click", () => $("#script-file").click());
 $("#script-file").addEventListener("change", event => inspectFile(event.target.files[0]));
 $("#drop-zone").addEventListener("click", () => $("#script-file").click());
+$("#drop-zone").addEventListener("keydown", event => { if (event.key === "Enter" || event.key === " ") $("#script-file").click(); });
 $("#drop-zone").addEventListener("dragover", event => { event.preventDefault(); event.currentTarget.classList.add("dragging"); });
 $("#drop-zone").addEventListener("dragleave", event => event.currentTarget.classList.remove("dragging"));
 $("#drop-zone").addEventListener("drop", event => { event.preventDefault(); event.currentTarget.classList.remove("dragging"); inspectFile(event.dataTransfer.files[0]); });
-$("#script-list").addEventListener("change", event => {
+
+$("#script-list").addEventListener("change", async event => {
   if (!event.target.classList.contains("script-toggle")) return;
   const script = state.scripts.find(item => item.id === event.target.closest(".script-row").dataset.id);
-  script.enabled = event.target.checked;
-  script.status = script.enabled ? "running" : "disabled";
-  script.last = script.enabled ? "刚刚" : script.last;
-  addActivity(`${script.name} 已${script.enabled ? "启用" : "停用"}`, script.enabled ? "已注入当前 renderer" : "生命周期已停止", script.enabled ? "✓" : "Ⅱ");
-  renderScripts();
+  const previous = script.enabled;
+  const enabled = event.target.checked;
+  event.target.disabled = true;
+  try {
+    if (api) {
+      await api.setScriptEnabled(script.id, enabled);
+      await refreshManagerData();
+      addActivity(`${script.name} 已${enabled ? "启用" : "停用"}`, "配置已保存；尚未注入 Codex", enabled ? "✓" : "Ⅱ");
+    } else {
+      script.enabled = enabled;
+      script.status = enabled ? "running" : "disabled";
+      script.last = enabled ? "刚刚" : script.last;
+      addActivity(`${script.name} 已${enabled ? "启用" : "停用"}`, "浏览器原型状态", enabled ? "✓" : "Ⅱ");
+      renderScripts();
+    }
+  } catch (error) {
+    script.enabled = previous;
+    renderScripts();
+    toast("保存失败", formatError(error));
+  }
 });
+
 $("#script-list").addEventListener("click", event => {
   const button = event.target.closest(".script-detail");
   if (!button) return;
   showScriptDetails(state.scripts.find(item => item.id === button.closest(".script-row").dataset.id));
 });
-$("#reload-all").addEventListener("click", () => { state.scripts.filter(script => script.enabled).forEach(script => script.last = "刚刚"); $("#last-injection").textContent = "刚刚"; addActivity("全部脚本已重新加载", `${state.scripts.filter(script => script.enabled).length} 个脚本`, "↻"); renderScripts(); toast("重新加载完成", "没有发现脚本异常"); });
-$("#codex-action").addEventListener("click", () => { if (!state.codexRunning) { state.codexRunning = true; addActivity("Codex 已启动", "受管 CDP 会话已建立", "C"); toast("Codex 已启动", "正在等待 renderer 注入"); } else { toast("显示 Codex", "真实版本将聚焦受管窗口"); } applyState(); });
-$("#safe-mode-toggle").addEventListener("change", event => { state.safeMode = event.target.checked; addActivity(`安全模式已${state.safeMode ? "启用" : "关闭"}`, state.safeMode ? "所有脚本已暂停" : "已恢复启用脚本", "!"); applyState(); toast(state.safeMode ? "安全模式已启用" : "安全模式已关闭", state.safeMode ? "Codex 将保持原生界面" : "已恢复脚本注入"); });
-$("#run-doctor").addEventListener("click", event => { event.currentTarget.disabled = true; renderDoctor(true); setTimeout(() => { renderDoctor(false); event.currentTarget.disabled = false; addActivity("完整检查已完成", "6 项通过，0 项警告", "✓"); toast("诊断完成", "所有检查均已通过"); }, 900); });
-$("#clear-log").addEventListener("click", () => { state.logs = []; renderLogs(); });
-$("#export-log").addEventListener("click", () => toast("诊断包预览", "真实版本会先列出脱敏后的导出内容"));
-$("#migrate-button").addEventListener("click", () => toast("Codex++ 迁移", "真实版本只复制选中的用户脚本，不删除原文件"));
-$$(`.open-folder`).forEach(button => button.addEventListener("click", () => toast("打开目录", "原型不会访问本机文件系统")));
-$("#theme-select").addEventListener("change", event => { const value = event.target.value; document.documentElement.dataset.theme = value === "system" ? (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark") : value; });
 
-applyState();
-const requestedPage = new URLSearchParams(location.search).get("page");
-if (requestedPage && pages[requestedPage]) showPage(requestedPage);
+$("#reload-all").addEventListener("click", async event => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  try {
+    if (api) {
+      const result = await api.reload();
+      $("#last-injection").textContent = "未执行（dry-run）";
+      $("#last-injection-detail").textContent = `${result.summary?.length || 0} 个脚本计划已验证`;
+      addActivity("全部加载计划已验证", `${result.summary?.length || 0} 个脚本；没有连接 Codex`, "↻");
+      toast("验证完成", "没有脚本被执行");
+    } else {
+      state.scripts.filter(script => script.enabled).forEach(script => { script.last = "刚刚"; });
+      $("#last-injection").textContent = "刚刚";
+      addActivity("全部脚本已重新加载", `${state.scripts.filter(script => script.enabled).length} 个原型脚本`, "↻");
+      renderScripts();
+    }
+  } catch (error) {
+    toast("验证失败", formatError(error));
+  } finally {
+    button.disabled = state.safeMode || (api && state.managerMode !== "connected");
+  }
+});
+
+$("#codex-action").addEventListener("click", () => {
+  if (api) return toast("当前未启用 Codex 接管", "正在运行的长任务不会受到影响");
+  toast("显示 Codex", "静态原型不会访问桌面应用");
+});
+
+$("#safe-mode-toggle").addEventListener("change", async event => {
+  const enabled = event.target.checked;
+  const previous = state.safeMode;
+  event.target.disabled = true;
+  try {
+    if (api) await api.setSafeMode(enabled);
+    state.safeMode = enabled;
+    addActivity(`安全模式已${enabled ? "启用" : "关闭"}`, enabled ? "所有脚本计划已暂停" : "恢复脚本启用配置；尚未注入", "!");
+    applyState();
+    toast(enabled ? "安全模式已启用" : "安全模式已关闭", enabled ? "当前不会生成启用脚本的加载计划" : "脚本仍需未来 live 模式才会执行");
+  } catch (error) {
+    state.safeMode = previous;
+    applyState();
+    toast("保存失败", formatError(error));
+  }
+});
+
+$("#run-doctor").addEventListener("click", async event => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  renderDoctor(true);
+  try {
+    if (api) {
+      const report = await api.doctor();
+      state.doctorChecks = report.checks;
+      renderDoctor(false);
+      const warnings = report.checks.filter(check => check.status === "warn" || check.status === "failed").length;
+      addActivity("离线检查已完成", `${report.checks.length} 项；${warnings} 项警告；Codex/CDP 已跳过`, warnings ? "!" : "✓");
+      toast("诊断完成", "未检查或修改当前 Codex");
+    } else {
+      await new Promise(resolve => setTimeout(resolve, 500));
+      renderDoctor(false);
+      addActivity("原型检查已完成", "仅演示界面交互", "✓");
+    }
+  } catch (error) {
+    renderDoctor(false);
+    toast("诊断失败", formatError(error));
+  } finally {
+    button.disabled = false;
+  }
+});
+
+$("#clear-log").addEventListener("click", () => { state.logs = []; renderLogs(); });
+$("#export-log").addEventListener("click", () => toast("尚未实现导出", "当前日志仅保存在此页面内存中"));
+$("#migrate-button").addEventListener("click", () => toast("迁移功能尚未启用", "当前版本先完成安全的单文件加载流程"));
+$$(`.open-folder`).forEach(button => button.addEventListener("click", () => toast("尚未实现打开目录", "本地 API 不接受任意文件系统路径")));
+$("#theme-select").addEventListener("change", event => {
+  const value = event.target.value;
+  document.documentElement.dataset.theme = value === "system" ? (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark") : value;
+});
+
+async function initialize() {
+  applyState();
+  const requestedPage = new URLSearchParams(location.search).get("page");
+  if (requestedPage && pages[requestedPage]) showPage(requestedPage);
+  if (!api) return;
+  try {
+    await refreshManagerData({ announce: true });
+  } catch (error) {
+    state.managerMode = "error";
+    state.managerError = formatError(error);
+    state.activities = [{ icon: "×", title: "本地管理服务连接失败", detail: state.managerError, time: "刚刚" }];
+    state.logs.push([new Date().toLocaleTimeString("zh-CN", { hour12: false }), "error", state.managerError]);
+    applyState();
+  }
+}
+
+initialize();

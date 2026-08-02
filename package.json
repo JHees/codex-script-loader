@@ -9,7 +9,9 @@
   },
   "scripts": {
     "test": "node --test",
-    "check": "node --check src/cli.mjs"
+    "check": "node --check src/cli.mjs && node --check src/manager-server.mjs && node --check prototype/api-client.js && node --check prototype/app.js",
+    "smoke:ui": "node scripts/browser-smoke.mjs",
+    "serve": "node src/cli.mjs serve"
   },
   "engines": {
     "node": ">=20"

@@ -1,10 +1,36 @@
 import path from "node:path";
 import { readFile } from "node:fs/promises";
-import { assertWithinDirectory } from "./paths.mjs";
+import { assertWithinDirectory, safeScriptIdFromName } from "./paths.mjs";
 import { integrityLabel, sha256Text } from "./hash.mjs";
 
 const ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 const RUN_AT = new Set(["document-start", "document-end"]);
+export const MAX_SOURCE_BYTES = 512 * 1024;
+
+export function describeTextScript({ name, sourceText }) {
+  if (typeof name !== "string") throw new Error("script name must be a string");
+  if (typeof sourceText !== "string") throw new Error("script source must be a string");
+  const normalizedName = name.trim();
+  if (!normalizedName || normalizedName.length > 128 || /[\\/\u0000-\u001f\u007f]/u.test(normalizedName)) {
+    throw new Error("script name must be 1-128 characters without path separators or control characters");
+  }
+  if (Buffer.byteLength(sourceText, "utf8") > MAX_SOURCE_BYTES) {
+    throw new Error(`script source exceeds ${MAX_SOURCE_BYTES} bytes`);
+  }
+  const displayName = normalizedName.toLowerCase().endsWith(".js") ? normalizedName.slice(0, -3) : normalizedName;
+  if (!displayName) throw new Error("script name must include a name before the .js extension");
+  return {
+    id: safeScriptIdFromName(displayName),
+    name: displayName,
+    version: "local",
+    entry: "index.js",
+    scope: "renderer",
+    runAt: "document-start",
+    permissions: [],
+    source: sourceText,
+    fingerprint: sha256Text(sourceText)
+  };
+}
 
 export function validateManifest(input, scriptDirectory) {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
@@ -48,4 +74,3 @@ export async function loadScriptDescriptor(scriptDirectory) {
   }
   return { ...manifest, source, fingerprint, manifestPath, directory };
 }
-
