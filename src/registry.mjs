@@ -1,6 +1,6 @@
 import path from "node:path";
 import { randomBytes } from "node:crypto";
-import { access, cp, lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
+import { access, cp, lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import { getLayout, assertWithinDirectory, safeScriptIdFromName } from "./paths.mjs";
 import { describeTextScript, loadScriptDescriptor } from "./manifest.mjs";
 import { buildInjectionSource, summarizePlan } from "./injection.mjs";
@@ -17,6 +17,29 @@ async function exists(filePath) {
 
 function cloneDefaultConfig() {
   return { schemaVersion: DEFAULT_CONFIG.schemaVersion, globalEnabled: true, safeMode: false, scripts: {} };
+}
+
+function isPlainRecord(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value) && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
+}
+
+function normalizeLoadedConfig(value) {
+  if (!isPlainRecord(value) || Number(value.schemaVersion ?? 1) !== 1) throw new Error("unsupported loader config schema");
+  if (value.globalEnabled !== undefined && typeof value.globalEnabled !== "boolean") throw new Error("globalEnabled must be a boolean");
+  if (value.safeMode !== undefined && typeof value.safeMode !== "boolean") throw new Error("safeMode must be a boolean");
+  if (value.scripts !== undefined && !isPlainRecord(value.scripts)) throw new Error("scripts must be an object");
+  const scripts = {};
+  for (const [id, settings] of Object.entries(value.scripts || {})) {
+    if (!SCRIPT_ID_PATTERN.test(id) || !isPlainRecord(settings)) throw new Error("invalid script configuration entry");
+    if (settings.enabled !== undefined && typeof settings.enabled !== "boolean") throw new Error("script enabled state must be a boolean");
+    scripts[id] = settings.enabled === undefined ? {} : { enabled: settings.enabled };
+  }
+  return {
+    schemaVersion: 1,
+    globalEnabled: value.globalEnabled ?? true,
+    safeMode: value.safeMode ?? false,
+    scripts
+  };
 }
 
 function publicQuarantineRecord(record) {
@@ -50,6 +73,7 @@ export class ScriptRegistry {
   constructor(dataRoot) {
     this.layout = getLayout(dataRoot);
     this.config = cloneDefaultConfig();
+    this.configLoadError = null;
     this.mutationTail = Promise.resolve();
   }
 
@@ -65,18 +89,30 @@ export class ScriptRegistry {
   async init() {
     await mkdir(this.layout.scriptsRoot, { recursive: true });
     await mkdir(this.layout.quarantineRoot, { recursive: true });
-    if (await exists(this.layout.configPath)) {
-      const loaded = JSON.parse(await readFile(this.layout.configPath, "utf8"));
-      this.config = {
-        ...cloneDefaultConfig(),
-        ...loaded,
-        scripts: loaded && loaded.scripts && typeof loaded.scripts === "object" ? loaded.scripts : {}
-      };
-    }
+    await this.reloadConfig();
     return this;
   }
 
+  async reloadConfig() {
+    await this.mutationTail;
+    if (await exists(this.layout.configPath)) {
+      try {
+        this.config = normalizeLoadedConfig(JSON.parse(await readFile(this.layout.configPath, "utf8")));
+        this.configLoadError = null;
+      } catch (error) {
+        this.config = cloneDefaultConfig();
+        this.config.safeMode = true;
+        this.configLoadError = String(error?.message || error).slice(0, 200);
+      }
+    } else {
+      this.config = cloneDefaultConfig();
+      this.configLoadError = null;
+    }
+    return this.config;
+  }
+
   async saveConfig() {
+    if (this.configLoadError) throw new Error("loader configuration is invalid; refusing to overwrite it");
     await mkdir(this.layout.dataRoot, { recursive: true });
     const temporary = `${this.layout.configPath}.tmp-${process.pid}-${Date.now()}`;
     await writeFile(temporary, `${JSON.stringify(this.config, null, 2)}\n`, "utf8");
@@ -106,30 +142,47 @@ export class ScriptRegistry {
 
   async installUnlocked(sourcePath, { enabled = false, overwrite = false } = {}) {
     const source = path.resolve(sourcePath);
-    const sourceStats = await stat(source);
-    let descriptor;
-    let temporaryDirectory;
-    if (sourceStats.isDirectory()) {
-      descriptor = await loadScriptDescriptor(source);
-    } else if (sourceStats.isFile() && source.toLowerCase().endsWith(".js")) {
-      const id = safeScriptIdFromName(path.basename(source, ".js"));
-      temporaryDirectory = path.join(this.layout.dataRoot, `.install-${process.pid}-${Date.now()}`);
-      await mkdir(temporaryDirectory, { recursive: true });
-      await writeFile(path.join(temporaryDirectory, "index.js"), await readFile(source, "utf8"), "utf8");
-      await writeFile(path.join(temporaryDirectory, "manifest.json"), JSON.stringify({ id, name: path.basename(source, ".js"), version: "local", entry: "index.js", scope: "renderer" }), "utf8");
-      descriptor = await loadScriptDescriptor(temporaryDirectory);
-    } else {
-      throw new Error("install source must be a directory with manifest.json or a .js file");
-    }
+    let temporaryDirectory = null;
+    try {
+      const sourceStats = await lstat(source);
+      let descriptor;
+      if (sourceStats.isDirectory()) {
+        descriptor = await loadScriptDescriptor(source);
+      } else if (sourceStats.isFile() && source.toLowerCase().endsWith(".js")) {
+        const id = safeScriptIdFromName(path.basename(source, ".js"));
+        temporaryDirectory = path.join(this.layout.dataRoot, `.install-${process.pid}-${Date.now()}`);
+        await mkdir(temporaryDirectory, { recursive: true });
+        await writeFile(path.join(temporaryDirectory, "index.js"), await readFile(source, "utf8"), "utf8");
+        await writeFile(path.join(temporaryDirectory, "manifest.json"), JSON.stringify({ id, name: path.basename(source, ".js"), version: "local", entry: "index.js", scope: "renderer" }), "utf8");
+        descriptor = await loadScriptDescriptor(temporaryDirectory);
+      } else {
+        throw new Error("install source must be a directory with manifest.json or a .js file");
+      }
 
-    const target = assertWithinDirectory(this.layout.scriptsRoot, path.join(this.layout.scriptsRoot, descriptor.id), "script install target");
-    if (await exists(target) && !overwrite) throw new Error(`script already installed: ${descriptor.id}`);
-    if (await exists(target)) await rm(target, { recursive: true, force: true });
-    await cp(descriptor.directory, target, { recursive: true, force: true });
-    this.config.scripts[descriptor.id] = { enabled: Boolean(enabled) };
-    await this.saveConfig();
-    if (temporaryDirectory) await rm(temporaryDirectory, { recursive: true, force: true });
-    return (await this.list({ includeInvalid: false })).find(item => item.id === descriptor.id);
+      const target = assertWithinDirectory(this.layout.scriptsRoot, path.join(this.layout.scriptsRoot, descriptor.id), "script install target");
+      if (await exists(target)) {
+        if (overwrite) throw new Error(`script overwrite is not supported; quarantine the installed script first: ${descriptor.id}`);
+        throw new Error(`script already installed: ${descriptor.id}`);
+      }
+      try {
+        await cp(descriptor.directory, target, { recursive: true, force: false, errorOnExist: true });
+      } catch (error) {
+        await rm(target, { recursive: true, force: true });
+        throw error;
+      }
+      const previousConfig = configSnapshot(this.config, descriptor.id);
+      this.config.scripts[descriptor.id] = { enabled: Boolean(enabled) };
+      try {
+        await this.saveConfig();
+      } catch (error) {
+        restoreConfigSnapshot(this.config, descriptor.id, previousConfig);
+        await rm(target, { recursive: true, force: true });
+        throw error;
+      }
+      return (await this.list({ includeInvalid: false })).find(item => item.id === descriptor.id);
+    } finally {
+      if (temporaryDirectory) await rm(temporaryDirectory, { recursive: true, force: true });
+    }
   }
 
   async installSourceText({ name, sourceText }, { enabled = false, overwrite = false } = {}) {
@@ -146,6 +199,7 @@ export class ScriptRegistry {
         entry: descriptor.entry,
         scope: descriptor.scope,
         runAt: descriptor.runAt,
+        lifecycleGlobal: descriptor.lifecycleGlobal,
         permissions: descriptor.permissions
       }), "utf8");
       return await this.install(temporaryDirectory, { enabled, overwrite });
@@ -158,16 +212,26 @@ export class ScriptRegistry {
     return this.runMutation(async () => {
       const scripts = await this.list({ includeInvalid: false });
       if (!scripts.some(script => script.id === id)) throw new Error(`unknown script: ${id}`);
+      const previousConfig = configSnapshot(this.config, id);
       this.config.scripts[id] = { ...(this.config.scripts[id] || {}), enabled: Boolean(enabled) };
-      await this.saveConfig();
+      try { await this.saveConfig(); }
+      catch (error) {
+        restoreConfigSnapshot(this.config, id, previousConfig);
+        throw error;
+      }
       return (await this.list({ includeInvalid: false })).find(script => script.id === id);
     });
   }
 
   async setSafeMode(enabled) {
     return this.runMutation(async () => {
+      const previous = this.config.safeMode;
       this.config.safeMode = Boolean(enabled);
-      await this.saveConfig();
+      try { await this.saveConfig(); }
+      catch (error) {
+        this.config.safeMode = previous;
+        throw error;
+      }
       return this.config.safeMode;
     });
   }
@@ -320,9 +384,11 @@ export class ScriptRegistry {
     });
   }
 
-  async buildPlan() {
+  async buildPlan({ forceIds = [] } = {}) {
     const scripts = await this.list({ includeInvalid: false });
     const enabled = this.config.globalEnabled && !this.config.safeMode ? scripts.filter(script => script.enabled) : [];
-    return { descriptors: enabled, source: buildInjectionSource(enabled), summary: summarizePlan(enabled), safeMode: Boolean(this.config.safeMode) };
+    if (forceIds !== "all" && !Array.isArray(forceIds)) throw new TypeError("forceIds must be an array or all");
+    const requestedForceIds = forceIds === "all" ? enabled.map(script => script.id) : forceIds;
+    return { descriptors: enabled, source: buildInjectionSource(enabled, { forceIds: requestedForceIds }), summary: summarizePlan(enabled), safeMode: Boolean(this.config.safeMode) };
   }
 }

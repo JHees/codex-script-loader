@@ -99,7 +99,7 @@ CLI 继续提供相同核心操作，用于诊断和自动化：
   "schemaVersion": 1,
   "id": "com.bennett.ui-improvements",
   "name": "Bennett UI Improvements",
-  "version": "1.2.4",
+  "version": "1.3.0",
   "entry": "index.js",
   "scope": "renderer",
   "runAt": "document-start",

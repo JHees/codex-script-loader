@@ -2,7 +2,7 @@
 
 ## 总体技术选择
 
-- 核心与首个可用版本：Node.js 20+ ESM，只使用内置模块起步；
+- 核心与首个可用版本：Node.js 22+ ESM，只使用内置模块；
 - HTTP/CDP：本地 loopback HTTP + 原生 fetch/WebSocket 能力；
 - CLI：同一 Node 核心的轻量命令入口；
 - 管理 UI：原生 HTML/CSS/JavaScript，由仅监听 `127.0.0.1` 的本地服务提供；
@@ -12,7 +12,7 @@
 
 Rust 不是必需条件。它在单文件分发、低后台占用和原生托盘方面有优势，但会延长当前功能验证周期。核心协议保持与语言无关；如果未来确实需要 Rust/Tauri 壳，可以复用 HTTP/控制契约和测试行为，而不重写脚本格式与 UI。复用 Codex++ 中 MIT 许可思路时仍需保留许可证和归属，不复制其 bridge、广告、供应商或数据库模块。
 
-## Phase 0：可行性原型（已开始实现）
+## Phase 0：可行性原型（代码完成，待真实受管启动验收）
 
 目标：先在不接触当前 Codex 的前提下，完成脚本安全边界、CDP 命令计划和 UI 后端契约的离线验证；随后再单独安排真实 Codex 的受控启动测试。
 
@@ -30,18 +30,19 @@ Rust 不是必需条件。它在单文件分发、低后台占用和原生托盘
 8. 默认 dry-run CLI，避免意外连接正在运行的 Codex；
 9. loopback 管理 UI、纯文本脚本检查/安装与真实浏览器烟雾测试；
 10. 可恢复隔离区、冲突保护和同进程写操作串行化。
+11. Windows AppX 发现、packaged activation 和既有实例保护；
+12. 随机 loopback CDP 端口与监听 PID/官方包进程归属验证；
+13. CDP supervisor、配置重载、target 更换恢复和脚本生命周期同步；
+14. live 管理 UI 状态、显式实时 reload 和安全模式清理；
+15. Bennett UI Improvements 1.3.0 轻量兼容包与许可证保留。
 
 待执行：
 
-1. 发现当前 Codex/ChatGPT 宿主；
-2. 分配 loopback 临时端口；
-3. 启动宿主并轮询 `/json`；
-4. 连接全部有效 Codex page targets；
-5. 对当前 document 执行一个无副作用的标记脚本；
-6. 注册 future-document 标记；
-7. 加载 Bennett UI 的副本；
-8. renderer reload 后验证自动恢复；
-9. 确认无 `57321/57322` helper、无 Codex++ bridge 时的功能清单。
+1. 从外部终端完全关闭后执行首次真实受管启动；
+2. 对当前 document 验证 loader runtime 与 Bennett 生命周期；
+3. renderer reload 后验证 3 秒内自动恢复；
+4. 验证 safe mode/停用后 observer、timer 和样式被清理；
+5. 确认无 Codex++ helper/bridge 时的实际功能清单与性能。
 
 验收：
 

@@ -43,7 +43,7 @@
         <div class="notice danger hidden" id="connection-notice"><strong>无法连接本地管理服务</strong><span id="connection-notice-detail">请从加载器启动此页面。</span></div>
         <div class="notice hidden" id="safe-mode-notice"><strong>安全模式已启用</strong><span>所有第三方脚本已暂停。关闭安全模式后才会重新注入。</span></div>
         <div class="metric-grid">
-          <article class="metric-card"><span class="metric-icon green">C</span><div><small>Codex</small><strong id="metric-codex">等待状态</strong><span id="metric-codex-detail">当前阶段不会检查运行实例</span></div></article>
+          <article class="metric-card"><span class="metric-icon green">C</span><div><small>Codex</small><strong id="metric-codex">等待状态</strong><span id="metric-codex-detail">离线服务不会检查运行实例</span></div></article>
           <article class="metric-card"><span class="metric-icon blue">↔</span><div><small>CDP 连接</small><strong id="metric-cdp">未连接</strong><span id="metric-cdp-detail">0 个 renderer target</span></div></article>
           <article class="metric-card"><span class="metric-icon violet">JS</span><div><small>活动脚本</small><strong id="enabled-count">1 / 2</strong><span id="failed-count">0 个错误</span></div></article>
           <article class="metric-card"><span class="metric-icon amber">↻</span><div><small>最近注入</small><strong id="last-injection">尚未执行</strong><span id="last-injection-detail">管理服务仅生成 dry-run 计划</span></div></article>
@@ -94,7 +94,7 @@
 
       <section class="page" id="page-settings">
         <div class="settings-layout">
-          <section class="panel settings-card"><h2>启动与托盘（后续阶段）</h2><label class="setting-row"><span><strong>随系统启动</strong><small>需要桌面壳，当前不可用</small></span><input type="checkbox" disabled></label><label class="setting-row"><span><strong>自动启动 Codex</strong><small>live 模式启用前保持关闭</small></span><input type="checkbox" disabled></label><label class="setting-row"><span><strong>关闭到托盘</strong><small>需要桌面壳，当前不可用</small></span><input type="checkbox" disabled></label></section>
+          <section class="panel settings-card"><h2>启动与托盘（后续阶段）</h2><label class="setting-row"><span><strong>随系统启动</strong><small>需要桌面壳，当前不可用</small></span><input type="checkbox" disabled></label><label class="setting-row"><span><strong>自动启动 Codex</strong><small>当前由 run --live 显式受管启动</small></span><input type="checkbox" disabled></label><label class="setting-row"><span><strong>关闭到托盘</strong><small>需要桌面壳，当前不可用</small></span><input type="checkbox" disabled></label></section>
           <section class="panel settings-card"><h2>外观</h2><label class="setting-row"><span><strong>主题</strong><small>界面配色</small></span><select id="theme-select"><option value="system">跟随系统</option><option value="dark">深色</option><option value="light">浅色</option></select></label><label class="setting-row"><span><strong>语言</strong><small>英文资源将在后续阶段加入</small></span><select disabled><option>简体中文</option><option>English</option></select></label></section>
           <section class="panel settings-card"><h2>安全模式</h2><label class="setting-row"><span><strong>暂停所有脚本</strong><small>Codex 仍可正常启动，但不会执行用户脚本</small></span><input id="safe-mode-toggle" type="checkbox"></label></section>
           <section class="panel settings-card"><h2>目录</h2><div class="path-row"><span><strong>脚本目录</strong><code>%APPDATA%\codex-script-loader\scripts</code></span><button class="button secondary open-folder" disabled>稍后支持</button></div><div class="path-row"><span><strong>日志目录</strong><code>%APPDATA%\codex-script-loader\logs</code></span><button class="button secondary open-folder" disabled>稍后支持</button></div></section>

@@ -14,7 +14,7 @@ POST /api/scripts/:id/enabled      { enabled }
 POST /api/scripts/:id/remove       { mode?: "quarantine" }
 POST /api/quarantine/:key/restore  {}
 POST /api/safe-mode                { enabled }
-POST /api/reload                   { ids?, live: false }
+POST /api/reload                   { ids?, live: boolean }
 POST /api/doctor                   {}
 ```
 
@@ -25,11 +25,11 @@ POST /api/doctor                   {}
 { "ok": false, "error": { "code": "stable_code", "message": "sanitized message" } }
 ```
 
-`inspect` 只校验文件名/源码大小、生成脚本描述并计算 SHA-256，不写入也不执行。`install` 由浏览器再次提交相同源码，后端只把它复制到 loader 数据目录，默认 `enabled: false`；即使启用也只是保存配置。`remove` 只接受 `quarantine`，通过同卷目录移动保留可恢复副本；没有永久删除 API。恢复遇到相同脚本 ID 时返回冲突，不覆盖已安装内容。当前 `/api/reload` 强制 dry-run，管理服务没有 injector。
+`inspect` 只校验文件名/源码大小、生成脚本描述并计算 SHA-256，不写入也不执行。`install` 由浏览器再次提交相同源码，后端只把它复制到 loader 数据目录，默认 `enabled: false`。`remove` 只接受 `quarantine`，通过同卷目录移动保留可恢复副本；没有永久删除 API。恢复遇到相同脚本 ID 时返回冲突，不覆盖已安装内容。离线 `serve` 只接受 `live: false`；由 `run --live` 创建且带受管 supervisor 的服务才接受显式 `live: true`。
 
-## 2. 后续扩展（尚未实现）
+## 2. 后续扩展
 
-Codex 受管启动、聚焦/重启、脚本移除/回滚、事件流、设置持久化、日志导出和 Codex++ 迁移均不在当前 API 中。加入这些功能时必须继续使用枚举路由和结构化参数，不能增加通用 command、shell 或 eval 入口。
+Codex 受管启动、脚本隔离/恢复和实时 reload 已在本地进程内部实现。聚焦/重启、版本回滚、事件流、设置持久化、日志导出和 Codex++ 自动迁移仍不在当前 API 中。加入这些功能时必须继续使用枚举路由和结构化参数，不能增加通用 command、shell 或 eval 入口。
 
 ## 3. 事件（后续阶段）
 

@@ -149,6 +149,9 @@ function sourcePayload(body, { install = false } = {}) {
   if (install && body.overwrite !== undefined && typeof body.overwrite !== "boolean") {
     throw new HttpError(400, "invalid_request", "overwrite must be a boolean");
   }
+  if (install && body.overwrite === true) {
+    throw new HttpError(400, "overwrite_forbidden", "quarantine the installed script before replacing it");
+  }
   return {
     name: body.fileName,
     sourceText: body.sourceText,
@@ -212,7 +215,7 @@ async function apiRoute(request, response, url, controller) {
   const { pathname } = url;
   if (request.method === "GET" && pathname === "/api/status") {
     const data = await controller.dispatch("get_app_status");
-    return success(response, { ...data, offline: true, codexInspected: false, cdpInspected: false });
+    return success(response, data);
   }
   if (request.method === "GET" && pathname === "/api/scripts") {
     return success(response, (await controller.dispatch("list_scripts")).map(script => serializeScript(script)));
@@ -290,11 +293,12 @@ async function apiRoute(request, response, url, controller) {
   if (request.method === "POST" && pathname === "/api/reload") {
     const body = await readJson(request);
     assertKeys(body, new Set(["ids", "live"]));
-    if (body.live !== undefined && body.live !== false) throw new HttpError(400, "live_forbidden", "this server only supports dry-run reloads");
+    if (body.live !== undefined && typeof body.live !== "boolean") throw new HttpError(400, "invalid_request", "live must be a boolean");
+    if (body.live === true && !controller.supportsLive) throw new HttpError(400, "live_forbidden", "this server is not attached to a managed Codex runtime");
     if (body.ids !== undefined && (!Array.isArray(body.ids) || body.ids.some(id => typeof id !== "string" || !SCRIPT_ID_PATTERN.test(id)))) {
       throw new HttpError(400, "invalid_request", "ids must be an array of valid script ids");
     }
-    const result = await controller.dispatch("reload_scripts", { live: false });
+    const result = await controller.dispatch("reload_scripts", { live: body.live === true, ids: body.ids || null });
     if (body.ids) result.summary = result.summary.filter(item => body.ids.includes(item.id));
     return success(response, result);
   }
@@ -306,13 +310,13 @@ async function apiRoute(request, response, url, controller) {
   throw new HttpError(404, "not_found", "API route not found");
 }
 
-export async function startManagerServer({ dataRoot, staticRoot = DEFAULT_STATIC_ROOT, port = 0 } = {}) {
-  if (typeof dataRoot !== "string" || !dataRoot) throw new TypeError("dataRoot is required");
+export async function startManagerServer({ dataRoot, staticRoot = DEFAULT_STATIC_ROOT, port = 0, registry: suppliedRegistry = null, controller: suppliedController = null } = {}) {
+  if (!suppliedController && !suppliedRegistry && (typeof dataRoot !== "string" || !dataRoot)) throw new TypeError("dataRoot is required");
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new TypeError("port must be between 0 and 65535");
   const canonicalStaticRoot = await realpath(path.resolve(staticRoot));
   if (!(await stat(canonicalStaticRoot)).isDirectory()) throw new TypeError("staticRoot must be a directory");
-  const registry = await new ScriptRegistry(path.resolve(dataRoot)).init();
-  const controller = new UiController({ registry });
+  const registry = suppliedRegistry || suppliedController?.registry || await new ScriptRegistry(path.resolve(dataRoot)).init();
+  const controller = suppliedController || new UiController({ registry });
   const token = randomBytes(32).toString("base64url");
   let expectedOrigin = null;
   let expectedHost = null;

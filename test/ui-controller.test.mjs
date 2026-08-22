@@ -36,6 +36,38 @@ test("reload defaults to a dry-run and does not touch any CDP endpoint", async (
   assert.equal(result.targetCount, 0);
 });
 
+test("live UI controller reports supervisor state and routes explicit reloads", async () => {
+  const root = await makeTempRoot();
+  const source = await makeScript(path.join(root, "source"), { id: "test.live-ui" });
+  const registry = await new ScriptRegistry(path.join(root, "data")).init();
+  await registry.install(source, { enabled: true });
+  let reloads = 0;
+  let lastTickOptions;
+  const supervisor = {
+    snapshot: () => ({ phase: "healthy", targetCount: 1, lastInjectionAt: "2026-08-03T00:00:00.000Z", lastError: null }),
+    tick: async options => {
+      reloads += 1;
+      lastTickOptions = options;
+      const plan = await registry.buildPlan();
+      return { plan, results: [{ targetId: "codex-page", injected: true }] };
+    }
+  };
+  const controller = new UiController({ registry, injector: {}, supervisor });
+  const status = await controller.dispatch("get_app_status");
+  assert.equal(status.offline, false);
+  assert.equal(status.codex, "healthy");
+  assert.equal(status.cdp, "healthy");
+  assert.equal(status.targetCount, 1);
+  assert.equal((await controller.dispatch("list_scripts"))[0].status, "running");
+  const result = await controller.dispatch("reload_scripts", { live: true, ids: ["test.live-ui"] });
+  assert.equal(result.mode, "live");
+  assert.equal(result.targetCount, 1);
+  assert.equal(reloads, 1);
+  assert.deepEqual(lastTickOptions, { force: true, restartIds: ["test.live-ui"] });
+  await controller.dispatch("set_safe_mode", { enabled: true });
+  assert.equal(reloads, 2);
+});
+
 test("script inspection does not install or execute a source", async () => {
   const root = await makeTempRoot();
   const sourcePath = path.join(root, "preview.js");

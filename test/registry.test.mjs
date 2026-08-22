@@ -37,6 +37,69 @@ test("invalid installed scripts are reported without becoming injectable", async
   assert.equal((await registry.buildPlan()).summary.length, 0);
 });
 
+test("registry reloads configuration written by another manager instance", async () => {
+  const root = await makeTempRoot();
+  const dataRoot = path.join(root, "loader-data");
+  const source = await makeScript(path.join(root, "source"), { id: "test.shared-config" });
+  const writer = await new ScriptRegistry(dataRoot).init();
+  await writer.install(source, { enabled: false });
+  const reader = await new ScriptRegistry(dataRoot).init();
+  assert.equal((await reader.buildPlan()).summary.length, 0);
+  await writer.setEnabled("test.shared-config", true);
+  await reader.reloadConfig();
+  assert.equal((await reader.buildPlan()).summary.length, 1);
+});
+
+test("config reload waits for an in-process mutation to finish", async () => {
+  const root = await makeTempRoot();
+  const dataRoot = path.join(root, "loader-data");
+  const source = await makeScript(path.join(root, "source"), { id: "test.reload-lock" });
+  const registry = await new ScriptRegistry(dataRoot).init();
+  await registry.install(source, { enabled: false });
+  const originalSave = registry.saveConfig.bind(registry);
+  let releaseSave;
+  const saveGate = new Promise(resolve => { releaseSave = resolve; });
+  registry.saveConfig = async () => {
+    await saveGate;
+    return originalSave();
+  };
+
+  const mutation = registry.setEnabled("test.reload-lock", true);
+  await new Promise(resolve => setImmediate(resolve));
+  let reloadFinished = false;
+  const reload = registry.reloadConfig().then(() => { reloadFinished = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(reloadFinished, false);
+  releaseSave();
+  await mutation;
+  await reload;
+  assert.equal(registry.config.scripts["test.reload-lock"].enabled, true);
+});
+
+test("a failed config save rolls back a new installation", async () => {
+  const root = await makeTempRoot();
+  const registry = await new ScriptRegistry(path.join(root, "data")).init();
+  const source = await makeScript(path.join(root, "source"), { id: "test.install-rollback" });
+  registry.saveConfig = async () => { throw new Error("simulated install config failure"); };
+  await assert.rejects(() => registry.install(source, { enabled: true }), /simulated install config failure/);
+  assert.deepEqual(await registry.list(), []);
+  assert.equal(registry.config.scripts["test.install-rollback"], undefined);
+});
+
+test("an invalid config forces safe mode without overwriting the file", async () => {
+  const root = await makeTempRoot();
+  const dataRoot = path.join(root, "data");
+  await mkdir(dataRoot, { recursive: true });
+  const configPath = path.join(dataRoot, "config.json");
+  await writeFile(configPath, "{ definitely-not-json", "utf8");
+  const registry = await new ScriptRegistry(dataRoot).init();
+  assert.equal(registry.config.safeMode, true);
+  assert.ok(registry.configLoadError);
+  assert.equal((await registry.buildPlan()).summary.length, 0);
+  await assert.rejects(() => registry.setSafeMode(false), /refusing to overwrite/);
+  assert.equal(await readFile(configPath, "utf8"), "{ definitely-not-json");
+});
+
 test("registry quarantines and restores scripts without permanent deletion", async () => {
   const root = await makeTempRoot();
   const source = await makeScript(path.join(root, "source"), { id: "test.recoverable", name: "Recoverable", source: "globalThis.__recoverable = true;" });
@@ -77,6 +140,7 @@ test("restore refuses conflicts and permanent removal modes", async () => {
 
   const replacement = await makeScript(path.join(root, "replacement"), { id: "test.conflict", source: "globalThis.__version = 2;" });
   await registry.install(replacement, { enabled: true });
+  await assert.rejects(() => registry.install(replacement, { enabled: true, overwrite: true }), /overwrite is not supported/);
   await assert.rejects(() => registry.restoreQuarantined(removed.key), /restore conflict/);
   assert.equal((await registry.listQuarantined()).length, 1);
   assert.match((await registry.list())[0].source, /__version = 2/);

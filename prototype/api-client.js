@@ -63,7 +63,7 @@ export function createManagerApi({ baseUrl = globalThis.location?.href, fetchImp
     removeScript: id => request(`api/scripts/${encodeURIComponent(id)}/remove`, { method: "POST", body: { mode: "quarantine" } }),
     restoreScript: key => request(`api/quarantine/${encodeURIComponent(key)}/restore`, { method: "POST", body: {} }),
     setSafeMode: enabled => request("api/safe-mode", { method: "POST", body: { enabled } }),
-    reload: ids => request("api/reload", { method: "POST", body: ids ? { ids, live: false } : { live: false } }),
+    reload: (ids, { live = false } = {}) => request("api/reload", { method: "POST", body: ids ? { ids, live } : { live } }),
     doctor: () => request("api/doctor", { method: "POST", body: {} })
   });
 }

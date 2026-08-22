@@ -9,12 +9,13 @@
   },
   "scripts": {
     "test": "node --test",
-    "check": "node --check src/cli.mjs && node --check src/manager-server.mjs && node --check prototype/api-client.js && node --check prototype/app.js && node --check scripts/browser-smoke.mjs",
+    "check": "node --check src/cli.mjs && node --check src/cdp.mjs && node --check src/live-runtime.mjs && node --check src/manager-server.mjs && node --check src/windows-platform.mjs && node --check prototype/api-client.js && node --check prototype/app.js && node --check packages/bennett-ui-improvements/index.js && node --check scripts/browser-smoke.mjs && node --check scripts/windows-platform-smoke.mjs",
     "smoke:ui": "node scripts/browser-smoke.mjs",
+    "smoke:windows": "node scripts/windows-platform-smoke.mjs",
     "serve": "node src/cli.mjs serve"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "license": "MIT"
 }

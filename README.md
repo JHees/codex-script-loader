@@ -1,97 +1,115 @@
 # Codex Script Loader
 
-一个独立于 Codex++ 和 CC Switch 的 Codex Desktop 本地脚本加载器。
+独立于 Codex++ 与 CC Switch 的 Codex Desktop 本地脚本加载器。
 
-当前仓库处于 Phase 0 可运行原型。目标是只解决一件事：安全、稳定地管理经过用户确认的本地 renderer JavaScript，随后再以受控方式加载到 Codex Desktop；不修改 Codex 会话数据库、认证信息、供应商配置或安装包。
+它使用“外部启动器 + 仅回环 CDP”启动官方 Codex，并把用户明确启用的 renderer JavaScript 加载到当前页面和后续重载页面。它不修改 Codex 安装包，不读取或重写会话、认证、供应商及 CC Switch 数据。
 
-## 核心结论
+> 当前状态：Windows MVP 已实现并通过离线、模拟 CDP、真实管理 UI 与 Windows 平台探测；真实 Codex 端到端注入仍需在完全关闭当前 Codex 后做最后一次受控验证。
 
-- 采用外部启动器 + Chrome DevTools Protocol（CDP）注入。
-- 不修改、解包或重新签名 Codex 的 `app.asar`。
-- Windows 首发，随后支持 macOS。
-- 当前使用 Node.js 本地管理服务 + 浏览器管理 UI；Rust/Tauri 不是必需条件，未来只作为可选分发壳评估。
-- CLI 作为诊断和自动化接口保留。
-- 加载器与 CC Switch 分开更新；未来只提供可选的 CLI/URI 集成接口。
-- 第一批兼容脚本是 Bennett UI Improvements。
+## 已实现
 
-## 规划文档
+- 发现并校验 Microsoft Store/AppX 版官方 Codex；
+- 检测所有官方包进程，已有实例存在时拒绝受管启动；
+- 通过 packaged activation 传入随机 `127.0.0.1` CDP 端口；
+- 验证 CDP 监听 PID 确实属于本次官方 Codex 进程族；
+- 对当前 document 注入，并为 future document 注册脚本；
+- renderer target 更换、脚本配置或哈希变化后自动恢复；
+- 脚本 `stop()` 生命周期、安全模式和无重复注入指纹；
+- 本地管理 UI：检查/安装单文件脚本、启停、实时重载、诊断、隔离和恢复；
+- 内置 Bennett UI Improvements `1.3.0` 轻量兼容包及原许可证；
+- Node.js 实现，无 npm 运行时依赖，也不要求 Rust。
+
+## 快速开始
+
+要求 Windows 11、官方 Codex Desktop 和 Node.js 22 或更高版本。
+
+先在普通终端安装并启用随仓库提供的 Bennett UI 包：
+
+```powershell
+cd "F:\Codex\Codex++ ui plugin\codex-script-loader"
+node src\cli.mjs install packages\bennett-ui-improvements --enable
+```
+
+随后完全退出所有官方 Codex 窗口和后台进程，再从这个外部终端启动受管实例：
+
+```powershell
+node src\cli.mjs run --live
+```
+
+命令会输出管理界面的随机 `http://127.0.0.1:<port>` 地址。保持终端进程运行，加载器才能在 renderer 重载后继续恢复脚本。按 `Ctrl+C` 只停止加载器，不会强制结束 Codex。
+
+如果 Codex 仍在运行，命令会在激活之前失败并提示先完全退出。加载器不会向一个没有受管 CDP 端口的既有实例强行附加。
+
+### 仅打开离线管理 UI
+
+```powershell
+node src\cli.mjs serve
+```
+
+离线 UI 可以管理脚本文件和配置，但“重新加载”只生成 dry-run 计划，不查询或连接 Codex。
+
+## 常用命令
+
+```text
+node src/cli.mjs status
+node src/cli.mjs scripts
+node src/cli.mjs doctor
+node src/cli.mjs install <file-or-directory> [--enable]
+node src/cli.mjs safe-mode <on|off>
+node src/cli.mjs reload                 # dry-run
+node src/cli.mjs serve                  # 离线管理 UI
+node src/cli.mjs run --live             # 受管启动 + 实时 UI + supervisor
+```
+
+默认数据目录是 `%APPDATA%\codex-script-loader`。开发验证可增加 `--data-dir .runtime\manual`，该目录已被 Git 忽略。
+
+## 安全边界
+
+- 不读写 `.codex/state_5.sqlite`、JSONL 会话、`auth.json` 或 `config.toml`；
+- 不读写 CC Switch 数据库、供应商或凭据；
+- 不修改、解包或重新签名 Codex 的 `app.asar`；
+- CDP 和管理服务都只使用 IPv4 loopback；
+- 管理 API 校验精确 Host/Origin、进程随机 token、JSON 类型和请求体上限；
+- API 不返回脚本源码、安装路径、CDP WebSocket URL、会话正文或认证数据；
+- “移除”只移动到加载器自己的隔离区，不提供永久删除；
+- 停用或安全模式会调用已注册脚本的 `stop()`，清理 Bennett observer、timer 和 UI。
+
+同一 Windows 用户下已经能读取本机文件或直接访问回环端口的恶意进程不在该边界内。
+
+## 验证
+
+```powershell
+npm run check
+npm test
+npm run smoke:ui
+npm run smoke:windows
+```
+
+当前共有 59 项 Node 测试。浏览器烟雾测试只访问临时管理服务；Windows 烟雾测试只读取 AppX 信息并用本进程临时端口验证 PID 归属，均不会附加当前 Codex。
+
+## Bennett UI 包
+
+目录：`packages/bennett-ui-improvements/`
+
+- 保留 Bennett 原 MIT 许可证和归属；
+- 使用 `lifecycleGlobal` 接入加载器的可靠停止/重载；
+- 兼容缺少 Codex++ IPC/设置注册 API 的 renderer 环境；
+- 只保留本地项目与所属会话的颜色提示，不覆盖 Codex 原生设置、额度、Markdown、历史、斜杠菜单或远程连接颜色。
+
+## 当前限制
+
+- 只实现 Windows AppX 启动，macOS 尚未接入；
+- 管理 UI 当前由本地浏览器承载，尚无托盘/单文件安装器；
+- 不能把 CDP 参数补加到已经运行的 Codex，首次使用必须从加载器启动；
+- Bennett 的细粒度功能开关仍保存在 Codex renderer 的 localStorage，加载器 UI 当前只控制整个脚本；
+- 首次真实受管启动与 renderer 重载回归尚待完成。
+
+## 设计文档
 
 - [需求与功能边界](docs/REQUIREMENTS.md)
 - [系统架构](docs/ARCHITECTURE.md)
 - [社区方案调研](docs/RESEARCH.md)
 - [实现流程与里程碑](docs/IMPLEMENTATION_PLAN.md)
-- [桌面管理 UI 规范](docs/UI_SPEC.md)
-- [UI 与加载器后端契约](docs/UI_BACKEND_CONTRACT.md)
-- [ADR-0001：选择外部 CDP 注入](docs/adr/0001-external-cdp-loader.md)
-- [可交互 UI 原型](prototype/README.md)
-
-## 预期命令
-
-```text
-codex-script-loader run
-codex-script-loader status
-codex-script-loader reload [script-id]
-codex-script-loader doctor
-codex-script-loader safe-mode
-codex-script-loader open-scripts
-codex-script-loader migrate-codexplusplus
-```
-
-其中 `status`、`scripts`、`doctor`、`safe-mode`、`install`、`serve` 和默认 dry-run `reload` 已在 Node Phase 0 原型中实现；带 `--live` 的真实 Codex 启动/注入仍未启用。
-
-## 运行本地管理 UI
-
-需要 Node.js 20 或更高版本，不需要安装 npm 依赖：
-
-```powershell
-npm test
-npm run check
-node src/cli.mjs serve --data-dir .runtime\manual
-```
-
-`serve` 会输出一个随机的 `http://127.0.0.1:<port>` 地址，但不会自动打开浏览器，也不会启动、停止、查询或附加当前 Codex。访问该地址后可以：
-
-- 查看离线 loader 状态和已安装脚本；
-- 检查单个 `.js` 文件并预览 ID、权限声明和 SHA-256；
-- 确认复制安装，默认保持停用，安装过程不执行源码；
-- 修改脚本启用配置和全局安全模式；
-- 把脚本可恢复地移入隔离区，并在无冲突时恢复原启用配置；不提供永久删除；
-- 生成 dry-run 加载计划；
-- 运行明确跳过 Codex 进程与 CDP 的离线诊断。
-
-## 当前实现
-
-- `src/paths.mjs`：跨平台数据目录和安全路径边界；
-- `src/manifest.mjs` / `src/hash.mjs`：manifest 校验与 SHA-256；
-- `src/registry.mjs`：本地脚本安装、启停、安全模式和注入计划；
-- `src/cdp.mjs`：loopback endpoint 校验、target 过滤、CDP 命令和注入器；
-- `src/ui-controller.mjs`：与桌面 UI 对应的白名单命令；
-- `src/manager-server.mjs`：仅绑定 IPv4 loopback 的本地管理服务与白名单 JSON API；
-- `src/cli.mjs`：离线 CLI；
-- `prototype/`：已连接本地管理 API 的管理 UI；直接以文件方式打开时仍可查看静态演示；
-- `test/`：30 个 Node 内置测试，全部使用临时目录、随机本地端口或 fake session，不连接真实 Codex；另有独立的无界面浏览器烟雾测试。
-
-## 本地管理服务安全边界
-
-- 只绑定 `127.0.0.1`，默认使用操作系统分配的随机端口；
-- 精确校验 Host 和写请求 Origin，不启用 CORS；
-- 每个进程生成独立的 256-bit 会话 token，并通过 `HttpOnly; SameSite=Strict` Cookie 限制管理请求；
-- 写请求还必须使用指定 UI header 和 `application/json`；
-- 请求体最多 600 KiB，脚本源码最多 512 KiB；
-- API 不返回脚本源码、安装绝对路径、CDP URL、Codex Cookie、会话正文或 CC Switch 凭据；
-- 管理服务没有 live injector，`reload` 只允许 `live: false`。
-- 移除只允许同卷移动到 loader 自己的隔离区；恢复冲突会拒绝操作，不会覆盖新安装脚本。
-
-该边界用于阻止普通网页跨源调用本地管理接口，但无法隔离同一 Windows 用户下已经能直接访问回环端口和本机文件的恶意进程。
-
-## 非目标
-
-- 不管理 Codex 供应商、API Key 或 OAuth。
-- 不同步、迁移或重写会话历史。
-- 不提供 Codex 主进程原生模块注入。
-- 不下载并静默执行远程脚本。
-- 不成为新的 Codex++ 或 CC Switch 分支。
-
-## 项目状态
-
-`Phase 0 prototype / 0.0.1`
+- [管理 UI 规范](docs/UI_SPEC.md)
+- [UI/后端契约](docs/UI_BACKEND_CONTRACT.md)
+- [ADR-0001：外部 CDP 注入](docs/adr/0001-external-cdp-loader.md)

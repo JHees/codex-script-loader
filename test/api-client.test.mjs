@@ -58,6 +58,19 @@ test("manager API exposes quarantine-only remove and restore routes", async () =
   assert.deepEqual(JSON.parse(calls[1].options.body), {});
 });
 
+test("manager API makes live reload an explicit request field", async () => {
+  let requestBody;
+  const api = createManagerApi({
+    baseUrl: "http://127.0.0.1:43127/",
+    fetchImpl: async (_url, options) => {
+      requestBody = JSON.parse(options.body);
+      return jsonResponse({ ok: true, data: {} });
+    }
+  });
+  await api.reload(["local.example"], { live: true });
+  assert.deepEqual(requestBody, { ids: ["local.example"], live: true });
+});
+
 test("manager API exposes sanitized HTTP errors", async () => {
   const api = createManagerApi({
     baseUrl: "http://127.0.0.1:43127/",

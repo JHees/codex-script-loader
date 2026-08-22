@@ -4,6 +4,8 @@ import http from "node:http";
 import path from "node:path";
 import { makeTempRoot } from "./helpers.mjs";
 import { startManagerServer } from "../src/manager-server.mjs";
+import { ScriptRegistry } from "../src/registry.mjs";
+import { UiController } from "../src/ui-controller.mjs";
 
 async function withServer(run) {
   const root = await makeTempRoot("codex-loader-manager-");
@@ -101,6 +103,13 @@ test("source-text workflow remains offline and dry-run only", async () => {
     assert.equal("directory" in installed.payload.data, false);
     assert.equal("source" in installed.payload.data, false);
 
+    const forbiddenOverwrite = await api(manager, cookie, "/api/scripts/install", {
+      method: "POST",
+      body: { fileName: "offline-test.js", sourceText, enabled: false, overwrite: true }
+    });
+    assert.equal(forbiddenOverwrite.response.status, 400);
+    assert.equal(forbiddenOverwrite.payload.error.code, "overwrite_forbidden");
+
     const enabled = await api(manager, cookie, "/api/scripts/local.offline-test/enabled", {
       method: "POST",
       body: { enabled: true }
@@ -128,6 +137,35 @@ test("source-text workflow remains offline and dry-run only", async () => {
     assert.equal(doctor.payload.data.checks.find(check => check.id === "cdp").status, "skipped");
     assert.equal(globalThis.__managerServerMustNotExecute, undefined);
   });
+});
+
+test("manager permits live reload only with an attached managed supervisor", async () => {
+  const root = await makeTempRoot("codex-loader-live-manager-");
+  const registry = await new ScriptRegistry(path.join(root, "data")).init();
+  let reloads = 0;
+  const supervisor = {
+    snapshot: () => ({ phase: "healthy", targetCount: 1, lastInjectionAt: null, lastError: null }),
+    tick: async () => {
+      reloads += 1;
+      return { plan: await registry.buildPlan(), results: [{ targetId: "codex-page", injected: true }] };
+    }
+  };
+  const controller = new UiController({ registry, injector: {}, supervisor });
+  const manager = await startManagerServer({ controller, port: 0 });
+  try {
+    const page = await fetch(`${manager.origin}/`);
+    const cookie = page.headers.get("set-cookie").split(";", 1)[0];
+    const status = await api(manager, cookie, "/api/status", { origin: null });
+    assert.equal(status.payload.data.offline, false);
+    assert.equal(status.payload.data.targetCount, 1);
+    const reload = await api(manager, cookie, "/api/reload", { method: "POST", body: { live: true } });
+    assert.equal(reload.response.status, 200);
+    assert.equal(reload.payload.data.mode, "live");
+    assert.equal(reload.payload.data.targetCount, 1);
+    assert.equal(reloads, 1);
+  } finally {
+    await manager.close();
+  }
 });
 
 test("manager rejects non-JSON mutations and unknown command-shaped routes", async () => {

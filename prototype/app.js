@@ -4,13 +4,14 @@ const isManagerPage = location.protocol === "http:" && location.hostname === "12
 const api = isManagerPage ? createManagerApi() : null;
 
 const demoScripts = [
-  { id: "com.bennett.ui-improvements", name: "Bennett UI Improvements", version: "1.2.4", source: "Codex++ 迁移", enabled: true, status: "running", last: "刚刚", hash: "sha256-4f7c…b318", permissions: ["DOM", "Codex renderer bridge"] },
+  { id: "co.bennett.ui-improvements", name: "Bennett UI Improvements", version: "1.3.0", source: "Codex++ 迁移", enabled: true, status: "running", last: "刚刚", hash: "sha256-8a43…3f96", permissions: ["DOM", "localStorage"] },
   { id: "local.hidden-message-fix", name: "Hidden Message Visibility Fix", version: "0.2.0", source: "本地文件", enabled: false, status: "disabled", last: "—", hash: "sha256-187a…9d20", permissions: ["DOM"] }
 ];
 
 const state = {
   managerMode: api ? "connecting" : "demo",
   managerError: "",
+  offline: Boolean(api),
   codexRunning: !api,
   codexInspected: !api,
   cdpConnected: !api,
@@ -45,6 +46,7 @@ const pages = {
 
 const checkNames = {
   "loader-data": "加载器数据目录",
+  "loader-config": "加载器配置",
   "script-integrity": "脚本完整性",
   "codex-process": "Codex 进程",
   cdp: "CDP 连接"
@@ -178,7 +180,7 @@ function applyState() {
 
   let codexLabel = "未检查 Codex";
   let codexMetric = "未检查";
-  let codexDetail = "当前阶段不会检查运行实例";
+  let codexDetail = "离线服务不会检查运行实例";
   if (state.codexInspected) {
     codexLabel = state.codexRunning ? "Codex 已连接" : "Codex 未运行";
     codexMetric = state.codexRunning ? "运行正常" : "未运行";
@@ -189,9 +191,10 @@ function applyState() {
   $("#metric-codex-detail").textContent = codexDetail;
   $("#metric-cdp").textContent = state.cdpInspected ? (state.cdpConnected ? "已连接" : "未连接") : "未检查";
   $("#metric-cdp-detail").textContent = state.cdpInspected ? `${state.targetCount} 个 renderer target` : "未查询任何调试端口";
-  $("#codex-action").textContent = api ? "暂不接管 Codex" : state.codexRunning ? "显示 Codex" : "启动 Codex";
+  const live = Boolean(api && !state.offline);
+  $("#codex-action").textContent = live ? "Codex 已受管" : api ? "未接管 Codex" : state.codexRunning ? "显示 Codex" : "启动 Codex";
   $("#codex-action").disabled = Boolean(api);
-  $("#reload-all").textContent = api ? "验证加载计划" : "重新加载全部";
+  $("#reload-all").textContent = api && !live ? "验证加载计划" : "重新加载全部";
   $("#reload-all").disabled = state.safeMode || (api ? !connected : !state.codexRunning);
   $("#safe-mode-toggle").checked = state.safeMode;
   $("#safe-mode-toggle").disabled = Boolean(api && !connected);
@@ -224,16 +227,23 @@ async function refreshManagerData({ announce = false } = {}) {
   state.managerMode = "connected";
   state.managerError = "";
   state.safeMode = Boolean(status.safeMode);
+  state.offline = status.offline !== false;
   state.codexInspected = status.codexInspected !== false;
   state.cdpInspected = status.cdpInspected !== false;
   state.codexRunning = status.codex === "healthy" || status.codex === "starting";
   state.cdpConnected = status.cdp === "healthy";
   state.targetCount = Number(status.targetCount || 0);
+  if (status.lastInjectionAt) {
+    const injectedAt = new Date(status.lastInjectionAt);
+    $("#last-injection").textContent = Number.isNaN(injectedAt.valueOf()) ? "已完成" : injectedAt.toLocaleTimeString("zh-CN", { hour12: false });
+    $("#last-injection-detail").textContent = `${state.targetCount} 个 renderer target`;
+  }
   state.scripts = scripts.map(normalizeScript);
   state.quarantine = quarantine;
   if (announce) {
-    state.activities = [{ icon: "✓", title: "本地管理服务已连接", detail: "离线安全模式；未检查 Codex/CDP", time: "刚刚" }];
-    state.logs = [[new Date().toLocaleTimeString("zh-CN", { hour12: false }), "loader", "管理 UI 已读取本地状态；未接触 Codex"]];
+    const detail = state.offline ? "离线管理模式；未检查 Codex/CDP" : `受管运行模式；${state.targetCount} 个 renderer target`;
+    state.activities = [{ icon: "✓", title: "本地管理服务已连接", detail, time: "刚刚" }];
+    state.logs = [[new Date().toLocaleTimeString("zh-CN", { hour12: false }), "loader", detail]];
   }
   applyState();
 }
@@ -288,7 +298,7 @@ async function inspectFile(file) {
 function showScriptDetails(script) {
   const [status, label] = scriptState(script);
   const permissionText = script.permissions.length ? script.permissions.join("、") : "未声明额外权限";
-  const actionLabel = api ? "验证加载计划" : "重新加载";
+  const actionLabel = api && state.offline ? "验证加载计划" : "重新加载";
   const removeAction = `<button class="button secondary" id="remove-script" type="button">移入隔离区</button>`;
   $("#dialog-content").innerHTML = `<p class="eyebrow">脚本详情</p><h2>${escapeHtml(script.name)}</h2><p>${escapeHtml(script.id)}</p><dl class="detail-grid"><dt>版本</dt><dd>${escapeHtml(script.version)}</dd><dt>来源</dt><dd>${escapeHtml(script.source)}</dd><dt>状态</dt><dd><span class="state ${status}">${label}</span></dd><dt>SHA-256</dt><dd>${escapeHtml(script.hash)}</dd><dt>权限</dt><dd>${escapeHtml(permissionText)}</dd><dt>最近注入</dt><dd>${escapeHtml(script.last)}</dd></dl><div class="dialog-actions"><button class="button secondary" value="cancel">关闭</button>${removeAction}<button class="button primary" id="reload-script" type="button" ${!script.enabled || state.safeMode ? "disabled" : ""}>${actionLabel}</button></div>`;
   $("#script-dialog").showModal();
@@ -297,11 +307,11 @@ function showScriptDetails(script) {
     button.disabled = true;
     try {
       if (api) {
-        const result = await api.reload([script.id]);
+        const result = await api.reload([script.id], { live: !state.offline });
         $("#script-dialog").close();
-        $("#last-injection").textContent = "未执行（dry-run）";
-        addActivity("脚本加载计划已验证", `${result.summary?.length || 0} 个脚本；0 个真实 target`, "↻");
-        toast("验证完成", "没有连接或修改当前 Codex");
+        $("#last-injection").textContent = state.offline ? "未执行（dry-run）" : "刚刚";
+        addActivity(state.offline ? "脚本加载计划已验证" : "脚本已重新加载", `${result.summary?.length || 0} 个脚本；${result.targetCount || 0} 个 target`, "↻");
+        toast(state.offline ? "验证完成" : "重新加载完成", state.offline ? "没有连接或修改当前 Codex" : script.name);
       } else {
         script.last = "刚刚";
         $("#script-dialog").close();
@@ -365,7 +375,7 @@ $("#script-list").addEventListener("change", async event => {
     if (api) {
       await api.setScriptEnabled(script.id, enabled);
       await refreshManagerData();
-      addActivity(`${script.name} 已${enabled ? "启用" : "停用"}`, "配置已保存；尚未注入 Codex", enabled ? "✓" : "Ⅱ");
+      addActivity(`${script.name} 已${enabled ? "启用" : "停用"}`, state.offline ? "配置已保存；离线模式未注入" : "配置已保存并同步到受管 Codex", enabled ? "✓" : "Ⅱ");
     } else {
       script.enabled = enabled;
       script.status = enabled ? "running" : "disabled";
@@ -415,7 +425,7 @@ $("#refresh-state").addEventListener("click", async event => {
   try {
     if (api) {
       await refreshManagerData();
-      toast("状态已刷新", "只读取加载器数据，没有查询 Codex");
+      toast("状态已刷新", state.offline ? "只读取加载器数据，没有查询 Codex" : "已读取受管 Codex 与脚本状态");
     } else {
       applyState();
       toast("原型状态已刷新", "静态演示没有后端数据");
@@ -435,11 +445,11 @@ $("#reload-all").addEventListener("click", async event => {
   button.disabled = true;
   try {
     if (api) {
-      const result = await api.reload();
-      $("#last-injection").textContent = "未执行（dry-run）";
+      const result = await api.reload(undefined, { live: !state.offline });
+      $("#last-injection").textContent = state.offline ? "未执行（dry-run）" : "刚刚";
       $("#last-injection-detail").textContent = `${result.summary?.length || 0} 个脚本计划已验证`;
-      addActivity("全部加载计划已验证", `${result.summary?.length || 0} 个脚本；没有连接 Codex`, "↻");
-      toast("验证完成", "没有脚本被执行");
+      addActivity(state.offline ? "全部加载计划已验证" : "全部脚本已重新加载", `${result.summary?.length || 0} 个脚本；${result.targetCount || 0} 个 target`, "↻");
+      toast(state.offline ? "验证完成" : "重新加载完成", state.offline ? "没有脚本被执行" : "受管 renderer 已更新");
     } else {
       state.scripts.filter(script => script.enabled).forEach(script => { script.last = "刚刚"; });
       $("#last-injection").textContent = "刚刚";
@@ -454,7 +464,7 @@ $("#reload-all").addEventListener("click", async event => {
 });
 
 $("#codex-action").addEventListener("click", () => {
-  if (api) return toast("当前未启用 Codex 接管", "正在运行的长任务不会受到影响");
+    if (api) return toast(state.offline ? "当前未启用 Codex 接管" : "Codex 已由加载器启动", state.offline ? "请使用 run --live 从关闭状态启动 Codex" : "加载器不会强制结束 Codex");
   toast("显示 Codex", "静态原型不会访问桌面应用");
 });
 
@@ -465,9 +475,9 @@ $("#safe-mode-toggle").addEventListener("change", async event => {
   try {
     if (api) await api.setSafeMode(enabled);
     state.safeMode = enabled;
-    addActivity(`安全模式已${enabled ? "启用" : "关闭"}`, enabled ? "所有脚本计划已暂停" : "恢复脚本启用配置；尚未注入", "!");
+    addActivity(`安全模式已${enabled ? "启用" : "关闭"}`, enabled ? "所有脚本已暂停" : state.offline ? "恢复脚本启用配置；离线模式未注入" : "恢复启用脚本并同步到受管 Codex", "!");
     applyState();
-    toast(enabled ? "安全模式已启用" : "安全模式已关闭", enabled ? "当前不会生成启用脚本的加载计划" : "脚本仍需未来 live 模式才会执行");
+    toast(enabled ? "安全模式已启用" : "安全模式已关闭", enabled ? (state.offline ? "已暂停生成启用脚本的加载计划" : "启用脚本已从受管 renderer 清理") : state.offline ? "脚本仍需 live 模式才会执行" : "启用脚本已恢复");
   } catch (error) {
     state.safeMode = previous;
     applyState();
