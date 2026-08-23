@@ -11,11 +11,12 @@ const packageDirectory = fileURLToPath(new URL("../packages/bennett-ui-improveme
 test("bundled Bennett package is valid, attributed and lifecycle-aware", async () => {
   const descriptor = await loadScriptDescriptor(packageDirectory);
   assert.equal(descriptor.id, "co.bennett.ui-improvements");
-  assert.equal(descriptor.version, "1.4.3");
+  assert.equal(descriptor.version, "1.4.5");
   assert.equal(descriptor.lifecycleGlobal, "__bennettUiImprovementsBigPizza");
   assert.match(descriptor.source, /Original license: MIT License/u);
   assert.match(descriptor.source, /show-usage-in-sidebar/u);
-  assert.match(descriptor.source, /settings-search/u);
+  assert.doesNotMatch(descriptor.source, /\bsettings-search\b/u);
+  assert.doesNotMatch(descriptor.source, /\bmatch-sidebar-width\b/u);
   assert.match(descriptor.source, /bennett-ui-native-settings-nav/u);
   assert.match(descriptor.source, /data-settings-panel-slug/u);
   assert.match(descriptor.source, /sidebar-project-backgrounds/u);
@@ -37,6 +38,9 @@ test("bundled Bennett package is valid, attributed and lifecycle-aware", async (
   assert.match(descriptor.source, /thread-markdown-export/u);
   assert.match(descriptor.source, /thread-permanent-delete/u);
   assert.match(descriptor.source, /__bennettMarkdownPreviewMath/u);
+  assert.match(descriptor.source, /looksLikeCurrencySpan/u);
+  assert.doesNotMatch(descriptor.source, /MathTableWidget/u);
+  assert.doesNotMatch(descriptor.source, /data-bennett-markdown-preview-math-table/u);
   assert.match(descriptor.source, /\/wham\/usage/u);
   assert.doesNotMatch(descriptor.source, /__bennettUiEmbeddedHistoryLoader/u);
   assert.doesNotMatch(descriptor.source, /__codexListPagebuster/u);
@@ -60,8 +64,6 @@ test("bundled Bennett package is valid, attributed and lifecycle-aware", async (
     "hide-upgrade-prompts",
     "show-usage-in-sidebar",
     "hide-usage-alert",
-    "settings-search",
-    "match-sidebar-width",
     "sidebar-project-backgrounds",
     "sidebar-conversation-colors",
     "render-markdown-preview-math",

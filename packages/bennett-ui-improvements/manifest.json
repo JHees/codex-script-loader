@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "co.bennett.ui-improvements",
   "name": "Bennett UI Improvements",
-  "version": "1.4.3",
+  "version": "1.4.5",
   "main": "index.js",
   "scope": "renderer",
   "runAt": "document-start",

@@ -15,7 +15,7 @@ function option(name, fallback) {
 }
 
 const port = Number(option("--port", "9229"));
-const expectedVersion = option("--version", "1.4.3");
+const expectedVersion = option("--version", "1.4.5");
 const captureLabel = option("--capture-label", "current").replace(/[^a-z0-9_-]+/giu, "-").replace(/^-+|-+$/gu, "") || "current";
 const packageDirectory = fileURLToPath(new URL("../packages/bennett-ui-improvements/", import.meta.url));
 const descriptor = await loadScriptDescriptor(packageDirectory);
@@ -77,6 +77,7 @@ const snapshotExpression = `(() => {
     projectStyle: document.querySelectorAll('#codexpp-sidebar-project-backgrounds').length,
     conversationStyle: document.querySelectorAll('#codexpp-sidebar-conversation-colors').length,
     settingsStyle: document.querySelectorAll('#bennett-ui-settings-style').length,
+    removedNativeDuplicateArtifacts: document.querySelectorAll('#codexpp-settings-search-style, #codexpp-match-sidebar-width, [data-codexpp-settings-search], [data-codexpp-settings-search-hidden], [data-codexpp-settings-search-highlight]').length,
     settingsPanelVisible: Boolean(document.querySelector('[data-codex-loader-settings="panel-host"] [data-bennett-ui-settings-root="true"]')),
     settingsNavPresent: Boolean(document.querySelector("nav[aria-label='设置'], nav[aria-label='Settings']")),
     floatingButtons: document.querySelectorAll('#bennett-ui-settings-launcher, #codex-script-loader-control-button').length,
@@ -168,6 +169,12 @@ try {
   if (!entryRect) throw new Error("Bennett UI entry was not mounted under Tweaks");
   await new Promise(resolve => setTimeout(resolve, 700));
   const afterSettingsOpen = await evaluate(snapshotExpression);
+  const bennettSettingsLayout = await evaluate(`(() => ({
+    sections: [...document.querySelectorAll('[data-bennett-ui-section]')].map(section => ({
+      id: section.getAttribute('data-bennett-ui-section'),
+      features: [...section.querySelectorAll('[data-bennett-ui-row]')].map(row => row.getAttribute('data-bennett-ui-row')),
+    })),
+  }))()`);
   const bennettScreenshot = await session.sendCommand("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
   const bennettScreenshotPath = path.join(screenshotDirectory, `${captureLabel}-bennett-settings.png`);
   await writeFile(bennettScreenshotPath, Buffer.from(bennettScreenshot.data, "base64"));
@@ -189,8 +196,11 @@ try {
 
   if (first.version !== expectedVersion || second.version !== expectedVersion) throw new Error(`Bennett lifecycle version does not match ${expectedVersion}`);
   if (first.loaderStatus !== "running" || second.loaderStatus !== "running") throw new Error("Loader did not report Bennett as running");
-  if (!first.hasStop || !first.hasSetFeature || first.features.length !== 11) throw new Error(`Bennett ${expectedVersion} lifecycle API or feature list is incomplete`);
+  if (!first.hasStop || !first.hasSetFeature || first.features.length !== 9) throw new Error(`Bennett ${expectedVersion} lifecycle API or feature list is incomplete`);
   if (!afterSettingsOpen.settingsPanelVisible || afterSettingsOpen.featureToggles !== first.features.length) throw new Error(`Bennett settings page did not open with all feature toggles: ${JSON.stringify(afterSettingsOpen)}`);
+  const usageSection = bennettSettingsLayout.sections.find(section => section.id === "usage");
+  if (!usageSection || JSON.stringify(usageSection.features) !== JSON.stringify(["show-usage-in-sidebar", "hide-usage-alert", "hide-upgrade-prompts"])) throw new Error(`quota settings order is incorrect: ${JSON.stringify(bennettSettingsLayout)}`);
+  if (bennettSettingsLayout.sections.some(section => section.id === "interface")) throw new Error(`obsolete Codex interface settings section is still present: ${JSON.stringify(bennettSettingsLayout)}`);
   if (toggleBefore === null || toggleChanged === toggleBefore || toggleRestored !== toggleBefore) throw new Error(`Bennett switch interaction failed: ${JSON.stringify({ toggleBefore, toggleChanged, toggleRestored })}`);
   if (first.scriptLoadId === second.scriptLoadId) throw new Error("second injection did not replace the lifecycle instance");
   if (runtimeExceptions.length) throw new Error(`renderer reported ${runtimeExceptions.length} uncaught exception(s): ${runtimeExceptions.join(" | ")}`);
@@ -200,9 +210,10 @@ try {
   if (second.settingsHost?.builtinPageCount !== 1 || second.settingsHost?.pageCount !== 1) throw new Error(`unexpected registered settings page count: ${JSON.stringify(second.settingsHost)}`);
   if (!second.settingsPanelVisible || second.featureToggles !== first.features.length) throw new Error(`Bennett settings page did not survive hot reload: ${JSON.stringify(second)}`);
   if (second.legacySettingsEntries !== 0 || second.oldNativePanels !== 0 || second.floatingButtons !== 0) throw new Error("legacy or floating settings controls are still present");
+  if (first.removedNativeDuplicateArtifacts !== 0 || second.removedNativeDuplicateArtifacts !== 0) throw new Error("removed native-duplicate settings tweaks left renderer artifacts behind");
   if (afterReturn.settingsNavPresent) throw new Error(`Codex did not leave Settings: ${JSON.stringify(afterReturn)}`);
   if (afterReturn.usageControls !== 1 || !afterReturn.usageText) throw new Error(`Bennett quota control was not restored with display content: ${JSON.stringify(afterReturn)}`);
-  console.log(JSON.stringify({ port, targetCount: targets.length, target: { id: targets[0].id, url: targets[0].url }, packageDirectory, nativeScreenshotPath, screenshotPath, bennettScreenshotPath, nativeLayoutMetrics, runtimeExceptions, unrelatedExceptions: [...unrelatedExceptions].slice(0, 5).map(([error, count]) => ({ error, count })), loaderBeforeReload, loaderAfterReload, toggleInteraction: { before: toggleBefore, changed: toggleChanged, restored: toggleRestored }, before, first, afterSettingsOpen, second, afterReturn }, null, 2));
+  console.log(JSON.stringify({ port, targetCount: targets.length, target: { id: targets[0].id, url: targets[0].url }, packageDirectory, nativeScreenshotPath, screenshotPath, bennettScreenshotPath, nativeLayoutMetrics, runtimeExceptions, unrelatedExceptions: [...unrelatedExceptions].slice(0, 5).map(([error, count]) => ({ error, count })), loaderBeforeReload, loaderAfterReload, bennettSettingsLayout, toggleInteraction: { before: toggleBefore, changed: toggleChanged, restored: toggleRestored }, before, first, afterSettingsOpen, second, afterReturn }, null, 2));
 } finally {
   await bridge.close();
   await session.close();

@@ -34,10 +34,13 @@ Focused image regions were not required: both source and implementation were cap
 2. Continuous reload QA found a P1 duplication issue: a stale settings navigation group could survive a host replacement.
    - Fix: settings-host 0.3.2 now removes stale Loader-owned groups during synchronization and shutdown, enforcing one mounted navigation group.
    - Post-fix evidence: the final live run reports one settings group, one Loader entry, one plugin entry and one panel after two reloads.
+3. Native-feature audit found that current Codex builds now provide settings search and a shared dynamic sidebar-width token.
+   - Fix: Bennett 1.4.5 keeps both former tweaks removed and returns Markdown tables, links, wrapping, and column sizing to Codex's native preview.
+   - Post-fix evidence: `v1-4-4-native-cleanup-native-settings.png` and `v1-4-4-native-cleanup-bennett-settings.png`; two reloads report zero legacy search or width-override artifacts.
 
 ## Verification
 
 - Primary interactions tested: open Loader, reload scripts, open Interface enhancements, toggle and restore a Bennett option, reload again, leave settings.
 - Console errors checked: no Loader/Bennett runtime exceptions and no unrelated renderer exceptions were recorded.
-- Final lifecycle: Bennett UI Improvements 1.4.3, 11 features, `stop()` and `setFeature()` available.
+- Final lifecycle: Bennett UI Improvements 1.4.5, 9 features, `stop()` and `setFeature()` available.
 final result: passed
