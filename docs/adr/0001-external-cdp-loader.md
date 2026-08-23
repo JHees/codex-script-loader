@@ -9,7 +9,7 @@
 
 ## 决策
 
-实现一个独立可执行文件，以受限的 loopback CDP 参数启动官方 Codex，并通过 CDP 注入本地脚本。加载器不修改 Codex `app.asar`，不使用 Codex++ helper server，也不嵌入 CC Switch。
+实现一个可审阅的 Node sidecar，以受限的 loopback CDP 参数启动官方 Codex，并通过 CDP 注入本地脚本。Windows 用户入口是普通 `.cmd` 文件，不生成或分发自制 EXE。加载器不修改 Codex `app.asar`，不使用 Codex++ helper server，也不嵌入 CC Switch。
 
 ## 理由
 
@@ -51,4 +51,3 @@
 - Codex 禁止 loopback CDP 启动；
 - macOS Owl 版本无法获得 renderer CDP target；
 - 用户明确需要 main-process/native tweak 能力。
-

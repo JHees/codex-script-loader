@@ -2,13 +2,14 @@
   "schemaVersion": 1,
   "id": "co.bennett.ui-improvements",
   "name": "Bennett UI Improvements",
-  "version": "1.3.0",
-  "entry": "index.js",
+  "version": "1.4.3",
+  "main": "index.js",
   "scope": "renderer",
   "runAt": "document-start",
   "lifecycleGlobal": "__bennettUiImprovementsBigPizza",
   "permissions": [
     "dom",
-    "local-storage"
+    "local-storage",
+    "settings"
   ]
 }

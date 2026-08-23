@@ -1,0 +1,30 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import path from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
+import { activateMacCodex, discoverMacCodex, listMacCodexProcesses, listMacLoopbackListeners, stopMacCodexProcesses } from "../src/macos-platform.mjs";
+import { makeTempRoot } from "./helpers.mjs";
+
+test("macOS platform adapter discovers, launches, inspects and stops a Codex app", async () => {
+  const root = await makeTempRoot("codex-loader-macos-");
+  const appPath = path.join(root, "Codex.app");
+  const executable = path.join(appPath, "Contents", "MacOS", "Codex");
+  await mkdir(path.dirname(executable), { recursive: true });
+  await writeFile(path.join(appPath, "Contents", "Info.plist"), "fixture", "utf8");
+  await writeFile(executable, "fixture", "utf8");
+  const plist = async (_command, args) => ({ stdout: args[1].includes("CFBundleExecutable") ? "Codex\n" : args[1].includes("CFBundleIdentifier") ? "com.openai.codex\n" : "1.2.3\n" });
+  const app = await discoverMacCodex({ candidates: [appPath], execFileFn: plist });
+  assert.equal(app.executable, executable);
+  assert.equal(app.bundleId, "com.openai.codex");
+  const processes = await listMacCodexProcesses(app, { execFileFn: async () => ({ stdout: `41 ${executable} --type=renderer\n99 /usr/bin/other\n` }) });
+  assert.deepEqual(processes.map(item => item.processId), [41]);
+  const listeners = await listMacLoopbackListeners(9229, { execFileFn: async () => ({ stdout: "p41\nn127.0.0.1:9229\n" }) });
+  assert.equal(listeners[0].processId, 41);
+  let launchArgs;
+  const launched = await activateMacCodex(app, ["--remote-debugging-port=9229"], { spawn: (_file, args) => { launchArgs = args; return { pid: 42, unref() {} }; } });
+  assert.equal(launched.processId, 42);
+  assert.deepEqual(launchArgs, ["--remote-debugging-port=9229"]);
+  const killed = [];
+  assert.deepEqual(await stopMacCodexProcesses(app, { listProcesses: async () => processes, kill: (pid, signal) => killed.push([pid, signal]) }), [41]);
+  assert.deepEqual(killed, [[41, "SIGTERM"]]);
+});

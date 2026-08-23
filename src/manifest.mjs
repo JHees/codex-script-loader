@@ -53,7 +53,7 @@ export function validateManifest(input, scriptDirectory) {
   const schemaVersion = Number(input.schemaVersion ?? 1);
   if (schemaVersion !== 1) throw new Error(`unsupported manifest schemaVersion: ${input.schemaVersion}`);
 
-  const entry = String(input.entry || "index.js");
+  const entry = String(input.main || input.entry || "index.js");
   if (!entry || entry.length > 240 || /[\u0000-\u001f\u007f]/u.test(entry) || path.isAbsolute(entry)) throw new Error("manifest entry must be a safe relative path");
   const entryPath = assertWithinDirectory(scriptDirectory, path.join(scriptDirectory, entry), "manifest entry");
   const scope = input.scope || "renderer";
@@ -74,6 +74,7 @@ export function validateManifest(input, scriptDirectory) {
     name: boundedText(input.name, id, "name", 128),
     version: boundedText(input.version, "0.0.0", "version", 64),
     entry,
+    main: entry,
     entryPath,
     scope,
     runAt,

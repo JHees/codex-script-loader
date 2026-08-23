@@ -3,12 +3,15 @@ import process from "node:process";
 import { CdpInjector, assertLoopbackEndpoint, connectCdpSession, listTargets, pickCodexTargets } from "./cdp.mjs";
 import { buildChromiumDebugArgs } from "./launcher.mjs";
 import { ScriptRegistry } from "./registry.mjs";
+import { LoaderHostBridge } from "./loader-bridge.mjs";
+import { UiController } from "./ui-controller.mjs";
 import {
   activateWindowsCodex,
   discoverWindowsCodex,
   listWindowsCodexProcesses,
   listWindowsLoopbackListeners
 } from "./windows-platform.mjs";
+import { activateMacCodex, discoverMacCodex, listMacCodexProcesses, listMacLoopbackListeners } from "./macos-platform.mjs";
 
 const DEFAULT_READY_TIMEOUT_MS = 20_000;
 const DEFAULT_POLL_INTERVAL_MS = 1_000;
@@ -105,11 +108,12 @@ function sanitizedErrorMessage(error) {
 }
 
 export class LiveSupervisor {
-  constructor({ registry, injector, targetProvider, pollIntervalMs = DEFAULT_POLL_INTERVAL_MS, onEvent = () => {} }) {
+  constructor({ registry, injector, targetProvider, hostBridge = null, pollIntervalMs = DEFAULT_POLL_INTERVAL_MS, onEvent = () => {} }) {
     if (!registry || !injector || typeof targetProvider !== "function") throw new TypeError("registry, injector and targetProvider are required");
     this.registry = registry;
     this.injector = injector;
     this.targetProvider = targetProvider;
+    this.hostBridge = hostBridge;
     this.pollIntervalMs = pollIntervalMs;
     this.onEvent = onEvent;
     this.lastSignature = null;
@@ -142,6 +146,7 @@ export class LiveSupervisor {
     await this.registry.reloadConfig();
     const plan = await this.registry.buildPlan({ forceIds: restartIds });
     const targets = pickCodexTargets(suppliedTargets ?? await this.targetProvider());
+    if (this.hostBridge) await this.hostBridge.sync({ targets });
     this.state.safeMode = Boolean(plan.safeMode);
     this.state.enabledScripts = plan.summary.length;
     this.state.targetCount = targets.length;
@@ -199,7 +204,19 @@ export class LiveSupervisor {
 
   stop() {
     this.stopped = true;
+    return this.hostBridge?.close?.();
   }
+}
+
+function createLoaderHostBridge({ registry, injector, supervisor, targetProvider, sessionFactory }) {
+  const controller = new UiController({ registry, injector, supervisor });
+  const bridge = new LoaderHostBridge({
+    targetProvider,
+    sessionFactory,
+    dispatch: (command, payload) => controller.dispatch(command, payload),
+  });
+  supervisor.hostBridge = bridge;
+  return { controller, bridge };
 }
 
 export async function startWindowsLiveRuntime({
@@ -239,20 +256,25 @@ export async function startWindowsLiveRuntime({
   const managedProcesses = await listProcesses(packageInfo);
   const listeners = await listListeners(port);
   const managedIds = new Set(managedProcesses.map(item => item.processId));
-  if (!managedIds.has(activation.processId) || listeners.length === 0 || listeners.some(listener => !managedIds.has(listener.processId))) {
+  if (listeners.length === 0 || listeners.some(listener => !managedIds.has(listener.processId))) {
     throw new Error("CDP listener ownership could not be verified as the managed Codex package");
   }
 
-  const injector = new CdpInjector({
-    targetProvider,
-    sessionFactory: endpoint => {
-      const url = assertLoopbackEndpoint(endpoint);
-      const endpointPort = Number(url.port || (url.protocol === "wss:" ? 443 : 80));
-      if (endpointPort !== port) throw new Error("CDP target endpoint port does not match the managed listener");
-      return createSession(endpoint);
-    }
-  });
+  const verifiedSessionFactory = endpoint => {
+    const url = assertLoopbackEndpoint(endpoint);
+    const endpointPort = Number(url.port || (url.protocol === "wss:" ? 443 : 80));
+    if (endpointPort !== port) throw new Error("CDP target endpoint port does not match the managed listener");
+    return createSession(endpoint);
+  };
+  const injector = new CdpInjector({ targetProvider, sessionFactory: verifiedSessionFactory });
   const supervisor = new LiveSupervisor({ registry, injector, targetProvider, pollIntervalMs, onEvent });
+  const { controller, bridge } = createLoaderHostBridge({
+    registry,
+    injector,
+    supervisor,
+    targetProvider,
+    sessionFactory: verifiedSessionFactory,
+  });
   await supervisor.tick({ force: true, targets: readyTargets });
   return Object.freeze({
     port,
@@ -261,7 +283,63 @@ export async function startWindowsLiveRuntime({
     registry,
     injector,
     supervisor,
+    controller,
+    bridge,
     run: options => supervisor.run(options),
     close: async () => supervisor.stop()
   });
+}
+
+export async function startMacLiveRuntime({ dataRoot, debugPort, pollIntervalMs = DEFAULT_POLL_INTERVAL_MS, readyTimeoutMs = DEFAULT_READY_TIMEOUT_MS, onEvent, signal, dependencies = {} } = {}) {
+  if (process.platform !== "darwin" && dependencies.allowNonMac !== true) throw new Error("macOS live launch requires darwin");
+  if (typeof dataRoot !== "string" || !dataRoot) throw new TypeError("dataRoot is required");
+  const discover = dependencies.discoverMacCodex || discoverMacCodex;
+  const listProcesses = dependencies.listMacCodexProcesses || listMacCodexProcesses;
+  const allocatePort = dependencies.allocateLoopbackPort || allocateLoopbackPort;
+  const activate = dependencies.activateMacCodex || activateMacCodex;
+  const getTargets = dependencies.listTargets || listTargets;
+  const listListeners = dependencies.listMacLoopbackListeners || listMacLoopbackListeners;
+  const createSession = dependencies.connectCdpSession || connectCdpSession;
+  const Registry = dependencies.ScriptRegistry || ScriptRegistry;
+  const packageInfo = await discover();
+  const existingProcesses = await listProcesses(packageInfo);
+  if (existingProcesses.length > 0) throw new ExistingCodexInstanceError(existingProcesses);
+  const registry = await new Registry(dataRoot).init();
+  const port = debugPort ?? await allocatePort();
+  const targetProvider = () => getTargets(port);
+  const activation = await activate(packageInfo, buildChromiumDebugArgs(port));
+  const readyTargets = await waitForCdpReady(port, { targetProvider, timeoutMs: readyTimeoutMs, signal });
+  const managedProcesses = await listProcesses(packageInfo);
+  const listeners = await listListeners(port);
+  const managedIds = new Set(managedProcesses.map(item => item.processId));
+  managedIds.add(activation.processId);
+  if (listeners.length === 0 || listeners.some(listener => !managedIds.has(listener.processId))) throw new Error("CDP listener ownership could not be verified as the managed Codex process family");
+  const verifiedSessionFactory = endpoint => {
+    const url = assertLoopbackEndpoint(endpoint);
+    const endpointPort = Number(url.port || (url.protocol === "wss:" ? 443 : 80));
+    if (endpointPort !== port) throw new Error("CDP target endpoint port does not match the managed listener");
+    return createSession(endpoint);
+  };
+  const injector = new CdpInjector({ targetProvider, sessionFactory: verifiedSessionFactory });
+  const supervisor = new LiveSupervisor({ registry, injector, targetProvider, pollIntervalMs, onEvent });
+  const { controller, bridge } = createLoaderHostBridge({
+    registry,
+    injector,
+    supervisor,
+    targetProvider,
+    sessionFactory: verifiedSessionFactory,
+  });
+  await supervisor.tick({ force: true, targets: readyTargets });
+  return Object.freeze({
+    port, packageInfo, activation, registry, injector, supervisor, controller, bridge,
+    run: options => supervisor.run(options),
+    close: async () => supervisor.stop()
+  });
+}
+
+export function startLiveRuntime(options = {}) {
+  const platform = options.platform || process.platform;
+  if (platform === "win32") return startWindowsLiveRuntime(options);
+  if (platform === "darwin") return startMacLiveRuntime(options);
+  throw new Error(`live managed launch is unsupported on ${platform}`);
 }

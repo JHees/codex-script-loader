@@ -17,7 +17,7 @@ const target = {
   id: "codex-page",
   type: "page",
   title: "Codex",
-  url: "app://codex",
+  url: "app://-/index.html",
   webSocketDebuggerUrl: "ws://127.0.0.1:43127/devtools/page/codex"
 };
 
@@ -71,6 +71,7 @@ test("managed launch activates loopback CDP, verifies ownership and injects", as
           commands.push(method);
           return method === "Page.addScriptToEvaluateOnNewDocument" ? { identifier: "future-1" } : {};
         },
+        onEvent: () => () => {},
         close: async () => {}
       })
     }
@@ -80,7 +81,17 @@ test("managed launch activates loopback CDP, verifies ownership and injects", as
     "--remote-debugging-port=43127",
     "--remote-allow-origins=http://127.0.0.1:43127"
   ]);
-  assert.deepEqual(commands, ["Runtime.enable", "Page.enable", "Page.addScriptToEvaluateOnNewDocument", "Runtime.evaluate"]);
+  assert.deepEqual(commands, [
+    "Runtime.enable",
+    "Page.enable",
+    "Runtime.addBinding",
+    "Page.addScriptToEvaluateOnNewDocument",
+    "Runtime.evaluate",
+    "Runtime.enable",
+    "Page.enable",
+    "Page.addScriptToEvaluateOnNewDocument",
+    "Runtime.evaluate"
+  ]);
   assert.equal(runtime.supervisor.snapshot().phase, "healthy");
   assert.equal(runtime.supervisor.snapshot().targetCount, 1);
   assert.equal(events[0].type, "scripts-injected");

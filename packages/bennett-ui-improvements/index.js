@@ -21,11 +21,10 @@
   "use strict";
 
   const INSTALL_KEY = "__bennettUiImprovementsBigPizza";
-  const VERSION = "1.3.0";
-  const HISTORY_TARGET_STORAGE_KEY = "__codexListPagebusterTarget";
-  const HISTORY_TARGET_DEFAULT = 500;
-  const HISTORY_TARGET_MIN = 1;
-  const HISTORY_TARGET_MAX = 2000;
+  const VERSION = "1.4.3";
+  const PROJECT_COLOR_STORAGE_KEY = "sidebar-project-backgrounds:colors";
+  const LEGACY_STORAGE_PREFIX = "bennett-ui-improvements:";
+  const LOADER_STORAGE_PREFIX = "codex-script-loader:co.bennett.ui-improvements:";
   const SCRIPT_LOAD_ID = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const lifecycleTimers = new Set();
   const lifecycleSignatures = new Set();
@@ -33,65 +32,79 @@
     {
       id: "hide-upgrade-prompts",
       title: "隐藏升级提示",
-      detail: "隐藏 Plus/Pro 套餐升级提示，但保留 Codex 软件更新提示。",
+      detail: "隐藏套餐升级提示，保留 Codex 软件更新通知。",
       defaultEnabled: true,
       status: "可用",
     },
     {
       id: "show-usage-in-sidebar",
-      title: "5 小时 / 周 / Credit 额度",
-      detail: "优先通过 Codex renderer fetch bridge 读取 /wham/usage；默认显示 5h，点击可切换 Weekly；只有实际收到点数数据时才显示 Credit，API 模式显示 API。",
+      title: "侧栏额度显示",
+      detail: "在侧栏显示 5 小时和每周额度；点击额度可切换周期，有 Credit 数据时一并显示。",
       defaultEnabled: true,
       status: "当前页面暴露额度信号时可用",
     },
     {
       id: "hide-usage-alert",
       title: "隐藏额度耗尽提示",
-      detail: "隐藏额度用完后的弹窗、重置提示和额度卡片。",
+      detail: "隐藏额度用尽后的弹窗、重置提示和额度卡片。",
       defaultEnabled: true,
       status: "可用",
     },
     {
       id: "settings-search",
       title: "设置搜索",
-      detail: "给 Codex 设置页增加搜索框。",
+      detail: "在 Codex 设置页顶部显示搜索框。",
       defaultEnabled: true,
       status: "可用",
     },
     {
       id: "match-sidebar-width",
-      title: "匹配设置页侧栏宽度",
-      detail: "让设置页侧栏宽度与主侧栏对齐。",
+      title: "统一设置侧栏宽度",
+      detail: "让设置侧栏与 Codex 主侧栏保持一致。",
       defaultEnabled: true,
       status: "可用",
     },
     {
       id: "sidebar-project-backgrounds",
-      title: "项目背景和颜色",
-      detail: "为项目行增加分组背景，并保留旧的项目颜色偏好。",
+      title: "项目分组与颜色",
+      detail: "为项目行添加分组背景，并保留已有的项目颜色。",
       defaultEnabled: true,
       status: "可用",
     },
     {
       id: "sidebar-conversation-colors",
-      title: "会话项目着色",
-      detail: "让会话行继承所属项目的颜色；无法识别项目的会话保持默认样式。",
+      title: "会话按项目着色",
+      detail: "让会话沿用所属项目颜色，未归属项目的会话保持默认样式。",
       defaultEnabled: true,
       status: "可用",
     },
     {
       id: "render-markdown-preview-math",
-      title: "Markdown 预览增强",
-      detail: "在右侧 .md 文件预览中渲染 LaTeX、数学表格和图片；相对图片路径以当前文档为基准，点击内容可原位编辑源码。",
+      title: "Markdown 预览",
+      detail: "在 .md 预览中显示 LaTeX、表格和图片；点击内容可直接编辑源码。",
       defaultEnabled: true,
       status: "支持 $…$、$$…$$、\\(…\\) 和 \\[…\\]",
     },
     {
       id: "slash-menu-polish",
       title: "斜杠菜单优化",
-      detail: "压缩斜杠菜单行距，并强化选中状态。",
+      detail: "收紧斜杠菜单间距，并突出当前选项。",
       defaultEnabled: true,
       status: "可用",
+    },
+    {
+      id: "thread-markdown-export",
+      title: "会话 Markdown 导出",
+      detail: "在会话右键菜单中导出用户与助手消息，不包含工具数据或隐藏上下文。",
+      defaultEnabled: true,
+      status: "本地普通会话可用；直接使用 Codex 原生 App Server",
+    },
+    {
+      id: "thread-permanent-delete",
+      title: "会话永久删除",
+      detail: "在 Codex 原生会话右键菜单底部增加永久删除；确认后不可恢复。",
+      defaultEnabled: true,
+      status: "本地普通会话可用；不提供撤销或 Codex++ 备份",
     },
   ]);
   const FEATURE_IDS = Object.freeze(FEATURE_DEFINITIONS.map(({ id }) => id));
@@ -111,10 +124,7 @@
     };
     window.__bennettUiLastLifecycle = payload;
     try {
-      const bridge = window.__codexSessionDeleteBridge;
-      if (typeof bridge === "function") {
-        Promise.resolve(bridge("/diagnostics/log", payload)).catch(() => {});
-      }
+      window.dispatchEvent(new CustomEvent("bennett-ui-lifecycle", { detail: payload }));
     } catch (_) {}
   }
 
@@ -164,6 +174,10 @@
  *                                 project rows in the main sidebar.
  *  • sidebar-conversation-colors Color conversation rows by their native
  *                                 project association.
+ *  • thread-markdown-export Export user and assistant messages from the
+ *                            native thread menu through Codex App Server.
+ *  • thread-permanent-delete Permanently delete a local thread after an
+ *                             explicit irreversible-action confirmation.
  *  • slash-menu-polish  Tightens the composer slash menu with denser rows,
  *                       clearer active state, and calmer section headers.
  *
@@ -241,9 +255,826 @@ function deactivateFeature(state, id) {
   }
 }
 
+const SESSION_ACTION_EXPORT = "export";
+const SESSION_ACTION_DELETE = "delete";
+const sessionThreadActions = createSessionThreadActionsManager();
+
+function createSessionThreadActionsManager() {
+  const THREAD_SELECTOR = "[data-app-action-sidebar-thread-row]";
+  const STYLE_ID = "bennett-thread-context-actions-style";
+  const TOAST_ID = "bennett-thread-context-actions-toasts";
+  const DIALOG_ATTR = "data-bennett-thread-delete-dialog";
+  const EXPORT_ITEM_ID = "bennett-thread-export-markdown";
+  const DELETE_SEPARATOR_ID = "bennett-thread-danger-separator";
+  const DELETE_ITEM_ID = "bennett-thread-delete-permanently";
+  const MENU_SOURCE_MARKERS = [
+    "rename-thread",
+    "archive-thread",
+    "move-thread-to-project",
+    "copy-thread-actions",
+  ];
+  const enabledActions = new Set();
+  const patchedMenuRefs = new Map();
+  const uiTimers = new Set();
+  const retryTimers = new Set();
+  const inFlight = new Set();
+  let api = null;
+  let observer = null;
+  let scanTimer = 0;
+  let resolverPromise = null;
+  let onThreadPointerDown = null;
+  let onWindowFocus = null;
+
+  const log = (level, ...args) => {
+    const target = api?.log?.[level] || console[level] || console.log;
+    try {
+      target.call(api?.log || console, ...args);
+    } catch {}
+  };
+
+  const isChinese = () => /^zh(?:-|$)/i.test(
+    document.documentElement.lang || navigator.language || "",
+  );
+
+  const labels = () => isChinese()
+    ? {
+        export: "导出 Markdown",
+        delete: "永久删除",
+        deleteTitle: "永久删除会话？",
+        deleteBody: "此操作会永久删除“{title}”及其本地数据，且无法撤销。",
+        cancel: "取消",
+        confirmDelete: "永久删除",
+        exporting: "正在导出会话…",
+        exported: "Markdown 已导出",
+        deleting: "正在永久删除会话…",
+        deleted: "会话已永久删除",
+        staleDelete: "删除请求已完成；如果侧栏仍显示该会话，请稍后刷新 Codex。",
+        unavailable: "Codex 原生会话接口暂不可用",
+      }
+    : {
+        export: "Export Markdown",
+        delete: "Delete permanently",
+        deleteTitle: "Delete this chat permanently?",
+        deleteBody: "This permanently deletes “{title}” and its local data. This cannot be undone.",
+        cancel: "Cancel",
+        confirmDelete: "Delete permanently",
+        exporting: "Exporting chat…",
+        exported: "Markdown exported",
+        deleting: "Deleting chat permanently…",
+        deleted: "Chat deleted permanently",
+        staleDelete: "The delete request completed. Refresh Codex later if the chat remains in the sidebar.",
+        unavailable: "The native Codex chat service is unavailable",
+      };
+
+  const nativeMessage = (id, defaultMessage) => ({
+    id: `bennettUi.threadActions.${id}`,
+    defaultMessage,
+    description: "Bennett UI native thread context action",
+  });
+
+  const svgIcon = (path) => {
+    const svg = `<svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="${path}" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+    return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+  };
+
+  const EXPORT_ICON = svgIcon("M10 2.75v9.5m0 0 3.25-3.25M10 12.25 6.75 9M4 13.75v1.5A2 2 0 0 0 6 17.25h8a2 2 0 0 0 2-2v-1.5");
+  const DELETE_ICON = svgIcon("M3.75 5.25h12.5M8 2.75h4l.75 2.5M6 7.5l.5 8.25h7L14 7.5M8.5 9.25v4.5m3-4.5v4.5");
+
+  function ensureStyle() {
+    document.getElementById(STYLE_ID)?.remove();
+    const style = document.createElement("style");
+    style.id = STYLE_ID;
+    style.textContent = `
+      ${THREAD_SELECTOR} .codex-session-more-button,
+      ${THREAD_SELECTOR} .codex-delete-button,
+      ${THREAD_SELECTOR} .codex-session-action-group,
+      ${THREAD_SELECTOR} .codex-session-action-button {
+        display: none !important;
+      }
+
+      #${TOAST_ID} {
+        position: fixed;
+        z-index: 2147483646;
+        right: 20px;
+        bottom: 20px;
+        display: flex;
+        width: min(380px, calc(100vw - 32px));
+        flex-direction: column;
+        gap: 8px;
+        pointer-events: none;
+      }
+
+      #${TOAST_ID} .bennett-thread-toast {
+        box-sizing: border-box;
+        border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+        border-radius: 10px;
+        background: var(--color-token-bg-primary, #202020);
+        box-shadow: 0 10px 35px rgba(0, 0, 0, 0.3);
+        color: var(--color-token-text-primary, #f4f4f4);
+        font-size: 13px;
+        line-height: 1.4;
+        padding: 10px 12px;
+        pointer-events: auto;
+      }
+
+      #${TOAST_ID} .bennett-thread-toast[data-tone="error"] {
+        border-color: color-mix(in srgb, var(--red-400, #fa423e) 55%, transparent);
+      }
+
+      [${DIALOG_ATTR}] {
+        position: fixed;
+        z-index: 2147483647;
+        inset: 0;
+        display: grid;
+        box-sizing: border-box;
+        width: 100vw;
+        max-width: none;
+        height: 100vh;
+        max-height: none;
+        margin: 0;
+        border: 0;
+        place-items: center;
+        background: rgba(0, 0, 0, 0.56);
+        padding: 20px;
+      }
+
+      [${DIALOG_ATTR}]::backdrop {
+        background: transparent;
+      }
+
+      [${DIALOG_ATTR}] .bennett-thread-delete-card {
+        box-sizing: border-box;
+        width: min(440px, 100%);
+        border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+        border-radius: 14px;
+        background: var(--color-token-bg-primary, #202020);
+        box-shadow: 0 18px 60px rgba(0, 0, 0, 0.45);
+        color: var(--color-token-text-primary, #f4f4f4);
+        padding: 20px;
+      }
+
+      [${DIALOG_ATTR}] h2 {
+        margin: 0 0 8px;
+        font-size: 18px;
+        line-height: 1.35;
+      }
+
+      [${DIALOG_ATTR}] p {
+        margin: 0;
+        color: var(--color-token-text-secondary, #b4b4b4);
+        font-size: 13px;
+        line-height: 1.55;
+      }
+
+      [${DIALOG_ATTR}] .bennett-thread-delete-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        margin-top: 20px;
+      }
+
+      [${DIALOG_ATTR}] button {
+        min-height: 34px;
+        border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+        border-radius: 8px;
+        background: color-mix(in srgb, currentColor 8%, transparent);
+        color: inherit;
+        cursor: pointer;
+        padding: 6px 12px;
+      }
+
+      [${DIALOG_ATTR}] button:hover {
+        background: color-mix(in srgb, currentColor 13%, transparent);
+      }
+
+      [${DIALOG_ATTR}] .bennett-thread-delete-confirm {
+        border-color: var(--red-400, #fa423e);
+        background: var(--red-400, #fa423e);
+        color: white;
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function showToast(message, tone = "info", timeout = 3800) {
+    let root = document.getElementById(TOAST_ID);
+    if (!root) {
+      root = document.createElement("div");
+      root.id = TOAST_ID;
+      root.setAttribute("aria-live", "polite");
+      document.body.appendChild(root);
+    }
+    const toast = document.createElement("div");
+    toast.className = "bennett-thread-toast";
+    toast.dataset.tone = tone;
+    toast.textContent = String(message || "");
+    root.appendChild(toast);
+    const timer = window.setTimeout(() => {
+      uiTimers.delete(timer);
+      toast.remove();
+      if (!root.childElementCount) root.remove();
+    }, timeout);
+    uiTimers.add(timer);
+  }
+
+  function reactFiberFor(node) {
+    if (!(node instanceof HTMLElement)) return null;
+    const key = Object.getOwnPropertyNames(node).find((name) => name.startsWith("__reactFiber$"));
+    return key ? node[key] : null;
+  }
+
+  function threadContextFor(row) {
+    if (!(row instanceof HTMLElement)) return null;
+    const hostId = row.getAttribute("data-app-action-sidebar-thread-host-id") || "";
+    const kind = row.getAttribute("data-app-action-sidebar-thread-kind") || "";
+    const threadKey = row.getAttribute("data-app-action-sidebar-thread-id") || "";
+    const title = row.getAttribute("data-app-action-sidebar-thread-title") ||
+      row.getAttribute("aria-label") || "Untitled chat";
+    let ephemeral = /^(?:true|1)$/i.test(
+      row.getAttribute("data-app-action-sidebar-thread-ephemeral") || "",
+    );
+    for (let fiber = reactFiberFor(row), depth = 0; fiber && depth < 18; depth += 1, fiber = fiber.return) {
+      for (const props of [fiber.memoizedProps, fiber.pendingProps]) {
+        if (props?.isAeonThread === true || props?.isEphemeral === true) ephemeral = true;
+      }
+    }
+    if (hostId !== "local" || kind !== "local" || !threadKey || ephemeral) return null;
+    return {
+      row,
+      hostId,
+      kind,
+      threadKey,
+      threadId: threadKey.replace(/^local:/, ""),
+      title: String(title).trim() || "Untitled chat",
+    };
+  }
+
+  function threadMenuRefFor(row) {
+    const fibers = [];
+    for (let fiber = reactFiberFor(row), depth = 0; fiber && depth < 20; depth += 1, fiber = fiber.return) {
+      fibers.push(fiber, fiber.alternate);
+    }
+    const visited = new Set();
+    for (const fiber of fibers) {
+      if (!fiber || visited.has(fiber)) continue;
+      visited.add(fiber);
+      let hook = fiber.memoizedState;
+      for (let index = 0; hook && index < 160; index += 1, hook = hook.next) {
+        const ref = hook.memoizedState;
+        const candidate = ref?.current;
+        if (typeof candidate !== "function") continue;
+        let source = "";
+        try {
+          source = Function.prototype.toString.call(candidate);
+        } catch {}
+        if (MENU_SOURCE_MARKERS.every((marker) => source.includes(marker))) return ref;
+      }
+    }
+    return null;
+  }
+
+  function restoreMenuRef(ref, record) {
+    if (ref?.current === record.wrapped) ref.current = record.original;
+    patchedMenuRefs.delete(ref);
+  }
+
+  function appendThreadActions(items, context) {
+    if (!Array.isArray(items) || !context) return items;
+    const next = items.filter((item) => ![
+      EXPORT_ITEM_ID,
+      DELETE_SEPARATOR_ID,
+      DELETE_ITEM_ID,
+    ].includes(item?.id));
+    const text = labels();
+
+    if (enabledActions.has(SESSION_ACTION_EXPORT)) {
+      const exportItem = {
+        id: EXPORT_ITEM_ID,
+        icon: EXPORT_ICON,
+        message: nativeMessage("exportMarkdown", text.export),
+        onSelect: () => void exportThread(context),
+      };
+      const copyIndex = next.findIndex((item) => item?.id === "copy-thread-actions");
+      const newWindowIndex = next.findIndex((item) => item?.id === "new-window-separator");
+      const insertAt = copyIndex >= 0 ? copyIndex : newWindowIndex >= 0 ? newWindowIndex : next.length;
+      next.splice(insertAt, 0, exportItem);
+    }
+
+    if (enabledActions.has(SESSION_ACTION_DELETE)) {
+      if (next.length && next[next.length - 1]?.type !== "separator") {
+        next.push({ id: DELETE_SEPARATOR_ID, type: "separator" });
+      }
+      next.push({
+        id: DELETE_ITEM_ID,
+        icon: DELETE_ICON,
+        message: nativeMessage("deletePermanently", text.delete),
+        destructive: true,
+        danger: true,
+        tone: "danger",
+        onSelect: () => void deleteThreadPermanently(context),
+      });
+    }
+    return next;
+  }
+
+  function patchMenus() {
+    const activeRefs = new Set();
+    for (const row of document.querySelectorAll(THREAD_SELECTOR)) {
+      const context = threadContextFor(row);
+      if (!context) continue;
+      const ref = threadMenuRefFor(row);
+      if (!ref) continue;
+      activeRefs.add(ref);
+      let record = patchedMenuRefs.get(ref);
+      if (record && ref.current === record.wrapped) {
+        record.context = context;
+        continue;
+      }
+      if (record) patchedMenuRefs.delete(ref);
+      let original = ref.current;
+      if (typeof original !== "function") continue;
+      if (original.__bennettThreadMenuOriginal) original = original.__bennettThreadMenuOriginal;
+      record = { context, original, wrapped: null };
+      record.wrapped = function bennettThreadContextItems(...args) {
+        const result = record.original.apply(this, args);
+        if (result && typeof result.then === "function") {
+          return result.then((items) => appendThreadActions(items, record.context));
+        }
+        return appendThreadActions(result, record.context);
+      };
+      record.wrapped.__bennettThreadMenuOriginal = original;
+      try {
+        ref.current = record.wrapped;
+        if (ref.current === record.wrapped) patchedMenuRefs.set(ref, record);
+      } catch (error) {
+        log("warn", "thread native menu hook unavailable", error);
+      }
+    }
+    for (const [ref, record] of patchedMenuRefs) {
+      if (!activeRefs.has(ref)) restoreMenuRef(ref, record);
+    }
+  }
+
+  function schedulePatch(delay = 80) {
+    if (!enabledActions.size) return;
+    if (scanTimer) window.clearTimeout(scanTimer);
+    scanTimer = window.setTimeout(() => {
+      scanTimer = 0;
+      patchMenus();
+    }, delay);
+  }
+
+  function scopeFromRow(row) {
+    const requiredFunctions = ["get", "set", "watch", "when"];
+    const candidates = [];
+    for (let fiber = reactFiberFor(row), depth = 0; fiber && depth < 20; depth += 1, fiber = fiber.return) {
+      for (const candidateFiber of [fiber, fiber.alternate]) {
+        let hook = candidateFiber?.memoizedState;
+        for (let index = 0; hook && index < 160; index += 1, hook = hook.next) {
+          const state = hook.memoizedState;
+          candidates.push(state?.current, state?.scope, state);
+        }
+      }
+    }
+    return candidates.find((candidate) =>
+      candidate && typeof candidate === "object" &&
+      "query" in candidate && "queryClient" in candidate &&
+      requiredFunctions.every((key) => typeof candidate[key] === "function"),
+    ) || null;
+  }
+
+  function localModuleUrl(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    try {
+      const url = new URL(raw, document.baseURI);
+      return url.protocol === "app:" && url.host === new URL(document.baseURI).host ? url.href : "";
+    } catch {
+      return "";
+    }
+  }
+
+  async function discoverAppInitialUrls() {
+    const urls = new Set();
+    const collect = (value, base = document.baseURI) => {
+      const match = String(value || "").match(
+        /(?:\.\/|\/)?(?:assets\/)?app-initial-[A-Za-z0-9_-]+\.js/,
+      );
+      if (match) {
+        let resolved = match[0];
+        try {
+          resolved = new URL(match[0], base).href;
+        } catch {}
+        const url = localModuleUrl(resolved);
+        if (url) urls.add(url);
+      }
+    };
+    for (const script of document.querySelectorAll("script[src]")) collect(script.src);
+    try {
+      for (const resource of performance.getEntriesByType("resource")) collect(resource.name);
+    } catch {}
+    for (const script of document.querySelectorAll("script[src]")) {
+      const src = localModuleUrl(script.src);
+      if (!src) continue;
+      try {
+        const response = await fetch(src);
+        if (response.ok) collect(await response.text(), src);
+      } catch {}
+    }
+    return Array.from(urls);
+  }
+
+  function resolverFromModule(mod) {
+    for (const value of Object.values(mod || {})) {
+      if (typeof value !== "function") continue;
+      try {
+        const source = Function.prototype.toString.call(value);
+        if (source.includes("AppServerManager RPC is not connected") && source.includes(".forHost(")) {
+          return value;
+        }
+      } catch {}
+    }
+    return null;
+  }
+
+  async function loadResolver() {
+    if (!resolverPromise) {
+      resolverPromise = (async () => {
+        let lastError = null;
+        for (const url of await discoverAppInitialUrls()) {
+          try {
+            const mod = await import(url);
+            const resolver = resolverFromModule(mod);
+            if (resolver) return resolver;
+          } catch (error) {
+            lastError = error;
+          }
+        }
+        throw lastError || new Error(labels().unavailable);
+      })().catch((error) => {
+        resolverPromise = null;
+        throw error;
+      });
+    }
+    return resolverPromise;
+  }
+
+  async function sendNativeRequest(context, method, payload) {
+    const scope = scopeFromRow(context.row);
+    if (!scope) throw new Error(labels().unavailable);
+    const resolver = await loadResolver();
+    const client = resolver(scope, context.hostId);
+    if (!client || typeof client.sendRequest !== "function") {
+      throw new Error(labels().unavailable);
+    }
+    return client.sendRequest(method, payload);
+  }
+
+  function threadFromResponse(response) {
+    return response?.thread || response?.result?.thread || response?.result || response;
+  }
+
+  function timestampValue(value) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value < 1e12 ? value * 1000 : value;
+    }
+    const parsed = Date.parse(String(value || ""));
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function displayTimestamp(value) {
+    const timestamp = timestampValue(value);
+    if (!timestamp) return "Unknown time";
+    try {
+      return new Intl.DateTimeFormat(undefined, {
+        dateStyle: "medium",
+        timeStyle: "medium",
+      }).format(new Date(timestamp));
+    } catch {
+      return new Date(timestamp).toISOString();
+    }
+  }
+
+  function oneLine(value, fallback = "") {
+    return String(value ?? fallback).replace(/[\r\n]+/g, " ").trim();
+  }
+
+  function codeSpan(value) {
+    return `\`${String(value ?? "").replace(/`/g, "\\`")}\``;
+  }
+
+  function markdownForThread(thread, fallbackContext) {
+    const title = oneLine(thread?.name || thread?.title || fallbackContext.title, "Untitled chat");
+    const exportedAt = new Date().toISOString();
+    const cwd = thread?.cwd || thread?.workspace?.cwd || "";
+    const lines = [
+      `# ${title}`,
+      "",
+      `- Exported: ${exportedAt}`,
+      `- Thread ID: ${codeSpan(thread?.id || fallbackContext.threadId)}`,
+    ];
+    if (cwd) lines.push(`- Working directory: ${codeSpan(cwd)}`);
+    lines.push("");
+
+    const turns = Array.isArray(thread?.turns)
+      ? thread.turns.map((turn, index) => ({ turn, index })).sort((a, b) => {
+          const delta = timestampValue(a.turn?.startedAt || a.turn?.createdAt) -
+            timestampValue(b.turn?.startedAt || b.turn?.createdAt);
+          return delta || a.index - b.index;
+        })
+      : [];
+    let messageCount = 0;
+    for (const { turn } of turns) {
+      const time = displayTimestamp(turn?.startedAt || turn?.createdAt);
+      const items = Array.isArray(turn?.items) ? turn.items : [];
+      for (const item of items) {
+        if (item?.type === "userMessage") {
+          const parts = [];
+          const content = Array.isArray(item.content) ? item.content : [];
+          for (const part of content) {
+            if (typeof part === "string" && part.trim()) parts.push(part.trim());
+            else if (part?.type === "text" && String(part.text || "").trim()) parts.push(String(part.text).trim());
+            else if (part?.type === "localImage" && part.path) {
+              parts.push(`*[Local image: ${codeSpan(part.path)}]*`);
+            }
+          }
+          if (!parts.length && String(item.text || "").trim()) parts.push(String(item.text).trim());
+          if (!parts.length) continue;
+          lines.push(`## User — ${time}`, "", parts.join("\n\n"), "");
+          messageCount += 1;
+          continue;
+        }
+        if (item?.type !== "agentMessage") continue;
+        const phase = String(item.phase || "").toLowerCase();
+        if (phase === "analysis" || phase === "reasoning") continue;
+        const text = String(item.text || "").trim();
+        if (!text) continue;
+        lines.push(`## Assistant — ${time}`, "", text, "");
+        messageCount += 1;
+      }
+    }
+    if (!messageCount) lines.push("*No exportable user or assistant messages were found.*", "");
+    return `${lines.join("\n").trim()}\n`;
+  }
+
+  function safeFilename(title) {
+    const date = new Date().toISOString().slice(0, 10);
+    const base = oneLine(title, "Codex chat")
+      .replace(/[<>:\"/\\|?*\u0000-\u001f]/g, "-")
+      .replace(/[. ]+$/g, "")
+      .slice(0, 96) || "Codex chat";
+    return `${base}-${date}.md`;
+  }
+
+  async function saveMarkdown(filename, markdown) {
+    const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
+    if (typeof window.showSaveFilePicker === "function") {
+      try {
+        const handle = await window.showSaveFilePicker({
+          suggestedName: filename,
+          types: [{
+            description: "Markdown",
+            accept: { "text/markdown": [".md"] },
+          }],
+        });
+        const writable = await handle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+        return true;
+      } catch (error) {
+        if (error?.name === "AbortError") return false;
+        throw error;
+      }
+    }
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.style.display = "none";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    return true;
+  }
+
+  async function exportThread(context) {
+    const key = `${SESSION_ACTION_EXPORT}:${context.threadKey}`;
+    if (inFlight.has(key)) return;
+    inFlight.add(key);
+    showToast(labels().exporting, "info", 1800);
+    try {
+      const response = await sendNativeRequest(context, "thread/read", {
+        threadId: context.threadId,
+        includeTurns: true,
+      });
+      const thread = threadFromResponse(response);
+      const markdown = markdownForThread(thread, context);
+      const saved = await saveMarkdown(safeFilename(thread?.name || context.title), markdown);
+      if (saved) showToast(labels().exported);
+    } catch (error) {
+      log("error", "thread Markdown export failed", error);
+      showToast(error?.message || String(error), "error", 6000);
+    } finally {
+      inFlight.delete(key);
+    }
+  }
+
+  function confirmPermanentDelete(context) {
+    document.querySelector(`[${DIALOG_ATTR}]`)?.remove();
+    const text = labels();
+    const overlay = document.createElement("dialog");
+    overlay.setAttribute(DIALOG_ATTR, "true");
+    overlay.innerHTML = `
+      <div class="bennett-thread-delete-card" role="dialog" aria-modal="true" aria-labelledby="bennett-thread-delete-title">
+        <h2 id="bennett-thread-delete-title"></h2>
+        <p></p>
+        <div class="bennett-thread-delete-actions">
+          <button type="button" data-bennett-delete-cancel="true"></button>
+          <button type="button" class="bennett-thread-delete-confirm" data-bennett-delete-confirm="true"></button>
+        </div>
+      </div>
+    `;
+    overlay.querySelector("h2").textContent = text.deleteTitle;
+    overlay.querySelector("p").textContent = text.deleteBody.replace("{title}", context.title);
+    const cancel = overlay.querySelector("[data-bennett-delete-cancel]");
+    const confirm = overlay.querySelector("[data-bennett-delete-confirm]");
+    cancel.textContent = text.cancel;
+    confirm.textContent = text.confirmDelete;
+    const previousFocus = document.activeElement;
+    document.body.appendChild(overlay);
+    if (typeof overlay.showModal === "function") overlay.showModal();
+    else overlay.setAttribute("open", "");
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        window.removeEventListener("keydown", onKeyDown, true);
+        window.removeEventListener("keyup", onKeyDown, true);
+        overlay.remove();
+        if (previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus();
+        resolve(value);
+      };
+      const onKeyDown = (event) => {
+        if (event.key !== "Escape") return;
+        event.preventDefault();
+        event.stopPropagation();
+        finish(false);
+      };
+      cancel.addEventListener("click", () => finish(false));
+      confirm.addEventListener("click", () => finish(true));
+      overlay.addEventListener("click", (event) => {
+        if (event.target === overlay) finish(false);
+      });
+      overlay.addEventListener("cancel", (event) => {
+        event.preventDefault();
+        finish(false);
+      });
+      // Listen on window so Codex's document-level shortcuts cannot consume
+      // Escape before the irreversible-action dialog sees it.
+      window.addEventListener("keydown", onKeyDown, true);
+      window.addEventListener("keyup", onKeyDown, true);
+      window.queueMicrotask(() => cancel.focus());
+    });
+  }
+
+  async function deleteThreadPermanently(context) {
+    const key = `${SESSION_ACTION_DELETE}:${context.threadKey}`;
+    if (inFlight.has(key)) return;
+    if (!await confirmPermanentDelete(context)) return;
+    inFlight.add(key);
+    showToast(labels().deleting, "info", 1800);
+    try {
+      const readResponse = await sendNativeRequest(context, "thread/read", {
+        threadId: context.threadId,
+        includeTurns: false,
+      });
+      const thread = threadFromResponse(readResponse);
+      if (thread?.ephemeral === true || thread?.isEphemeral === true) {
+        throw new Error("Ephemeral chats cannot be permanently deleted");
+      }
+      await sendNativeRequest(context, "thread/delete", { threadId: context.threadId });
+      showToast(labels().deleted);
+      const timer = window.setTimeout(() => {
+        uiTimers.delete(timer);
+        if (context.row?.isConnected) showToast(labels().staleDelete, "info", 6000);
+      }, 2200);
+      uiTimers.add(timer);
+    } catch (error) {
+      log("error", "thread permanent delete failed", error);
+      showToast(error?.message || String(error), "error", 6000);
+    } finally {
+      inFlight.delete(key);
+    }
+  }
+
+  function start() {
+    ensureStyle();
+    observer = new MutationObserver(() => schedulePatch());
+    observer.observe(document.body, {
+      attributes: true,
+      attributeFilter: [
+        "data-app-action-sidebar-thread-host-id",
+        "data-app-action-sidebar-thread-id",
+        "data-app-action-sidebar-thread-kind",
+        "data-app-action-sidebar-thread-row",
+      ],
+      childList: true,
+      subtree: true,
+    });
+    onThreadPointerDown = (event) => {
+      const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+      if (!target?.closest?.(THREAD_SELECTOR)) return;
+      // React can replace a row's hook ref without changing the DOM. Re-wrap
+      // immediately before Codex's own handler reads it; do not prevent or
+      // replace the native pointer/context-menu event.
+      patchMenus();
+    };
+    onWindowFocus = () => schedulePatch(0);
+    document.addEventListener("pointerdown", onThreadPointerDown, true);
+    document.addEventListener("contextmenu", onThreadPointerDown, true);
+    window.addEventListener("focus", onWindowFocus);
+    patchMenus();
+    schedulePatch(300);
+    for (const delay of [800, 1800, 3500]) {
+      const timer = window.setTimeout(() => {
+        retryTimers.delete(timer);
+        patchMenus();
+      }, delay);
+      retryTimers.add(timer);
+    }
+    log("info", "native thread context actions active", Array.from(enabledActions));
+  }
+
+  function stop() {
+    observer?.disconnect();
+    observer = null;
+    if (onThreadPointerDown) {
+      document.removeEventListener("pointerdown", onThreadPointerDown, true);
+      document.removeEventListener("contextmenu", onThreadPointerDown, true);
+      onThreadPointerDown = null;
+    }
+    if (onWindowFocus) {
+      window.removeEventListener("focus", onWindowFocus);
+      onWindowFocus = null;
+    }
+    if (scanTimer) window.clearTimeout(scanTimer);
+    scanTimer = 0;
+    for (const timer of retryTimers) window.clearTimeout(timer);
+    retryTimers.clear();
+    for (const [ref, record] of patchedMenuRefs) restoreMenuRef(ref, record);
+    for (const timer of uiTimers) window.clearTimeout(timer);
+    uiTimers.clear();
+    inFlight.clear();
+    document.getElementById(STYLE_ID)?.remove();
+    document.getElementById(TOAST_ID)?.remove();
+    document.querySelector(`[${DIALOG_ATTR}] [data-bennett-delete-cancel]`)?.click();
+    document.querySelector(`[${DIALOG_ATTR}]`)?.remove();
+    resolverPromise = null;
+  }
+
+  return {
+    enable(action, nextApi) {
+      api = nextApi || api;
+      const wasEmpty = enabledActions.size === 0;
+      enabledActions.add(action);
+      if (wasEmpty) start();
+      else schedulePatch(0);
+      let active = true;
+      return () => {
+        if (!active) return;
+        active = false;
+        enabledActions.delete(action);
+        if (!enabledActions.size) stop();
+        else schedulePatch(0);
+      };
+    },
+    status() {
+      const rows = Array.from(document.querySelectorAll(THREAD_SELECTOR));
+      return {
+        enabledActions: Array.from(enabledActions),
+        patchedMenuCount: patchedMenuRefs.size,
+        inFlightCount: inFlight.size,
+        rowCount: rows.length,
+        supportedRowCount: rows.filter((row) => Boolean(threadContextFor(row))).length,
+        discoverableMenuCount: rows.filter((row) => Boolean(threadMenuRefFor(row))).length,
+      };
+    },
+  };
+}
+
 // ─────────────────────────────────────────────────────────────── features ──
 
 const FEATURES = {
+  "thread-markdown-export"(api) {
+    return sessionThreadActions.enable(SESSION_ACTION_EXPORT, api);
+  },
+
+  "thread-permanent-delete"(api) {
+    return sessionThreadActions.enable(SESSION_ACTION_DELETE, api);
+  },
+
   /**
    * Render LaTeX inside Codex's right-side Markdown file preview.
    *
@@ -6739,7 +7570,7 @@ const FEATURES = {
   "sidebar-project-backgrounds"(api) {
     const STYLE_ID = "codexpp-sidebar-project-backgrounds";
     const ATTR = "data-codexpp-sidebar-project-backgrounds";
-    const COLOR_STORAGE_KEY = "sidebar-project-backgrounds:colors";
+    const COLOR_STORAGE_KEY = PROJECT_COLOR_STORAGE_KEY;
     const NATIVE_COLOR_MENU_ID = "bennett-ui:project-color";
     const ASIDE_SELECTOR = [
       "aside.pointer-events-auto.relative.flex.overflow-hidden",
@@ -6997,6 +7828,16 @@ const FEATURES = {
       );
     };
 
+    const projectInfoFor = (node) => {
+      const nativeRow = nativeProjectRowFor(node);
+      const id = normalize(
+        nativeRow?.getAttribute("data-app-action-sidebar-project-id") ||
+          node?.getAttribute?.("data-app-action-sidebar-project-id") ||
+          "",
+      );
+      return { id, label: projectLabelFor(node) };
+    };
+
     const isProjectRow = (node) => {
       if (!(node instanceof HTMLElement)) return false;
       if (!visible(node)) return false;
@@ -7040,11 +7881,38 @@ const FEATURES = {
       });
     };
 
-    const paletteFor = (text) => {
-      const stored = colorPrefs[projectKey(text)];
+    const preferenceKeysFor = (info) => [
+      info?.id ? `id:${normalize(info.id)}` : "",
+      projectKey(info?.label),
+    ].filter(Boolean);
+
+    const storedColorForProject = (info) => {
+      for (const key of preferenceKeysFor(info)) {
+        if (Object.prototype.hasOwnProperty.call(colorPrefs, key)) return colorPrefs[key];
+      }
+      return undefined;
+    };
+
+    const promoteColorPreferenceToId = (info) => {
+      if (!info?.id || !info?.label) return false;
+      const idKey = `id:${normalize(info.id)}`;
+      const labelKey = projectKey(info.label);
+      if (
+        Object.prototype.hasOwnProperty.call(colorPrefs, idKey) ||
+        !Object.prototype.hasOwnProperty.call(colorPrefs, labelKey)
+      ) {
+        return false;
+      }
+      colorPrefs[idKey] = colorPrefs[labelKey];
+      return true;
+    };
+
+    const paletteFor = (info) => {
+      const stored = storedColorForProject(info);
       const match = PALETTE.find((color) => color.id === stored);
       if (match) return match;
 
+      const text = normalize(info?.label || info?.id);
       let hash = 0;
       for (let i = 0; i < text.length; i += 1) {
         hash = (hash * 31 + text.charCodeAt(i)) >>> 0;
@@ -7052,40 +7920,44 @@ const FEATURES = {
       return PALETTE[hash % 4];
     };
 
-    const tintFor = (text) => paletteFor(text).value;
+    const tintFor = (info) => paletteFor(info).value;
 
-    const textColorFor = (text) => {
-      const color = paletteFor(text);
+    const textColorFor = (info) => {
+      const color = paletteFor(info);
       return color.textValue || color.value;
     };
 
-    const blueTokenOverrideFor = (text) => {
-      const color = paletteFor(text);
+    const blueTokenOverrideFor = (info) => {
+      const color = paletteFor(info);
       return color.id === "blue" ? "" : color.value;
     };
 
-    const linkTokenOverrideFor = (text) => {
-      const color = paletteFor(text);
-      return color.id === "blue" ? "" : textColorFor(text);
+    const linkTokenOverrideFor = (info) => {
+      const color = paletteFor(info);
+      return color.id === "blue" ? "" : textColorFor(info);
     };
 
     const markRows = (rows) => {
       reconcileProjectLists(rows);
+      let promotedPreference = false;
       for (const row of rows) {
         if (!(row instanceof HTMLElement)) continue;
-        const label = projectLabelFor(row);
-        if (colorPrefs[projectKey(label)] === "none") {
+        const info = projectInfoFor(row);
+        const label = info.label;
+        promotedPreference = promoteColorPreferenceToId(info) || promotedPreference;
+        if (storedColorForProject(info) === "none") {
           clearRowMarks(row);
           continue;
         }
         setAttr(row, ATTR, "row");
         setAttr(row, "data-codexpp-sidebar-project-expanded", String(isExpandedProject(row)));
-        setStyleVar(row, "--codexpp-project-tint", tintFor(label));
-        setStyleVar(row, "--codexpp-project-text-color", textColorFor(label));
-        setOptionalStyleVar(row, "--codexpp-project-blue-token-override", blueTokenOverrideFor(label));
-        setOptionalStyleVar(row, "--codexpp-project-link-token-override", linkTokenOverrideFor(label));
+        setStyleVar(row, "--codexpp-project-tint", tintFor(info));
+        setStyleVar(row, "--codexpp-project-text-color", textColorFor(info));
+        setOptionalStyleVar(row, "--codexpp-project-blue-token-override", blueTokenOverrideFor(info));
+        setOptionalStyleVar(row, "--codexpp-project-link-token-override", linkTokenOverrideFor(info));
         markProjectParts(row, label);
       }
+      if (promotedPreference) persistColorPrefs();
       patchProjectActionMenus(rows);
     };
 
@@ -7110,7 +7982,7 @@ const FEATURES = {
       const stored = value && typeof value === "object" && !Array.isArray(value) ? value : {};
       const cached = window[colorPrefsCacheKey];
       return cached && typeof cached === "object" && !Array.isArray(cached)
-        ? { ...stored, ...cached }
+        ? { ...cached, ...stored }
         : stored;
     }
 
@@ -7120,6 +7992,16 @@ const FEATURES = {
       const result = api.storage.set(COLOR_STORAGE_KEY, colorPrefs);
       window.dispatchEvent(new CustomEvent("codexpp-sidebar-project-colors-changed"));
       return result;
+    };
+
+    const persistColorPrefs = () => {
+      try {
+        Promise.resolve(writeColorPrefs()).catch((e) => {
+          api.log.warn("sidebar project color write failed", e);
+        });
+      } catch (e) {
+        api.log.warn("sidebar project color write failed", e);
+      }
     };
 
     const isExpandedProject = (row) => {
@@ -7241,33 +8123,29 @@ const FEATURES = {
       return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
     };
 
-    const setProjectColor = (label, colorId) => {
-      if (colorId === "auto") delete colorPrefs[projectKey(label)];
-      else colorPrefs[projectKey(label)] = colorId;
-      applyColorToCurrentRows(label);
-      try {
-        Promise.resolve(writeColorPrefs()).catch((e) => {
-          api.log.warn("sidebar project color write failed", e);
-        });
-      } catch (e) {
-        api.log.warn("sidebar project color write failed", e);
+    const setProjectColor = (info, colorId) => {
+      for (const key of preferenceKeysFor(info)) {
+        if (colorId === "auto") delete colorPrefs[key];
+        else colorPrefs[key] = colorId;
       }
-      applyColorToCurrentRows(label);
+      applyColorToCurrentRows(info);
+      persistColorPrefs();
+      applyColorToCurrentRows(info);
       scheduleApply();
     };
 
-    const appendProjectColorSubmenu = (items, label) => {
+    const appendProjectColorSubmenu = (items, info) => {
       if (!Array.isArray(items)) return items;
       if (items.some((item) => item?.id === NATIVE_COLOR_MENU_ID)) return items;
       const labels = nativeMenuLabels();
-      const selected = colorPrefs[projectKey(label)] || "auto";
+      const selected = storedColorForProject(info) || "auto";
       const options = ["auto", "none", ...PALETTE.map(({ id }) => id)];
       const submenu = options.map((colorId) => ({
         id: `${NATIVE_COLOR_MENU_ID}:${colorId}`,
         message: nativeMenuMessage(`projectColor.${colorId}`, labels[colorId]),
         icon: nativeColorSwatchIcon(colorId),
         checked: selected === colorId,
-        onSelect: () => setProjectColor(label, colorId),
+        onSelect: () => setProjectColor(info, colorId),
       }));
       const item = {
         id: NATIVE_COLOR_MENU_ID,
@@ -7302,18 +8180,18 @@ const FEATURES = {
         const handle = projectActionsHandleFor(row);
         if (!handle) continue;
         activeHandles.add(handle);
-        const label = projectLabelFor(row);
+        const info = projectInfoFor(row);
         let record = patchedProjectActionHandles.get(handle);
         if (record && handle.getContextMenuItems === record.wrapped) {
-          record.label = label;
+          record.info = info;
           continue;
         }
         if (record) patchedProjectActionHandles.delete(handle);
         const original = handle.getContextMenuItems;
-        record = { label, original, wrapped: null };
+        record = { info, original, wrapped: null };
         record.wrapped = function bennettProjectColorMenuItems(...args) {
           const items = record.original.apply(this, args);
-          return appendProjectColorSubmenu(items, record.label);
+          return appendProjectColorSubmenu(items, record.info);
         };
         try {
           handle.getContextMenuItems = record.wrapped;
@@ -7329,10 +8207,15 @@ const FEATURES = {
       }
     };
 
-    const applyColorToCurrentRows = (label) => {
+    const applyColorToCurrentRows = (info) => {
       const sidebar = mainSidebar();
       if (!sidebar) return;
-      const rows = candidateRows(sidebar).filter((row) => projectLabelFor(row) === projectKey(label));
+      const rows = candidateRows(sidebar).filter((row) => {
+        const candidate = projectInfoFor(row);
+        return info?.id
+          ? candidate.id === normalize(info.id)
+          : candidate.label === projectKey(info?.label);
+      });
       markRows(rows);
     };
 
@@ -7491,7 +8374,7 @@ const FEATURES = {
   "sidebar-conversation-colors"(api) {
     const STYLE_ID = "codexpp-sidebar-conversation-colors";
     const ATTR = "data-codexpp-sidebar-conversation-color";
-    const COLOR_STORAGE_KEY = "sidebar-project-backgrounds:colors";
+    const COLOR_STORAGE_KEY = PROJECT_COLOR_STORAGE_KEY;
     const COLOR_EVENT = "codexpp-sidebar-project-colors-changed";
     const PALETTE_CACHE_KEY = "__codexppSidebarProjectPalette";
     const COLOR_PREFS_CACHE_KEY = "__codexppSidebarProjectColorPrefs";
@@ -7672,7 +8555,9 @@ const FEATURES = {
       const visited = new Set();
 
       // Priority and recent views no longer expose project attributes in the
-      // DOM, but the native hover-card props still carry the same association.
+      // DOM, but assigned threads still carry a stable project id in their
+      // native hover-card props. A label without an id is only the basename of
+      // the thread's working directory and must not be treated as membership.
       for (let depth = 0; fiber && depth < 12 && !visited.has(fiber); depth += 1) {
         visited.add(fiber);
         for (const props of [fiber.memoizedProps, fiber.pendingProps]) {
@@ -7684,13 +8569,14 @@ const FEATURES = {
           const label = typeof props.hoverCardProjectLabel === "string"
             ? props.hoverCardProjectLabel.trim()
             : "";
-          if (id || label) {
+          if (id) {
             return {
               id,
               label,
-              key: id ? `id:${normalize(id)}` : `label:${normalize(label)}`,
+              key: `id:${normalize(id)}`,
             };
           }
+          if (label) return false;
         }
         fiber = fiber.return;
       }
@@ -7728,15 +8614,15 @@ const FEATURES = {
       const stored = api.storage.get(COLOR_STORAGE_KEY, {});
       const cache = window[COLOR_PREFS_CACHE_KEY];
       return {
-        ...(stored && typeof stored === "object" && !Array.isArray(stored) ? stored : {}),
         ...(cache && typeof cache === "object" && !Array.isArray(cache) ? cache : {}),
+        ...(stored && typeof stored === "object" && !Array.isArray(stored) ? stored : {}),
       };
     };
 
     colorPrefs = readColorPrefs();
 
     const storedColorFor = (info) =>
-      colorPrefs[normalize(info.label)] || (info.id && colorPrefs[`id:${normalize(info.id)}`]);
+      (info.id && colorPrefs[`id:${normalize(info.id)}`]) || colorPrefs[normalize(info.label)];
 
     const paletteFor = (info) => {
       const palette = Array.isArray(window[PALETTE_CACHE_KEY]) && window[PALETTE_CACHE_KEY].length
@@ -8026,15 +8912,31 @@ function writeFlag(api, id, on) {
 }
 
   const tweak = module.exports;
-  const api = createBigPizzaRendererApi();
+  const loaderApi = globalThis.__codexScriptLoader?.activeApi || null;
+  const baseApi = loaderApi || createBigPizzaRendererApi();
+  const api = createProjectColorCompatibleApi(baseApi);
   if (!tweak || typeof tweak.start !== "function") {
     throw new Error("Bennett UI tweak entrypoint was not found");
+  }
+
+  if (loaderApi?.storage) {
+    for (const id of FEATURE_IDS) {
+      const key = `feature:${id}`;
+      if (loaderApi.storage.get(key, undefined) !== undefined) continue;
+      try {
+        const legacy = localStorage.getItem(`bennett-ui-improvements:${key}`);
+        if (legacy !== null) loaderApi.storage.set(key, JSON.parse(legacy));
+      } catch {}
+    }
   }
 
   tweak.start.call(tweak, api);
   const features = FEATURE_IDS;
   const featureInfo = FEATURE_DEFINITIONS;
   let settingsScanTimer = 0;
+  let nativeSettingsActive = false;
+  let settingsObserver = null;
+  let settingsPageHandle = null;
   const scheduleSettingsPanelInstall = () => {
     if (settingsScanTimer) return;
     settingsScanTimer = window.setTimeout(() => {
@@ -8042,9 +8944,38 @@ function writeFlag(api, id, on) {
       installSettingsPanel();
     }, 100);
   };
-  const settingsObserver = new MutationObserver(scheduleSettingsPanelInstall);
-  settingsObserver.observe(document.documentElement, { childList: true, subtree: true });
-  installSettingsPanel();
+  const handleSidecarSettingsSelect = (event) => {
+    if (event?.detail?.id !== "bennett-ui") deactivateNativeSettingsPanel();
+  };
+  const handleNativeSettingsNavigation = (event) => {
+    const target = event.target instanceof Element ? event.target.closest("button[data-settings-panel-slug]") : null;
+    if (target && target.id !== "bennett-ui-native-settings-nav") deactivateNativeSettingsPanel();
+  };
+  if (loaderApi?.settings?.registerPage) {
+    settingsPageHandle = loaderApi.settings.registerPage({
+      id: "main",
+      title: "界面增强",
+      description: "",
+      iconSvg: '<svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" class="icon-sm inline-block align-middle" aria-hidden="true"><path d="M10 2.5 11.4 8.6 17.5 10l-6.1 1.4L10 17.5l-1.4-6.1L2.5 10l6.1-1.4L10 2.5Z" fill="currentColor"/></svg>',
+      render(root) {
+        root.dataset.bennettUiSettingsRoot = "true";
+        root.innerHTML = settingsPanelHtml();
+        bindSettingsPanel(root);
+        ensureSettingsStyle();
+        refreshSettingsPanel(root);
+        return () => {
+          delete root.dataset.bennettUiSettingsRoot;
+          root.innerHTML = "";
+        };
+      },
+    });
+  } else {
+    window.addEventListener("codex-sidecar-settings-select", handleSidecarSettingsSelect);
+    document.addEventListener("click", handleNativeSettingsNavigation, true);
+    settingsObserver = new MutationObserver(scheduleSettingsPanelInstall);
+    settingsObserver.observe(document.documentElement, { childList: true, subtree: true });
+    installSettingsPanel();
+  }
 
   function featureDefault(id) {
     return featureInfo.find((item) => item.id === id)?.defaultEnabled ?? false;
@@ -8071,7 +9002,12 @@ function writeFlag(api, id, on) {
 
   function installSettingsPanel() {
     const modal = document.querySelector(".codex-plus-modal-content");
-    if (!modal) return;
+    if (!modal) {
+      installNativeSettingsPanel();
+      return;
+    }
+    document.getElementById("bennett-ui-settings-launcher")?.remove();
+    document.getElementById("bennett-ui-settings-dialog")?.remove();
     const tabs = modal.querySelector(".codex-plus-tabs");
     const body = modal.querySelector(".codex-plus-modal-body");
     if (!tabs || !body) return;
@@ -8095,7 +9031,7 @@ function writeFlag(api, id, on) {
     tab.className = "codex-plus-tab-button";
     tab.dataset.codexPlusTab = "bennettUi";
     tab.dataset.active = "false";
-    tab.textContent = "Bennett UI 设置";
+    tab.textContent = "界面增强";
     tabs.appendChild(tab);
 
     const panel = document.createElement("div");
@@ -8103,15 +9039,15 @@ function writeFlag(api, id, on) {
     panel.dataset.codexPlusPanel = "bennettUi";
     panel.hidden = true;
     panel.innerHTML = settingsPanelHtml();
+    bindSettingsPanel(panel);
+    body.appendChild(panel);
+    ensureSettingsStyle();
+    refreshSettingsPanel();
+  }
+
+  function bindSettingsPanel(panel) {
     panel.addEventListener("click", (event) => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
-      const historyLoad = target?.closest("[data-bennett-ui-history-load]");
-      if (historyLoad) {
-        event.preventDefault();
-        event.stopPropagation();
-        void loadHistoryFromSettings(panel);
-        return;
-      }
       const toggle = target?.closest("[data-bennett-ui-feature]");
       if (!toggle) return;
       event.preventDefault();
@@ -8121,99 +9057,166 @@ function writeFlag(api, id, on) {
       if (!id || meta?.disabled) return;
       setFeatureEnabled(id, !featureEnabled(id));
     }, true);
-    body.appendChild(panel);
+  }
+
+  function nativeSettingsParts() {
+    const nav = document.querySelector("nav[aria-label='设置'], nav[aria-label='Settings']");
+    const aside = nav?.closest("aside");
+    const shell = aside?.parentElement;
+    const main = shell
+      ? Array.from(shell.children).find((node) => node !== aside && node instanceof HTMLElement)
+      : null;
+    return { nav, main };
+  }
+
+  function deactivateNativeSettingsPanel() {
+    nativeSettingsActive = false;
+    const panel = document.getElementById("bennett-ui-native-settings-panel");
+    const button = document.getElementById("bennett-ui-native-settings-nav");
+    if (panel) panel.hidden = true;
+    button?.removeAttribute("aria-current");
+    const { main } = nativeSettingsParts();
+    if (!main) return;
+    for (const child of main.children) {
+      if (!(child instanceof HTMLElement) || child === panel || child.hasAttribute("data-sidecar-settings-panel")) continue;
+      if (child.dataset.sidecarPreviousDisplay !== undefined) {
+        child.style.display = child.dataset.sidecarPreviousDisplay;
+        delete child.dataset.sidecarPreviousDisplay;
+      }
+    }
+  }
+
+  function activateNativeSettingsPanel() {
+    const { nav, main } = nativeSettingsParts();
+    const panel = document.getElementById("bennett-ui-native-settings-panel");
+    const button = document.getElementById("bennett-ui-native-settings-nav");
+    if (!nav || !main || !panel || !button) return;
+    window.dispatchEvent(new CustomEvent("codex-sidecar-settings-select", { detail: { id: "bennett-ui" } }));
+    nativeSettingsActive = true;
+    nav.querySelectorAll("[aria-current='page']").forEach((node) => node.removeAttribute("aria-current"));
+    button.setAttribute("aria-current", "page");
+    for (const child of main.children) {
+      if (!(child instanceof HTMLElement) || child === panel || child.hasAttribute("data-sidecar-settings-panel")) continue;
+      if (child.dataset.sidecarPreviousDisplay === undefined) child.dataset.sidecarPreviousDisplay = child.style.display || "";
+      child.style.display = "none";
+    }
+    panel.hidden = false;
+    refreshSettingsPanel();
+  }
+
+  function installNativeSettingsPanel() {
+    document.getElementById("bennett-ui-settings-launcher")?.remove();
+    document.getElementById("bennett-ui-settings-dialog")?.remove();
+    const { nav, main } = nativeSettingsParts();
+    if (!nav || !main) return;
+    const existingNav = document.getElementById("bennett-ui-native-settings-nav");
+    const existingPanel = document.getElementById("bennett-ui-native-settings-panel");
+    if (existingNav?.isConnected && existingPanel?.isConnected && existingPanel.parentElement === main) return;
+
+    let navButton = document.getElementById("bennett-ui-native-settings-nav");
+    if (!navButton) {
+      const template = nav.querySelector("button[data-settings-panel-slug]");
+      if (!template) return;
+      navButton = template.cloneNode(false);
+      navButton.id = "bennett-ui-native-settings-nav";
+      navButton.type = "button";
+      navButton.dataset.settingsPanelSlug = "bennett-ui";
+      navButton.removeAttribute("aria-current");
+      navButton.setAttribute("aria-label", "界面增强");
+      navButton.innerHTML = '<div class="flex min-w-0 items-center text-base gap-2 flex-1 text-default"><span class="flex w-4 shrink-0 items-center justify-center" aria-hidden="true">◈</span><span class="text-fade-truncate">界面增强</span></div>';
+      navButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        activateNativeSettingsPanel();
+      }, true);
+      const anchor = nav.querySelector("button[data-settings-panel-slug='plugins']") || template;
+      const wrapper = document.createElement("div");
+      wrapper.className = "contents";
+      wrapper.dataset.sidecarSettingsNav = "bennett-ui";
+      wrapper.appendChild(navButton);
+      anchor.parentElement?.after(wrapper);
+    }
+
+    let panel = document.getElementById("bennett-ui-native-settings-panel");
+    if (!panel) {
+      panel = document.createElement("div");
+      panel.id = "bennett-ui-native-settings-panel";
+      panel.className = "codex-plus-panel bennett-ui-native-settings-panel";
+      panel.dataset.codexPlusPanel = "bennettUi";
+      panel.dataset.sidecarSettingsPanel = "bennett-ui";
+      panel.hidden = true;
+      panel.innerHTML = settingsPanelHtml();
+      bindSettingsPanel(panel);
+      main.appendChild(panel);
+    }
     ensureSettingsStyle();
+    if (nativeSettingsActive) activateNativeSettingsPanel();
     refreshSettingsPanel();
   }
 
   function settingsPanelHtml() {
+    const groups = [
+      {
+        id: "usage",
+        title: "额度",
+        features: ["show-usage-in-sidebar", "hide-usage-alert"],
+      },
+      {
+        id: "interface",
+        title: "Codex 界面",
+        features: ["hide-upgrade-prompts", "settings-search", "match-sidebar-width"],
+      },
+      {
+        id: "sidebar",
+        title: "侧栏与项目",
+        features: ["sidebar-project-backgrounds", "sidebar-conversation-colors"],
+      },
+      {
+        id: "editor",
+        title: "编辑与会话",
+        features: ["render-markdown-preview-math", "slash-menu-polish", "thread-markdown-export", "thread-permanent-delete"],
+      },
+    ];
+    const badges = {
+      "show-usage-in-sidebar": "需额度数据",
+      "render-markdown-preview-math": "LaTeX",
+      "thread-markdown-export": "本地会话",
+      "thread-permanent-delete": "不可撤销",
+    };
     return `
-      <div class="codex-plus-row bennett-ui-settings-head">
-        <div>
-          <div class="codex-plus-row-title">Bennett UI Improvements ${escapeHtmlLocal(VERSION)}</div>
-          <div class="codex-plus-row-description">项目和会话侧栏、额度显示、Markdown 预览与原生会话查询上限设置。</div>
-        </div>
-      </div>
-      ${featureInfo.map((item) => `
-        <div class="codex-plus-row bennett-ui-feature-row" data-bennett-ui-row="${escapeAttr(item.id)}">
-          <div>
-            <div class="codex-plus-row-title">${escapeHtmlLocal(item.title)}</div>
-            <div class="codex-plus-row-description">${escapeHtmlLocal(item.detail)}</div>
-            <div class="bennett-ui-feature-status">${escapeHtmlLocal(item.status)}</div>
-          </div>
-          <button type="button" class="codex-plus-toggle bennett-ui-toggle" data-bennett-ui-feature="${escapeAttr(item.id)}" ${item.disabled ? "disabled" : ""}><span></span></button>
-        </div>
-      `).join("")}
-      <div class="codex-plus-row bennett-ui-history-row" data-bennett-ui-history-row="true">
-        <div class="bennett-ui-history-copy">
-          <div class="codex-plus-row-title">会话历史加载</div>
-          <div class="codex-plus-row-description">仅提高 Codex 原生近期会话查询上限，不扫描、合并、补写或重新渲染会话。每次打开 Codex 后自动请求一次，也可手动重试。范围 ${HISTORY_TARGET_MIN}–${HISTORY_TARGET_MAX} 条。</div>
-          <div class="bennett-ui-feature-status" data-bennett-ui-history-status="true">由 Codex 原生读取和渲染；启动后自动请求</div>
-        </div>
-        <div class="bennett-ui-history-controls">
-          <input type="number" min="${HISTORY_TARGET_MIN}" max="${HISTORY_TARGET_MAX}" step="50" value="${readHistoryTarget()}" inputmode="numeric" aria-label="历史会话查询上限" data-bennett-ui-history-limit="true">
-          <button type="button" class="bennett-ui-history-load" data-bennett-ui-history-load="true">重新加载历史</button>
-        </div>
+      <div class="bennett-ui-settings-page">
+        ${groups.map((group) => `
+          <section class="bennett-ui-settings-section" data-bennett-ui-section="${escapeAttr(group.id)}">
+            <h2 class="bennett-ui-section-title">${escapeHtmlLocal(group.title)}</h2>
+            <div class="bennett-ui-settings-group">
+              ${group.features.map((id) => featureInfo.find((item) => item.id === id)).filter(Boolean).map((item) => `
+                <div class="codex-plus-row bennett-ui-feature-row" data-bennett-ui-row="${escapeAttr(item.id)}">
+                  <div class="bennett-ui-feature-copy">
+                    <div class="bennett-ui-feature-title-line">
+                      <div class="codex-plus-row-title">${escapeHtmlLocal(item.title)}</div>
+                      ${badges[item.id] ? `<span class="bennett-ui-feature-badge" data-tone="${item.id === "thread-permanent-delete" ? "danger" : "neutral"}">${escapeHtmlLocal(badges[item.id])}</span>` : ""}
+                    </div>
+                    <div class="codex-plus-row-description">${escapeHtmlLocal(item.detail)}</div>
+                  </div>
+                  <button type="button" role="switch" aria-label="${escapeAttr(item.title)}" aria-checked="false" class="codex-plus-toggle bennett-ui-toggle" data-bennett-ui-feature="${escapeAttr(item.id)}" ${item.disabled ? "disabled" : ""}><span></span></button>
+                </div>
+              `).join("")}
+            </div>
+          </section>
+        `).join("")}
+        <div class="bennett-ui-settings-footer">Bennett UI Improvements · ${escapeHtmlLocal(VERSION)}</div>
       </div>
     `;
   }
 
-  function normalizeHistoryTarget(value, fallback = HISTORY_TARGET_DEFAULT) {
-    const parsed = Number.parseInt(String(value ?? ""), 10);
-    if (!Number.isFinite(parsed)) return fallback;
-    return Math.max(HISTORY_TARGET_MIN, Math.min(HISTORY_TARGET_MAX, parsed));
-  }
-
-  function readHistoryTarget() {
-    try {
-      return normalizeHistoryTarget(window.localStorage.getItem(HISTORY_TARGET_STORAGE_KEY));
-    } catch {
-      return HISTORY_TARGET_DEFAULT;
-    }
-  }
-
-  function writeHistoryTarget(value) {
-    const normalized = normalizeHistoryTarget(value);
-    try {
-      window.localStorage.setItem(HISTORY_TARGET_STORAGE_KEY, String(normalized));
-    } catch {
-      // The loader can still use the value for this run when storage is unavailable.
-    }
-    return normalized;
-  }
-
-  async function loadHistoryFromSettings(panel) {
-    const input = panel.querySelector("[data-bennett-ui-history-limit]");
-    const button = panel.querySelector("[data-bennett-ui-history-load]");
-    const status = panel.querySelector("[data-bennett-ui-history-status]");
-    const limit = writeHistoryTarget(input?.value);
-    if (input) input.value = String(limit);
-    if (button) button.disabled = true;
-    if (status) status.textContent = `正在请求 Codex 原生历史，上限 ${limit} 条…`;
-    try {
-      const loader = window.__bennettUiEmbeddedHistoryLoader || window.__codexListPagebuster;
-      if (!loader || typeof loader.refresh !== "function") {
-        throw new Error("内置会话加载器尚未就绪，请稍后重试");
-      }
-      loader.setLimit?.(limit);
-      await loader.refresh(limit);
-      if (status) {
-        status.textContent = `已请求 Codex 原生历史，上限 ${limit} 条；侧栏由 Codex 自己渲染`;
-      }
-    } catch (error) {
-      if (status) status.textContent = `加载失败：${error?.message || String(error)}`;
-    } finally {
-      if (button) button.disabled = false;
-    }
-  }
-
-  function refreshSettingsPanel() {
+  function refreshSettingsPanel(root = document) {
     for (const item of featureInfo) {
-      const row = document.querySelector(`[data-bennett-ui-row="${cssEscape(item.id)}"]`);
+      const row = root.querySelector(`[data-bennett-ui-row="${cssEscape(item.id)}"]`);
       const toggle = row?.querySelector("[data-bennett-ui-feature]");
       if (!toggle) continue;
       toggle.dataset.enabled = String(featureEnabled(item.id));
       toggle.dataset.support = item.disabled ? "unsupported" : "supported";
+      toggle.setAttribute("aria-checked", String(featureEnabled(item.id)));
       row.dataset.enabled = String(featureEnabled(item.id));
     }
   }
@@ -8223,6 +9226,150 @@ function writeFlag(api, id, on) {
     const style = document.createElement("style");
     style.id = "bennett-ui-settings-style";
     style.textContent = `
+      [data-bennett-ui-settings-root="true"] {
+        display: block;
+        width: 100%;
+        color: var(--color-text-primary, var(--color-token-text-primary, #1a1c1f));
+      }
+      [data-bennett-ui-settings-root="true"] .bennett-ui-settings-page {
+        display: flex;
+        flex-direction: column;
+        gap: 36px;
+      }
+      [data-bennett-ui-settings-root="true"] .bennett-ui-settings-section {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
+      [data-bennett-ui-settings-root="true"] .bennett-ui-section-title {
+        margin: 0;
+        color: var(--color-text-primary, var(--color-token-text-primary, currentColor));
+        font-size: 16px;
+        font-weight: 600;
+        line-height: 1.4;
+      }
+      [data-bennett-ui-settings-root="true"] .bennett-ui-settings-group {
+        overflow: hidden;
+        border: 1px solid var(--color-border-default, color-mix(in srgb, currentColor 14%, transparent));
+        border-radius: 14px;
+        background: var(--color-background-primary, transparent);
+      }
+      [data-bennett-ui-settings-root="true"] .codex-plus-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 28px;
+        min-height: 76px;
+        padding: 15px 20px;
+        border-bottom: 1px solid var(--color-border-default, color-mix(in srgb, currentColor 11%, transparent));
+      }
+      [data-bennett-ui-settings-root="true"] .codex-plus-row:last-child { border-bottom: 0; }
+      [data-bennett-ui-settings-root="true"] .bennett-ui-feature-copy {
+        min-width: 0;
+      }
+      [data-bennett-ui-settings-root="true"] .bennett-ui-feature-title-line {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+      }
+      [data-bennett-ui-settings-root="true"] .codex-plus-row-title {
+        color: var(--color-text-primary, currentColor);
+        font-size: 14px;
+        font-weight: 600;
+        line-height: 1.35;
+      }
+      [data-bennett-ui-settings-root="true"] .codex-plus-row-description {
+        margin-top: 4px;
+        color: var(--color-text-secondary, var(--color-token-text-secondary, #8f96a3));
+        font-size: 13px;
+        line-height: 1.45;
+      }
+      [data-bennett-ui-settings-root="true"] .bennett-ui-feature-badge {
+        flex: 0 0 auto;
+        padding: 2px 6px;
+        border-radius: 999px;
+        background: var(--color-background-secondary, color-mix(in srgb, currentColor 7%, transparent));
+        color: var(--color-text-secondary, #737982);
+        font-size: 11px;
+        font-weight: 500;
+        line-height: 1.35;
+      }
+      [data-bennett-ui-settings-root="true"] .bennett-ui-feature-badge[data-tone="danger"] {
+        background: color-mix(in srgb, #ef4444 10%, transparent);
+        color: var(--color-text-danger, #c24141);
+      }
+      [data-bennett-ui-settings-root="true"] .bennett-ui-toggle {
+        flex: 0 0 auto;
+        width: 34px;
+        height: 20px;
+        padding: 2px;
+        border: 0;
+        border-radius: 999px;
+        background: color-mix(in srgb, currentColor 18%, transparent);
+        cursor: pointer;
+      }
+      [data-bennett-ui-settings-root="true"] .bennett-ui-toggle[data-enabled="true"] {
+        background: var(--color-chart-blue, #3b82f6);
+      }
+      [data-bennett-ui-settings-root="true"] .bennett-ui-toggle span {
+        display: block;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background: white;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, .16);
+        transition: transform .15s ease;
+      }
+      [data-bennett-ui-settings-root="true"] .bennett-ui-toggle:focus-visible {
+        outline: 2px solid var(--color-focus-ring, #3998f6);
+        outline-offset: 2px;
+      }
+      [data-bennett-ui-settings-root="true"] .bennett-ui-settings-footer {
+        padding-top: 2px;
+        color: var(--color-text-tertiary, var(--color-text-secondary, #8f96a3));
+        font-size: 12px;
+        line-height: 1.4;
+      }
+      .bennett-ui-native-settings-panel {
+        box-sizing: border-box;
+        display: flex;
+        flex-direction: column;
+        width: 100%;
+        height: 100%;
+        overflow: auto;
+        padding: 32px clamp(24px, 5vw, 72px) 64px;
+        background: var(--color-background-primary, #11141a);
+        color: var(--color-text-primary, #f3f4f6);
+      }
+      .bennett-ui-native-settings-panel[hidden] { display: none !important; }
+      .bennett-ui-native-settings-panel .codex-plus-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 24px;
+        padding: 14px 16px;
+        border: 1px solid var(--color-border-default, rgba(127,127,127,.28));
+        border-bottom: 0;
+        background: var(--color-background-panel, var(--color-background-primary-soft-alpha, rgba(127,127,127,.06)));
+      }
+      .bennett-ui-native-settings-panel .codex-plus-row:first-child { border-radius: 16px 16px 0 0; }
+      .bennett-ui-native-settings-panel .codex-plus-row:last-child { border-bottom: 1px solid var(--color-border-default, rgba(127,127,127,.28)); border-radius: 0 0 16px 16px; }
+      .bennett-ui-native-settings-panel .codex-plus-row-title { color: var(--color-text-primary, #f3f4f6) !important; font-weight: 600; }
+      .bennett-ui-native-settings-panel .codex-plus-row-description,
+      .bennett-ui-native-settings-panel .bennett-ui-feature-status { color: var(--color-text-secondary, #a1a1aa) !important; }
+      .bennett-ui-native-settings-panel .bennett-ui-toggle {
+        flex: 0 0 auto;
+        width: 34px;
+        height: 20px;
+        padding: 2px;
+        border: 0;
+        border-radius: 999px;
+        background: color-mix(in srgb, currentColor 18%, transparent);
+        cursor: pointer;
+      }
+      .bennett-ui-native-settings-panel .bennett-ui-toggle[data-enabled="true"] { background: var(--color-chart-blue, #3b82f6); }
+      .bennett-ui-native-settings-panel .bennett-ui-toggle span { display: block; width: 16px; height: 16px; border-radius: 50%; background: white; transition: transform .15s ease; }
       [data-codex-plus-panel="bennettUi"] {
         color: #f3f4f6 !important;
         color-scheme: dark;
@@ -8250,55 +9397,73 @@ function writeFlag(api, id, on) {
       .bennett-ui-toggle[data-enabled="true"] span {
         transform: translateX(14px);
       }
-      .bennett-ui-history-row {
-        align-items: center;
-        gap: 18px;
-      }
-      .bennett-ui-history-copy {
-        min-width: 0;
-        flex: 1 1 auto;
-      }
-      .bennett-ui-history-controls {
-        display: flex;
-        flex: 0 0 auto;
-        align-items: center;
-        gap: 10px;
-      }
-      .bennett-ui-history-controls input {
-        box-sizing: border-box;
-        width: 130px;
-        min-height: 34px;
-        border: 1px solid var(--border-default, rgba(127, 127, 127, 0.45));
-        border-radius: 8px;
-        background: var(--background-primary, color-mix(in srgb, currentColor 6%, transparent));
+      #bennett-ui-settings-launcher {
+        position: fixed;
+        right: 92px;
+        bottom: 18px;
+        z-index: 2147482999;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 10px;
+        padding: 9px 12px;
+        background: #171b22;
         color: #f3f4f6;
-        padding: 5px 10px;
-      }
-      .bennett-ui-history-load {
-        min-height: 34px;
-        border: 1px solid var(--border-default, rgba(127, 127, 127, 0.45));
-        border-radius: 8px;
-        background: var(--background-secondary, color-mix(in srgb, currentColor 9%, transparent));
-        color: #f3f4f6;
+        font: 600 12px/1.2 system-ui, sans-serif;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
         cursor: pointer;
-        padding: 5px 12px;
       }
-      .bennett-ui-history-load:hover:not(:disabled) {
-        background: var(--background-tertiary, color-mix(in srgb, currentColor 15%, transparent));
+      #bennett-ui-settings-dialog {
+        width: min(720px, 92vw);
+        max-height: min(820px, 88vh);
+        padding: 0;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 14px;
+        background: #11141a;
+        color: #f3f4f6;
       }
-      .bennett-ui-history-load:disabled {
-        cursor: wait;
-        opacity: 0.55;
+      #bennett-ui-settings-dialog::backdrop {
+        background: rgba(0, 0, 0, 0.58);
       }
-      @media (max-width: 720px) {
-        .bennett-ui-history-row,
-        .bennett-ui-history-controls {
-          align-items: stretch;
-          flex-direction: column;
-        }
-        .bennett-ui-history-controls input {
-          width: 100%;
-        }
+      #bennett-ui-settings-dialog [data-codex-plus-panel="bennettUi"] {
+        display: grid;
+        max-height: min(820px, 88vh);
+        overflow: auto;
+        padding: 10px 18px 18px;
+      }
+      #bennett-ui-settings-dialog .codex-plus-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 20px;
+        padding: 14px 2px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      }
+      #bennett-ui-settings-dialog .codex-plus-row-title {
+        font-weight: 650;
+      }
+      #bennett-ui-settings-dialog .codex-plus-row-description {
+        margin-top: 4px;
+        line-height: 1.45;
+      }
+      #bennett-ui-settings-dialog .bennett-ui-toggle {
+        flex: 0 0 auto;
+        width: 34px;
+        height: 20px;
+        padding: 2px;
+        border: 0;
+        border-radius: 999px;
+        background: #3f4652;
+        cursor: pointer;
+      }
+      #bennett-ui-settings-dialog .bennett-ui-toggle[data-enabled="true"] {
+        background: #2fbf8f;
+      }
+      #bennett-ui-settings-dialog .bennett-ui-toggle span {
+        display: block;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background: white;
+        transition: transform 0.15s ease;
       }
     `;
     document.head.appendChild(style);
@@ -8329,6 +9494,9 @@ function writeFlag(api, id, on) {
     api,
     features,
     featureInfo,
+    threadActionsStatus() {
+      return sessionThreadActions.status();
+    },
     setFeature(id, enabled, reload = false) {
       setFeatureEnabled(id, enabled);
       if (reload) window.location.reload();
@@ -8336,24 +9504,18 @@ function writeFlag(api, id, on) {
     stop() {
       for (const timer of lifecycleTimers) window.clearTimeout(timer);
       lifecycleTimers.clear();
-      const embeddedHistory = window.__bennettUiEmbeddedHistoryLoader;
-      if (embeddedHistory && typeof embeddedHistory.stop === "function") {
-        try {
-          embeddedHistory.stop();
-        } catch (error) {
-          console.warn("[Bennett UI/BigPizza] history stop failed", error);
-        }
-      }
-      if (window.__bennettUiEmbeddedHistoryLoader === embeddedHistory) {
-        delete window.__bennettUiEmbeddedHistoryLoader;
-      }
-      if (window.__codexListPagebuster === embeddedHistory) {
-        delete window.__codexListPagebuster;
-      }
-      settingsObserver.disconnect();
+      settingsObserver?.disconnect();
+      settingsPageHandle?.unregister?.();
+      settingsPageHandle = null;
       if (settingsScanTimer) window.clearTimeout(settingsScanTimer);
+      window.removeEventListener("codex-sidecar-settings-select", handleSidecarSettingsSelect);
+      document.removeEventListener("click", handleNativeSettingsNavigation, true);
+      deactivateNativeSettingsPanel();
       document.querySelectorAll('[data-codex-plus-tab="bennettUi"]').forEach((node) => node.remove());
       document.querySelectorAll('[data-codex-plus-panel="bennettUi"]').forEach((node) => node.remove());
+      document.querySelectorAll('[data-sidecar-settings-nav="bennett-ui"]').forEach((node) => node.remove());
+      document.getElementById("bennett-ui-settings-launcher")?.remove();
+      document.getElementById("bennett-ui-settings-dialog")?.remove();
       const settingsModal = document.querySelector(".codex-plus-modal-content");
       if (settingsModal?.dataset.bennettUiSettingsLoadId === SCRIPT_LOAD_ID) {
         delete settingsModal.dataset.bennettUiSettingsLoadId;
@@ -8379,6 +9541,87 @@ function writeFlag(api, id, on) {
       asideCount: document.querySelectorAll("aside").length,
     });
   }, 1500);
+
+  function createProjectColorCompatibleApi(baseApi) {
+    const baseStorage = baseApi.storage;
+    const legacyKey = `${LEGACY_STORAGE_PREFIX}${PROJECT_COLOR_STORAGE_KEY}`;
+    const loaderKey = `${LOADER_STORAGE_PREFIX}${PROJECT_COLOR_STORAGE_KEY}`;
+
+    const readRecord = (key) => {
+      try {
+        const raw = window.localStorage.getItem(key);
+        if (raw == null) return null;
+        const value = JSON.parse(raw);
+        return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+      } catch {
+        return null;
+      }
+    };
+
+    const writeBoth = (value) => {
+      const record = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+      try {
+        const serialized = JSON.stringify(record);
+        window.localStorage.setItem(legacyKey, serialized);
+        window.localStorage.setItem(loaderKey, serialized);
+      } catch {
+        // The delegated storage call below retains the active runtime's behavior.
+      }
+      try {
+        baseStorage.set(PROJECT_COLOR_STORAGE_KEY, record);
+      } catch {
+        // Project coloring remains usable for this renderer through its in-memory cache.
+      }
+      return record;
+    };
+
+    const readAndMigrate = (fallback) => {
+      const legacy = readRecord(legacyKey);
+      const loader = readRecord(loaderKey);
+      const cache = window.__codexppSidebarProjectColorPrefs;
+      const cached = cache && typeof cache === "object" && !Array.isArray(cache) ? cache : null;
+      let active = null;
+      try {
+        const value = baseStorage.get(PROJECT_COLOR_STORAGE_KEY, null);
+        if (value && typeof value === "object" && !Array.isArray(value)) active = value;
+      } catch {
+        // Direct localStorage reads above are sufficient when the API is unavailable.
+      }
+      const merged = {
+        ...(legacy || {}),
+        ...(loader || {}),
+        ...(loader ? {} : active || {}),
+        ...(cached || {}),
+      };
+      if (!legacy && !loader && !active && !cached) return fallback;
+      return writeBoth(merged);
+    };
+
+    const storage = Object.freeze({
+      get(key, fallback = null) {
+        return String(key) === PROJECT_COLOR_STORAGE_KEY
+          ? readAndMigrate(fallback)
+          : baseStorage.get(key, fallback);
+      },
+      set(key, value) {
+        return String(key) === PROJECT_COLOR_STORAGE_KEY
+          ? writeBoth(value)
+          : baseStorage.set(key, value);
+      },
+      delete(key) {
+        if (String(key) !== PROJECT_COLOR_STORAGE_KEY) return baseStorage.delete(key);
+        try {
+          window.localStorage.removeItem(legacyKey);
+          window.localStorage.removeItem(loaderKey);
+        } catch {}
+        try {
+          baseStorage.delete(PROJECT_COLOR_STORAGE_KEY);
+        } catch {}
+      },
+    });
+
+    return Object.freeze({ ...baseApi, storage });
+  }
 
   function createBigPizzaRendererApi() {
     const storagePrefix = "bennett-ui-improvements:";
@@ -8434,326 +9677,5 @@ function writeFlag(api, id, on) {
       },
     };
   }
+  if (loaderApi) module.exports = {};
 })();
-
-/* BEGIN BENNETT EMBEDDED NATIVE HISTORY LOADER */
-/*
- * Bennett UI native history limit helper.
- *
- * Its only responsibility is to ask Codex to refresh its own recent
- * conversation list with a larger limit. Codex remains responsible for
- * provider selection, storage, indexing, project grouping, pagination,
- * pin/archive state, and sidebar rendering.
- */
-(() => {
-  try {
-  const DEFAULT_TARGET = 500;
-  const MIN_TARGET = 1;
-  const MAX_TARGET = 2000;
-  const SCRIPT_KEY = "__codexListPagebuster";
-  const TARGET_STORAGE_KEY = "__codexListPagebusterTarget";
-  const SCRIPT_LOAD_REFRESH_DELAYS_MS = [0, 1200, 3000, 6000];
-  const SIGNALS_MODULE_RE = /(?:\.\/)?(?:assets\/)?(?:app-server-manager-signals|app-initial)-[A-Za-z0-9_-]+\.js/g;
-  const SIGNALS_MODULE_FALLBACKS = [
-    "./assets/app-server-manager-signals-Csopz8aM.js",
-    "./assets/app-server-manager-signals-zAr_ejg8.js"
-  ];
-
-  if (window[SCRIPT_KEY]?.stop) {
-    window[SCRIPT_KEY].stop();
-  }
-
-  const state = {
-    stopped: false,
-    internalActionModulePromise: null,
-    startupTimers: new Set(),
-    startupAttempts: 0,
-    startupCompleted: false,
-    refreshInFlight: null,
-    refreshAttempts: 0,
-    lastRequestedLimit: 0,
-    lastRefreshAt: 0,
-    lastRefreshError: ""
-  };
-
-  function normalizeTarget(value, fallback = DEFAULT_TARGET) {
-    const parsed = Number.parseInt(String(value ?? ""), 10);
-    if (!Number.isFinite(parsed)) return fallback;
-    return Math.max(MIN_TARGET, Math.min(MAX_TARGET, parsed));
-  }
-
-  function readTarget() {
-    try {
-      return normalizeTarget(localStorage.getItem(TARGET_STORAGE_KEY));
-    } catch {
-      return DEFAULT_TARGET;
-    }
-  }
-
-  function writeTarget(value) {
-    const target = normalizeTarget(value);
-    try {
-      localStorage.setItem(TARGET_STORAGE_KEY, String(target));
-    } catch {
-      // The value can still be used for the current refresh.
-    }
-    return target;
-  }
-
-  function log(...args) {
-    try {
-      console.info("[Bennett history limit]", ...args);
-    } catch {}
-  }
-
-  function isLocalScriptSource(src) {
-    const value = String(src || "").trim();
-    if (!value) return false;
-    if (/^app:/i.test(value)) return true;
-    if (/^[a-z][a-z0-9+.-]*:/i.test(value)) return false;
-    return !/^(?:\/\/|\\\\)/.test(value);
-  }
-
-  function normalizeSignalsModulePath(path) {
-    const value = String(path || "").trim();
-    if (!isLocalScriptSource(value)) return "";
-    if (/^app:/i.test(value)) return value;
-    const relative = value.replace(/^(?:\.\/|\/)/, "");
-    if (relative.startsWith("assets/")) return `./${relative}`;
-    if (/^(?:app-server-manager-signals|app-initial)-[A-Za-z0-9_-]+\.js$/.test(relative)) {
-      return `./assets/${relative}`;
-    }
-    return "";
-  }
-
-  function collectModuleNames(text, candidates) {
-    if (typeof text !== "string" || !text) return;
-    for (const match of text.matchAll(SIGNALS_MODULE_RE)) {
-      const candidate = normalizeSignalsModulePath(match[0]);
-      if (candidate) candidates.add(candidate);
-    }
-  }
-
-  function collectInternalActionModuleCandidates() {
-    const candidates = new Set();
-    const add = (value) => {
-      if (!isLocalScriptSource(value)) return;
-      const candidate = normalizeSignalsModulePath(value);
-      if (candidate) candidates.add(candidate);
-    };
-
-    for (const script of document.querySelectorAll("script[src]")) {
-      const src = script.getAttribute("src") || "";
-      if (!isLocalScriptSource(src)) continue;
-      add(src);
-      collectModuleNames(src, candidates);
-    }
-
-    try {
-      for (const entry of performance.getEntriesByType("resource")) {
-        const name = String(entry.name || "");
-        if (!isLocalScriptSource(name)) continue;
-        if (/(?:app-server-manager-signals|app-initial)-/.test(name)) add(name);
-        collectModuleNames(name, candidates);
-      }
-    } catch {}
-
-    return Array.from(candidates);
-  }
-
-  async function discoverInternalActionModuleCandidates() {
-    const candidates = new Set(collectInternalActionModuleCandidates());
-
-    // Codex loads a tiny hashed entry module whose source names the current
-    // app-initial module. Read only that local app:// entry; do not crawl or
-    // fetch conversation resources.
-    for (const script of document.querySelectorAll("script[src]")) {
-      const src = script.getAttribute("src") || "";
-      if (!isLocalScriptSource(src)) continue;
-      try {
-        const response = await fetch(src);
-        if (response.ok) collectModuleNames(await response.text(), candidates);
-      } catch {}
-    }
-
-    for (const fallback of SIGNALS_MODULE_FALLBACKS) candidates.add(fallback);
-    return Array.from(candidates);
-  }
-
-  function findInternalRequestHelper(mod) {
-    const preferred = ["oht", "ts", "It", "ln"];
-    const keys = [...preferred, ...Object.keys(mod || {})];
-    const checked = new Set();
-
-    for (const key of keys) {
-      if (checked.has(key)) continue;
-      checked.add(key);
-      const value = mod?.[key];
-      if (typeof value !== "function" || isClassConstructor(value)) continue;
-      try {
-        if (/sendRequest\s*\(/.test(Function.prototype.toString.call(value))) {
-          return value.bind(mod);
-        }
-      } catch {}
-    }
-    return null;
-  }
-
-  function isClassConstructor(value) {
-    try {
-      return /^\s*class\s/.test(Function.prototype.toString.call(value));
-    } catch {
-      return false;
-    }
-  }
-
-  async function loadInternalActionModule() {
-    if (!state.internalActionModulePromise) {
-      state.internalActionModulePromise = (async () => {
-        let lastError = null;
-        for (const candidate of await discoverInternalActionModuleCandidates()) {
-          try {
-            const mod = await import(candidate);
-            const helper = findInternalRequestHelper(mod);
-            if (helper) return helper;
-          } catch (error) {
-            lastError = error;
-          }
-        }
-        throw lastError || new Error("未找到 Codex 原生历史刷新接口");
-      })().catch((error) => {
-        state.internalActionModulePromise = null;
-        throw error;
-      });
-    }
-    return state.internalActionModulePromise;
-  }
-
-  async function callInternalAction(type, payload) {
-    const sendRequest = await loadInternalActionModule();
-    return sendRequest(type, payload);
-  }
-
-  async function refresh(limit = readTarget()) {
-    const target = writeTarget(limit);
-    if (state.refreshInFlight && state.lastRequestedLimit === target) {
-      return state.refreshInFlight;
-    }
-
-    state.lastRequestedLimit = target;
-    state.refreshAttempts += 1;
-    state.lastRefreshError = "";
-
-    const request = callInternalAction("refresh-recent-conversations-for-host", {
-      hostId: "local",
-      mode: "expanded",
-      sortKey: "updated_at",
-      limit: target,
-      pageSize: target,
-      page_size: target
-    }).then(() => {
-      state.lastRefreshAt = Date.now();
-      log(`requested up to ${target} native conversations`);
-      return target;
-    }).catch((error) => {
-      state.lastRefreshError = error?.message || String(error);
-      throw error;
-    }).finally(() => {
-      if (state.refreshInFlight === request) state.refreshInFlight = null;
-    });
-
-    state.refreshInFlight = request;
-    return request;
-  }
-
-  function stop() {
-    state.stopped = true;
-    for (const timer of state.startupTimers) window.clearTimeout(timer);
-    state.startupTimers.clear();
-  }
-
-  function scheduleScriptLoadHistoryRefresh() {
-    SCRIPT_LOAD_REFRESH_DELAYS_MS.forEach((delay) => {
-      const timer = window.setTimeout(async () => {
-        state.startupTimers.delete(timer);
-        if (state.stopped || state.startupCompleted) return;
-        state.startupAttempts += 1;
-        try {
-          await refresh(readTarget());
-          state.startupCompleted = true;
-          for (const pending of state.startupTimers) window.clearTimeout(pending);
-          state.startupTimers.clear();
-        } catch (error) {
-          log("startup refresh failed", error?.message || String(error));
-        }
-      }, delay);
-      state.startupTimers.add(timer);
-    });
-  }
-
-  window[SCRIPT_KEY] = {
-    embeddedBy: "bennett-ui-improvements",
-    refresh,
-    getLimit: readTarget,
-    setLimit: writeTarget,
-    stop,
-    status: () => ({
-      configuredLimit: readTarget(),
-      lastRequestedLimit: state.lastRequestedLimit,
-      refreshAttempts: state.refreshAttempts,
-      lastRefreshAt: state.lastRefreshAt,
-      lastRefreshError: state.lastRefreshError,
-      startupAttempts: state.startupAttempts,
-      startupCompleted: state.startupCompleted,
-      renderer: "codex-native",
-      operation: "refresh-recent-conversations-for-host",
-      sessionQueries: false,
-      sessionReads: false,
-      sessionWrites: false,
-      providerMutation: false,
-      summaryHydration: false,
-      sidebarMutation: false,
-      projectExpansion: false,
-      href: location.href
-    })
-  };
-
-  window.__bennettUiEmbeddedHistoryLoader = window[SCRIPT_KEY];
-  scheduleScriptLoadHistoryRefresh();
-  } catch (error) {
-    const message = error?.message || String(error);
-    const readFallbackLimit = () => {
-      try {
-        const parsed = Number.parseInt(localStorage.getItem("__codexListPagebusterTarget") || "500", 10);
-        return Number.isFinite(parsed) ? Math.max(1, Math.min(2000, parsed)) : 500;
-      } catch {
-        return 500;
-      }
-    };
-    const failedLoader = {
-      embeddedBy: "bennett-ui-improvements",
-      refresh: () => Promise.reject(new Error(message)),
-      getLimit: readFallbackLimit,
-      setLimit: readFallbackLimit,
-      stop() {},
-      status: () => ({
-        configuredLimit: readFallbackLimit(),
-        lastRequestedLimit: 0,
-        refreshAttempts: 0,
-        lastRefreshAt: 0,
-        lastRefreshError: message,
-        startupAttempts: 0,
-        startupCompleted: false,
-        renderer: "codex-native",
-        operation: "refresh-recent-conversations-for-host",
-        degraded: true,
-        href: location.href,
-      }),
-    };
-    window.__codexListPagebuster = failedLoader;
-    window.__bennettUiEmbeddedHistoryLoader = failedLoader;
-    console.warn("[Bennett history limit] initialization failed", error);
-  }
-})();
-
-/* END BENNETT EMBEDDED NATIVE HISTORY LOADER */

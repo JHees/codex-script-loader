@@ -19,7 +19,7 @@ const COMMANDS = new Set([
   "list_quarantined",
   "remove_script",
   "restore_quarantined",
-  "run_doctor"
+  "run_doctor",
 ]);
 
 export class UiController {
@@ -28,6 +28,7 @@ export class UiController {
     this.injector = injector;
     this.supervisor = supervisor;
     this.startedAt = new Date().toISOString();
+    this.liveReloadPromise = null;
   }
 
   get supportsLive() {
@@ -35,7 +36,7 @@ export class UiController {
   }
 
   async dispatch(command, payload = {}) {
-    if (!COMMANDS.has(command)) throw new Error(`unsupported UI command: ${command}`);
+    if (!COMMANDS.has(command)) throw new Error(`unsupported loader command: ${command}`);
     switch (command) {
       case "get_app_status": return this.getAppStatus();
       case "list_scripts": return this.listScripts();
@@ -58,26 +59,21 @@ export class UiController {
   async getAppStatus() {
     await this.registry.reloadConfig();
     const scripts = await this.registry.list();
-    const failedScripts = scripts.filter(script => script.status === "failed").length;
     const runtime = this.supervisor?.snapshot?.() || null;
-    const live = Boolean(runtime);
-    const phase = runtime?.phase || "stopped";
     return {
       loader: "healthy",
-      codex: live ? (phase === "starting" ? "starting" : phase === "stopped" ? "stopped" : "healthy") : "stopped",
-      cdp: live ? phase : "stopped",
+      codex: runtime ? (runtime.phase === "stopped" ? "stopped" : "healthy") : "stopped",
+      cdp: runtime?.phase || "stopped",
       safeMode: Boolean(this.registry.config.safeMode),
-      managedProcess: live,
+      managedProcess: Boolean(runtime),
       targetCount: runtime?.targetCount || 0,
-      enabledScripts: scripts.filter(script => script.enabled).length,
-      failedScripts,
+      enabledScripts: scripts.filter((script) => script.enabled).length,
+      failedScripts: scripts.filter((script) => script.status === "failed").length,
       configHealthy: !this.registry.configLoadError,
       startedAt: this.startedAt,
       lastInjectionAt: runtime?.lastInjectionAt || null,
       lastError: runtime?.lastError || null,
-      offline: !live,
-      codexInspected: live,
-      cdpInspected: live
+      scope: "renderer-plugins-only",
     };
   }
 
@@ -100,7 +96,7 @@ export class UiController {
   }
 
   async getScript(id) {
-    const script = (await this.listScripts()).find(item => item.id === id);
+    const script = (await this.listScripts()).find((item) => item.id === id);
     if (!script) throw new Error(`unknown script: ${id}`);
     return script;
   }
@@ -109,12 +105,10 @@ export class UiController {
     await this.registry.reloadConfig();
     const scripts = await this.registry.list();
     const runtime = this.supervisor?.snapshot?.() || null;
-    const statusById = new Map((runtime?.scriptStatuses || []).map(item => [item.id, item.status]));
-    return scripts.map(script => ({
+    const statusById = new Map((runtime?.scriptStatuses || []).map((item) => [item.id, item.status]));
+    return scripts.map((script) => ({
       ...script,
-      status: script.status === "failed"
-        ? "failed"
-        : statusById.get(script.id) || (runtime?.phase === "healthy" && script.enabled && !this.registry.config.safeMode ? "running" : script.status)
+      status: script.status === "failed" ? "failed" : statusById.get(script.id) || script.status,
     }));
   }
 
@@ -122,26 +116,16 @@ export class UiController {
     const source = path.resolve(sourcePath);
     const info = await stat(source);
     let descriptor;
-    if (info.isDirectory()) {
-      descriptor = await loadScriptDescriptor(source);
-    } else if (info.isFile() && source.toLowerCase().endsWith(".js")) {
+    if (info.isDirectory()) descriptor = await loadScriptDescriptor(source);
+    else if (info.isFile() && source.toLowerCase().endsWith(".js")) {
       const sourceText = await readFile(source, "utf8");
       const baseName = path.basename(source, ".js");
       descriptor = {
-        id: safeScriptIdFromName(baseName),
-        name: baseName,
-        version: "local",
-        source: sourceText,
-        fingerprint: sha256Text(sourceText),
-        permissions: [],
-        scope: "renderer",
-        runAt: "document-start",
-        directory: path.dirname(source),
-        entry: path.basename(source)
+        id: safeScriptIdFromName(baseName), name: baseName, version: "local",
+        source: sourceText, fingerprint: sha256Text(sourceText), permissions: [],
+        scope: "renderer", runAt: "document-start", directory: path.dirname(source), entry: path.basename(source),
       };
-    } else {
-      throw new Error("script source must be a directory with manifest.json or a .js file");
-    }
+    } else throw new Error("script source must be a directory with manifest.json or a .js file");
     return { installPreview: true, script: descriptor, requiresConfirmation: true };
   }
 
@@ -150,42 +134,33 @@ export class UiController {
   }
 
   async reloadScripts({ live = false, ids = null } = {}) {
-    await this.registry.reloadConfig();
-    const plan = await this.registry.buildPlan();
     if (!live) {
+      await this.registry.reloadConfig();
+      const plan = await this.registry.buildPlan();
       return { mode: "dry-run", targetCount: 0, summary: summarizePlan(plan.descriptors), safeMode: plan.safeMode };
     }
     if (!this.supportsLive) throw new Error("live CDP injector is not configured");
-    const result = await this.supervisor.tick({ force: true, restartIds: ids || "all" });
-    const targets = result.results || [];
-    return { mode: "live", targetCount: targets.length, targets, summary: summarizePlan(result.plan.descriptors), safeMode: result.plan.safeMode };
+    if (this.liveReloadPromise) return this.liveReloadPromise;
+    this.liveReloadPromise = (async () => {
+      await this.registry.reloadConfig();
+      const result = await this.supervisor.tick({ force: true, restartIds: ids || "all" });
+      return { mode: "live", targetCount: result.results?.length || 0, targets: result.results || [], summary: summarizePlan(result.plan.descriptors), safeMode: result.plan.safeMode };
+    })().finally(() => { this.liveReloadPromise = null; });
+    return this.liveReloadPromise;
   }
 
   async getDoctorReport() {
     await this.registry.reloadConfig();
     const scripts = await this.registry.list();
     const runtime = this.supervisor?.snapshot?.() || null;
-    if (runtime) {
-      return {
-        offline: false,
-        checks: [
-          { id: "loader-data", status: "pass", detail: this.registry.layout.dataRoot },
-          { id: "loader-config", status: this.registry.configLoadError ? "warn" : "pass", detail: this.registry.configLoadError ? "configuration is invalid; safe mode is forced" : "configuration loaded" },
-          { id: "script-integrity", status: scripts.every(script => script.status !== "failed") ? "pass" : "warn", detail: `${scripts.length} scripts inspected` },
-          { id: "codex-process", status: runtime.phase === "stopped" ? "warn" : "pass", detail: runtime.phase === "stopped" ? "managed runtime stopped" : "managed Codex instance" },
-          { id: "cdp", status: runtime.phase === "healthy" ? "pass" : "warn", detail: `${runtime.targetCount} renderer targets; ${runtime.phase}` }
-        ]
-      };
-    }
     return {
-      offline: true,
+      offline: !runtime,
       checks: [
         { id: "loader-data", status: "pass", detail: this.registry.layout.dataRoot },
         { id: "loader-config", status: this.registry.configLoadError ? "warn" : "pass", detail: this.registry.configLoadError ? "configuration is invalid; safe mode is forced" : "configuration loaded" },
-        { id: "script-integrity", status: scripts.every(script => script.status !== "failed") ? "pass" : "warn", detail: `${scripts.length} scripts inspected` },
-        { id: "codex-process", status: "skipped", detail: "offline mode does not inspect running Codex" },
-        { id: "cdp", status: "skipped", detail: "offline mode does not query any CDP port" }
-      ]
+        { id: "script-integrity", status: scripts.every((script) => script.status !== "failed") ? "pass" : "warn", detail: `${scripts.length} scripts inspected` },
+        { id: "cdp", status: runtime?.phase === "healthy" ? "pass" : "skipped", detail: runtime ? `${runtime.targetCount} renderer targets; ${runtime.phase}` : "offline mode" },
+      ],
     };
   }
 }

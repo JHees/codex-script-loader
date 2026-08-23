@@ -153,7 +153,7 @@ export class ScriptRegistry {
         temporaryDirectory = path.join(this.layout.dataRoot, `.install-${process.pid}-${Date.now()}`);
         await mkdir(temporaryDirectory, { recursive: true });
         await writeFile(path.join(temporaryDirectory, "index.js"), await readFile(source, "utf8"), "utf8");
-        await writeFile(path.join(temporaryDirectory, "manifest.json"), JSON.stringify({ id, name: path.basename(source, ".js"), version: "local", entry: "index.js", scope: "renderer" }), "utf8");
+        await writeFile(path.join(temporaryDirectory, "manifest.json"), JSON.stringify({ id, name: path.basename(source, ".js"), version: "local", main: "index.js", scope: "renderer" }), "utf8");
         descriptor = await loadScriptDescriptor(temporaryDirectory);
       } else {
         throw new Error("install source must be a directory with manifest.json or a .js file");
@@ -196,7 +196,7 @@ export class ScriptRegistry {
         id: descriptor.id,
         name: descriptor.name,
         version: descriptor.version,
-        entry: descriptor.entry,
+        main: descriptor.entry,
         scope: descriptor.scope,
         runAt: descriptor.runAt,
         lifecycleGlobal: descriptor.lifecycleGlobal,

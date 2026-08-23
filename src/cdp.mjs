@@ -10,8 +10,7 @@ export function assertLoopbackEndpoint(endpoint) {
 
 export function isLikelyCodexTarget(target) {
   if (!target || target.type !== "page" || !target.webSocketDebuggerUrl) return false;
-  const haystack = `${target.title || ""} ${target.url || ""}`.toLowerCase();
-  return haystack.includes("codex") || haystack.includes("chatgpt");
+  return target.url === "app://-/index.html";
 }
 
 export function pickCodexTargets(targets) {
@@ -103,6 +102,7 @@ export async function connectCdpSession(endpoint, { WebSocketImpl = globalThis.W
   if (typeof WebSocketImpl !== "function") throw new Error("WebSocket is unavailable");
   const socket = new WebSocketImpl(endpoint);
   const pending = new Map();
+  const eventListeners = new Set();
   let nextId = 1;
   let opened = false;
   let resolveOpen;
@@ -140,7 +140,14 @@ export async function connectCdpSession(endpoint, { WebSocketImpl = globalThis.W
       const text = typeof data === "string" ? data : data?.text ? await data.text() : new TextDecoder().decode(data);
       message = JSON.parse(text);
     } catch { return; }
-    if (!message || !message.id || !pending.has(message.id)) return;
+    if (!message) return;
+    if (!message.id) {
+      for (const listener of eventListeners) {
+        try { listener(message); } catch {}
+      }
+      return;
+    }
+    if (!pending.has(message.id)) return;
     const pendingItem = pending.get(message.id);
     pending.delete(message.id);
     clearTimeout(pendingItem.timer);
@@ -168,7 +175,13 @@ export async function connectCdpSession(endpoint, { WebSocketImpl = globalThis.W
         }
       });
     },
+    onEvent(listener) {
+      if (typeof listener !== "function") throw new TypeError("CDP event listener must be a function");
+      eventListeners.add(listener);
+      return () => eventListeners.delete(listener);
+    },
     close() {
+      eventListeners.clear();
       rejectPending(new Error("CDP session closed"));
       try { socket.close(); } catch {}
     }

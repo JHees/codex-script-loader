@@ -3,12 +3,14 @@ import assert from "node:assert/strict";
 import { CdpInjector, assertLoopbackEndpoint, buildCdpInjectionCommands, connectCdpSession, pickCodexTargets } from "../src/cdp.mjs";
 
 const targets = [
-  { id: "codex-page", type: "page", title: "Codex", url: "app://codex", webSocketDebuggerUrl: "ws://127.0.0.1:9229/devtools/page/codex" },
+  { id: "codex-page", type: "page", title: "Codex", url: "app://-/index.html", webSocketDebuggerUrl: "ws://127.0.0.1:9229/devtools/page/codex" },
+  { id: "codex-overlay", type: "page", title: "Codex", url: "app://-/index.html?initialRoute=%2Favatar-overlay", webSocketDebuggerUrl: "ws://127.0.0.1:9229/devtools/page/overlay" },
+  { id: "codex-web", type: "page", title: "Codex", url: "https://chatgpt.com/codex", webSocketDebuggerUrl: "ws://127.0.0.1:9229/devtools/page/web" },
   { id: "other-page", type: "page", title: "Other", url: "https://example.com", webSocketDebuggerUrl: "ws://127.0.0.1:9229/devtools/page/other" },
-  { id: "worker", type: "worker", title: "Codex worker", url: "app://codex", webSocketDebuggerUrl: "ws://127.0.0.1:9229/devtools/page/worker" }
+  { id: "worker", type: "worker", title: "Codex worker", url: "app://-/index.html", webSocketDebuggerUrl: "ws://127.0.0.1:9229/devtools/page/worker" }
 ];
 
-test("target selection only accepts Codex page targets", () => {
+test("target selection only accepts the exact main Codex renderer", () => {
   assert.deepEqual(pickCodexTargets(targets).map(target => target.id), ["codex-page"]);
   assert.doesNotThrow(() => assertLoopbackEndpoint("ws://127.0.0.1:9229/devtools/page/codex"));
   assert.doesNotThrow(() => assertLoopbackEndpoint("ws://[::1]:9229/devtools/page/codex"));
