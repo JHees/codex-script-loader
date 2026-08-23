@@ -15,7 +15,7 @@ function option(name, fallback) {
 }
 
 const port = Number(option("--port", "9229"));
-const expectedVersion = option("--version", "1.4.5");
+const expectedVersion = option("--version", "1.4.8");
 const captureLabel = option("--capture-label", "current").replace(/[^a-z0-9_-]+/giu, "-").replace(/^-+|-+$/gu, "") || "current";
 const packageDirectory = fileURLToPath(new URL("../packages/bennett-ui-improvements/", import.meta.url));
 const descriptor = await loadScriptDescriptor(packageDirectory);
@@ -196,7 +196,7 @@ try {
 
   if (first.version !== expectedVersion || second.version !== expectedVersion) throw new Error(`Bennett lifecycle version does not match ${expectedVersion}`);
   if (first.loaderStatus !== "running" || second.loaderStatus !== "running") throw new Error("Loader did not report Bennett as running");
-  if (!first.hasStop || !first.hasSetFeature || first.features.length !== 9) throw new Error(`Bennett ${expectedVersion} lifecycle API or feature list is incomplete`);
+  if (!first.hasStop || !first.hasSetFeature || first.features.length !== 10) throw new Error(`Bennett ${expectedVersion} lifecycle API or feature list is incomplete`);
   if (!afterSettingsOpen.settingsPanelVisible || afterSettingsOpen.featureToggles !== first.features.length) throw new Error(`Bennett settings page did not open with all feature toggles: ${JSON.stringify(afterSettingsOpen)}`);
   const usageSection = bennettSettingsLayout.sections.find(section => section.id === "usage");
   if (!usageSection || JSON.stringify(usageSection.features) !== JSON.stringify(["show-usage-in-sidebar", "hide-usage-alert", "hide-upgrade-prompts"])) throw new Error(`quota settings order is incorrect: ${JSON.stringify(bennettSettingsLayout)}`);

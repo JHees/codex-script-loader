@@ -9,7 +9,7 @@
 - scoped storage、日志、DOM observer、事件清理；
 - 仿照 b-nnett/codex-plusplus 的 `api.settings.register()` 与 `registerPage()`；
 - Codex 设置中的内建 `Loader` 状态与脚本热重载页；
-- 内置 Bennett UI Improvements `1.4.5`；
+- 内置 Bennett UI Improvements `1.4.8`；
 - Windows 先行，macOS 复用同一插件层。
 
 账户、供应商、Responses 代理、MCP、Skills、CC Switch 导入和独立控制中心不属于当前版本。

@@ -21,7 +21,7 @@
   "use strict";
 
   const INSTALL_KEY = "__bennettUiImprovementsBigPizza";
-  const VERSION = "1.4.5";
+  const VERSION = "1.4.8";
   const PROJECT_COLOR_STORAGE_KEY = "sidebar-project-backgrounds:colors";
   const LEGACY_STORAGE_PREFIX = "bennett-ui-improvements:";
   const LOADER_STORAGE_PREFIX = "codex-script-loader:co.bennett.ui-improvements:";
@@ -77,6 +77,13 @@
       detail: "收紧斜杠菜单间距，并突出当前选项。",
       defaultEnabled: true,
       status: "可用",
+    },
+    {
+      id: "thread-title-regeneration",
+      title: "会话标题重新生成",
+      detail: "在临时分支中压缩完整会话，再由 Luna low 根据压缩上下文重新生成标题。",
+      defaultEnabled: true,
+      status: "本地普通会话可用；不会修改原会话上下文",
     },
     {
       id: "thread-markdown-export",
@@ -156,6 +163,8 @@
  *                                 project rows in the main sidebar.
  *  • sidebar-conversation-colors Color conversation rows by their native
  *                                 project association.
+ *  • thread-title-regeneration Use a system-scoped temporary working fork,
+ *                               compact it, then ask Luna low to title it.
  *  • thread-markdown-export Export user and assistant messages from the
  *                            native thread menu through Codex App Server.
  *  • thread-permanent-delete Permanently delete a local thread after an
@@ -237,6 +246,7 @@ function deactivateFeature(state, id) {
   }
 }
 
+const SESSION_ACTION_REGENERATE_TITLE = "regenerate-title";
 const SESSION_ACTION_EXPORT = "export";
 const SESSION_ACTION_DELETE = "delete";
 const sessionThreadActions = createSessionThreadActionsManager();
@@ -246,6 +256,7 @@ function createSessionThreadActionsManager() {
   const STYLE_ID = "bennett-thread-context-actions-style";
   const TOAST_ID = "bennett-thread-context-actions-toasts";
   const DIALOG_ATTR = "data-bennett-thread-delete-dialog";
+  const REGENERATE_ITEM_ID = "bennett-thread-regenerate-title";
   const EXPORT_ITEM_ID = "bennett-thread-export-markdown";
   const DELETE_SEPARATOR_ID = "bennett-thread-danger-separator";
   const DELETE_ITEM_ID = "bennett-thread-delete-permanently";
@@ -260,12 +271,21 @@ function createSessionThreadActionsManager() {
   const uiTimers = new Set();
   const retryTimers = new Set();
   const inFlight = new Set();
+  const activeTurnWatches = new Set();
+  const titleWorkingThreadIds = new Set();
+  const notificationGuardedThreadIds = new Set();
   let api = null;
   let observer = null;
   let scanTimer = 0;
   let resolverPromise = null;
+  let operationEpoch = 0;
   let onThreadPointerDown = null;
   let onWindowFocus = null;
+  let appInitialModulesPromise = null;
+  let nativeToastPromise = null;
+  let titleNotificationGuardRecord = null;
+  let guardedTitleNotificationCount = 0;
+  let lastGuardedTitleThreadId = "";
 
   const log = (level, ...args) => {
     const target = api?.log?.[level] || console[level] || console.log;
@@ -280,12 +300,24 @@ function createSessionThreadActionsManager() {
 
   const labels = () => isChinese()
     ? {
+        regenerateTitle: "重新生成标题",
         export: "导出 Markdown",
         delete: "永久删除",
         deleteTitle: "永久删除会话？",
         deleteBody: "此操作会永久删除“{title}”及其本地数据，且无法撤销。",
         cancel: "取消",
         confirmDelete: "永久删除",
+        compactingTitle: "压缩中 · {title}",
+        generatingTitle: "生成标题 · {title}",
+        temporaryTitle: "正在生成标题（{title}）",
+        untitledThread: "未命名会话",
+        titleRegenerated: "已更新 · {title}",
+        titleUnchanged: "无变化 · {title}",
+        titleChanged: "未覆盖 · {title} 已被修改",
+        titleError: "失败 · {title}：{error}",
+        titleUnavailable: "Luna low 未返回可用标题",
+        compactionFailed: "临时会话压缩失败",
+        busyThread: "请等待会话完成后再重新生成标题",
         exporting: "正在导出会话…",
         exported: "Markdown 已导出",
         deleting: "正在永久删除会话…",
@@ -294,12 +326,24 @@ function createSessionThreadActionsManager() {
         unavailable: "Codex 原生会话接口暂不可用",
       }
     : {
+        regenerateTitle: "Regenerate title",
         export: "Export Markdown",
         delete: "Delete permanently",
         deleteTitle: "Delete this chat permanently?",
         deleteBody: "This permanently deletes “{title}” and its local data. This cannot be undone.",
         cancel: "Cancel",
         confirmDelete: "Delete permanently",
+        compactingTitle: "Compacting · {title}",
+        generatingTitle: "Generating title · {title}",
+        temporaryTitle: "Generating title ({title})",
+        untitledThread: "Untitled chat",
+        titleRegenerated: "Updated · {title}",
+        titleUnchanged: "Unchanged · {title}",
+        titleChanged: "Not overwritten · {title} changed",
+        titleError: "Failed · {title}: {error}",
+        titleUnavailable: "Luna low did not return a usable title",
+        compactionFailed: "The temporary chat could not be compacted",
+        busyThread: "Wait for the chat to finish before regenerating its title",
         exporting: "Exporting chat…",
         exported: "Markdown exported",
         deleting: "Deleting chat permanently…",
@@ -319,6 +363,7 @@ function createSessionThreadActionsManager() {
     return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
   };
 
+  const REGENERATE_ICON = svgIcon("M10 2.75v2.5m0 9.5v2.5M2.75 10h2.5m9.5 0h2.5M4.88 4.88l1.77 1.77m6.7 6.7 1.77 1.77m0-10.24-1.77 1.77m-6.7 6.7-1.77 1.77M10 6.75A3.25 3.25 0 1 1 10 13.25 3.25 3.25 0 0 1 10 6.75");
   const EXPORT_ICON = svgIcon("M10 2.75v9.5m0 0 3.25-3.25M10 12.25 6.75 9M4 13.75v1.5A2 2 0 0 0 6 17.25h8a2 2 0 0 0 2-2v-1.5");
   const DELETE_ICON = svgIcon("M3.75 5.25h12.5M8 2.75h4l.75 2.5M6 7.5l.5 8.25h7L14 7.5M8.5 9.25v4.5m3-4.5v4.5");
 
@@ -331,6 +376,10 @@ function createSessionThreadActionsManager() {
       ${THREAD_SELECTOR} .codex-delete-button,
       ${THREAD_SELECTOR} .codex-session-action-group,
       ${THREAD_SELECTOR} .codex-session-action-button {
+        display: none !important;
+      }
+
+      ${THREAD_SELECTOR}[data-bennett-title-working-thread="true"] {
         display: none !important;
       }
 
@@ -451,18 +500,125 @@ function createSessionThreadActionsManager() {
     toast.dataset.tone = tone;
     toast.textContent = String(message || "");
     root.appendChild(toast);
-    const timer = window.setTimeout(() => {
+    let timer = 0;
+    const clearTimer = () => {
+      if (!timer) return;
+      window.clearTimeout(timer);
       uiTimers.delete(timer);
+      timer = 0;
+    };
+    const removeToast = () => {
+      clearTimer();
       toast.remove();
       if (!root.childElementCount) root.remove();
-    }, timeout);
-    uiTimers.add(timer);
+    };
+    const scheduleRemoval = (delay) => {
+      clearTimer();
+      if (!(delay > 0)) return;
+      timer = window.setTimeout(() => {
+        uiTimers.delete(timer);
+        timer = 0;
+        toast.remove();
+        if (!root.childElementCount) root.remove();
+      }, delay);
+      uiTimers.add(timer);
+    };
+    scheduleRemoval(timeout);
+    return {
+      update(nextMessage, nextTone = tone, nextTimeout = null) {
+        tone = nextTone;
+        toast.dataset.tone = tone;
+        toast.textContent = String(nextMessage || "");
+        if (nextTimeout !== null) scheduleRemoval(nextTimeout);
+      },
+      dismiss: removeToast,
+    };
   }
 
   function reactFiberFor(node) {
     if (!(node instanceof HTMLElement)) return null;
     const key = Object.getOwnPropertyNames(node).find((name) => name.startsWith("__reactFiber$"));
     return key ? node[key] : null;
+  }
+
+  function localConversationManagerFromTree() {
+    const row = document.querySelector(THREAD_SELECTOR);
+    let root = reactFiberFor(row);
+    while (root?.return) root = root.return;
+    if (!root) return null;
+    const stack = [root];
+    const seenFibers = new Set();
+    const seenCandidates = new Set();
+    const inspectCandidate = (candidate) => {
+      if (!candidate || (typeof candidate !== "object" && typeof candidate !== "function") ||
+          seenCandidates.has(candidate)) return null;
+      seenCandidates.add(candidate);
+      const listeners = candidate?.events?.turnCompletedListeners;
+      if (!Array.isArray(listeners) || typeof candidate.getHostId !== "function") return null;
+      try {
+        return candidate.getHostId() === "local" ? candidate : null;
+      } catch {
+        return null;
+      }
+    };
+    while (stack.length && seenFibers.size < 20000) {
+      const fiber = stack.pop();
+      if (!fiber || seenFibers.has(fiber)) continue;
+      seenFibers.add(fiber);
+      if (fiber.sibling) stack.push(fiber.sibling);
+      if (fiber.child) stack.push(fiber.child);
+      let manager = inspectCandidate(fiber.memoizedProps);
+      if (manager) return manager;
+      let hook = fiber.memoizedState;
+      for (let index = 0; hook && index < 200; index += 1, hook = hook.next) {
+        const state = hook.memoizedState;
+        manager = inspectCandidate(state) || inspectCandidate(state?.current);
+        if (manager) return manager;
+        if (Array.isArray(state)) {
+          for (const item of state) {
+            manager = inspectCandidate(item);
+            if (manager) return manager;
+          }
+        } else if (state && typeof state === "object") {
+          for (const key of Reflect.ownKeys(state).slice(0, 20)) {
+            try {
+              manager = inspectCandidate(state[key]);
+              if (manager) return manager;
+            } catch {}
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  function ensureTitleNotificationGuard() {
+    const activeListeners = titleNotificationGuardRecord?.manager?.events?.turnCompletedListeners;
+    if (Array.isArray(activeListeners) && activeListeners.includes(titleNotificationGuardRecord.listener)) {
+      return true;
+    }
+    titleNotificationGuardRecord = null;
+    const manager = localConversationManagerFromTree();
+    const listeners = manager?.events?.turnCompletedListeners;
+    if (!Array.isArray(listeners)) return false;
+    const listener = (event) => {
+      if (!titleWorkingThreadIds.has(String(event?.conversationId || ""))) return;
+      event.hasPendingContinuation = true;
+      guardedTitleNotificationCount += 1;
+      lastGuardedTitleThreadId = String(event.conversationId || "");
+    };
+    listeners.unshift(listener);
+    titleNotificationGuardRecord = { manager, listener };
+    return true;
+  }
+
+  function removeTitleNotificationGuard() {
+    const record = titleNotificationGuardRecord;
+    titleNotificationGuardRecord = null;
+    const listeners = record?.manager?.events?.turnCompletedListeners;
+    if (!Array.isArray(listeners)) return;
+    const index = listeners.indexOf(record.listener);
+    if (index >= 0) listeners.splice(index, 1);
   }
 
   function threadContextFor(row) {
@@ -523,11 +679,24 @@ function createSessionThreadActionsManager() {
   function appendThreadActions(items, context) {
     if (!Array.isArray(items) || !context) return items;
     const next = items.filter((item) => ![
+      REGENERATE_ITEM_ID,
       EXPORT_ITEM_ID,
       DELETE_SEPARATOR_ID,
       DELETE_ITEM_ID,
     ].includes(item?.id));
     const text = labels();
+
+    if (enabledActions.has(SESSION_ACTION_REGENERATE_TITLE)) {
+      const regenerateItem = {
+        id: REGENERATE_ITEM_ID,
+        icon: REGENERATE_ICON,
+        message: nativeMessage("regenerateTitle", text.regenerateTitle),
+        enabled: !inFlight.has(`${SESSION_ACTION_REGENERATE_TITLE}:${context.threadKey}`),
+        onSelect: () => void regenerateThreadTitle(context),
+      };
+      const renameIndex = next.findIndex((item) => item?.id === "rename-thread");
+      next.splice(renameIndex >= 0 ? renameIndex + 1 : 0, 0, regenerateItem);
+    }
 
     if (enabledActions.has(SESSION_ACTION_EXPORT)) {
       const exportItem = {
@@ -562,6 +731,14 @@ function createSessionThreadActionsManager() {
   function patchMenus() {
     const activeRefs = new Set();
     for (const row of document.querySelectorAll(THREAD_SELECTOR)) {
+      const rowThreadId = String(
+        row.getAttribute("data-app-action-sidebar-thread-id") || "",
+      ).replace(/^local:/, "");
+      if (titleWorkingThreadIds.has(rowThreadId)) {
+        row.setAttribute("data-bennett-title-working-thread", "true");
+        continue;
+      }
+      row.removeAttribute("data-bennett-title-working-thread");
       const context = threadContextFor(row);
       if (!context) continue;
       const ref = threadMenuRefFor(row);
@@ -679,20 +856,36 @@ function createSessionThreadActionsManager() {
     return null;
   }
 
-  async function loadResolver() {
-    if (!resolverPromise) {
-      resolverPromise = (async () => {
+  async function loadAppInitialModules() {
+    if (!appInitialModulesPromise) {
+      appInitialModulesPromise = (async () => {
+        const modules = [];
         let lastError = null;
         for (const url of await discoverAppInitialUrls()) {
           try {
-            const mod = await import(url);
-            const resolver = resolverFromModule(mod);
-            if (resolver) return resolver;
+            modules.push(await import(url));
           } catch (error) {
             lastError = error;
           }
         }
-        throw lastError || new Error(labels().unavailable);
+        if (!modules.length) throw lastError || new Error(labels().unavailable);
+        return modules;
+      })().catch((error) => {
+        appInitialModulesPromise = null;
+        throw error;
+      });
+    }
+    return appInitialModulesPromise;
+  }
+
+  async function loadResolver() {
+    if (!resolverPromise) {
+      resolverPromise = (async () => {
+        for (const mod of await loadAppInitialModules()) {
+          const resolver = resolverFromModule(mod);
+          if (resolver) return resolver;
+        }
+        throw new Error(labels().unavailable);
       })().catch((error) => {
         resolverPromise = null;
         throw error;
@@ -701,7 +894,86 @@ function createSessionThreadActionsManager() {
     return resolverPromise;
   }
 
-  async function sendNativeRequest(context, method, payload) {
+  function nativeToastFromScope(mod, scope) {
+    if (!scope || typeof scope.get !== "function") return null;
+    const methods = ["success", "info", "warning", "danger"];
+    for (const value of Object.values(mod || {})) {
+      try {
+        const service = scope.get(value);
+        if (methods.every((method) => typeof service?.[method] === "function") &&
+            typeof service.closeAll === "function") return service;
+      } catch {}
+    }
+    return null;
+  }
+
+  async function loadNativeToast(scope) {
+    if (!nativeToastPromise) {
+      nativeToastPromise = (async () => {
+        for (const mod of await loadAppInitialModules()) {
+          const toast = nativeToastFromScope(mod, scope);
+          if (toast) return toast;
+        }
+        throw new Error(labels().unavailable);
+      })().catch((error) => {
+        nativeToastPromise = null;
+        throw error;
+      });
+    }
+    return nativeToastPromise;
+  }
+
+  function compactProgressText(value, maxLength = 26) {
+    const text = oneLine(value, labels().untitledThread);
+    return text.length > maxLength ? `${text.slice(0, maxLength - 1).trimEnd()}…` : text;
+  }
+
+  async function showTitleProgress(message, scope) {
+    try {
+      const toast = await loadNativeToast(scope);
+      const id = `bennett-title-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`}`;
+      let dismissed = false;
+      let handle = null;
+      let revision = 0;
+      const options = (timeout, token) => ({
+        id,
+        duration: timeout === null ? 0 : timeout / 1000,
+        hasCloseButton: true,
+        onRemove: () => {
+          if (token === revision) dismissed = true;
+        },
+      });
+      revision += 1;
+      handle = toast.info(String(message || ""), options(null, revision));
+      return {
+        update(nextMessage, tone = "info", nextTimeout = null) {
+          if (dismissed) return;
+          const method = tone === "error"
+            ? "danger"
+            : tone === "warning"
+              ? "warning"
+              : tone === "success"
+                ? "success"
+                : "info";
+          revision += 1;
+          handle = toast[method](
+            String(nextMessage || ""),
+            options(nextTimeout, revision),
+          );
+        },
+        dismiss() {
+          if (dismissed) return;
+          dismissed = true;
+          handle?.close?.();
+        },
+      };
+    } catch (error) {
+      log("warn", "native title progress toast unavailable", error);
+      return showToast(message, "info", 0);
+    }
+  }
+
+  async function nativeClientFor(context) {
     const scope = scopeFromRow(context.row);
     if (!scope) throw new Error(labels().unavailable);
     const resolver = await loadResolver();
@@ -709,6 +981,11 @@ function createSessionThreadActionsManager() {
     if (!client || typeof client.sendRequest !== "function") {
       throw new Error(labels().unavailable);
     }
+    return client;
+  }
+
+  async function sendNativeRequest(context, method, payload) {
+    const client = await nativeClientFor(context);
     return client.sendRequest(method, payload);
   }
 
@@ -838,6 +1115,518 @@ function createSessionThreadActionsManager() {
     anchor.remove();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     return true;
+  }
+
+  const TITLE_OUTPUT_SCHEMA = Object.freeze({
+    type: "object",
+    properties: {
+      title: { type: "string", minLength: 1, maxLength: 36 },
+      description: { type: "string", minLength: 1, maxLength: 100 },
+    },
+    required: ["title", "description"],
+    additionalProperties: false,
+  });
+
+  const TITLE_THREAD_CONFIG = Object.freeze({
+    model_reasoning_effort: "low",
+    "features.enable_fanout": false,
+    "features.hooks": false,
+    "features.multi_agent": false,
+    "features.multi_agent_v2": false,
+    "features.plugins": false,
+    "features.shell_snapshot": false,
+    "features.tool_suggest": false,
+    web_search: "disabled",
+  });
+
+  function compactedTitlePrompt(currentTitle) {
+    return [
+      "You are in a temporary system working fork of an existing Codex conversation after its full model context was compacted.",
+      "The preceding model context contains the compaction summary and any recent messages retained by Codex.",
+      "Generate a concise UI title for the conversation's current durable main purpose.",
+      "Treat the compaction summary as the primary evidence. Use retained recent messages only to clarify it.",
+      "Do not overweight the latest exchange when it is merely a progress update, implementation detail, correction, or temporary subtask.",
+      "If the conversation has firmly shifted to a different durable purpose, title that newer purpose.",
+      currentTitle ? `The current UI title is: ${currentTitle}` : null,
+      "Fill the structured title field with plain text of at most 36 characters and preferably fewer than 5 words.",
+      "Fill the structured description field with a compact search-oriented summary of at most 100 characters.",
+      "Use an imperative or action-oriented phrase and write in the user's locale.",
+      "Preserve useful ticket IDs, project names, code areas, and other stable anchors.",
+      "Do not include quotes, markdown, formatting characters, or trailing punctuation.",
+      "Do not answer the user, call tools, inspect files, or perform any work; only fill the structured fields.",
+    ].filter(Boolean).join(" ");
+  }
+
+  function threadTitleValue(thread, fallback = "") {
+    return oneLine(thread?.name || thread?.title || fallback);
+  }
+
+  function turnErrorMessage(turn, fallback) {
+    return oneLine(
+      turn?.error?.message || turn?.error?.additionalDetails || fallback,
+      fallback,
+    );
+  }
+
+  function watchThreadTurn(client, threadId, turnId, timeoutMs, timeoutMessage) {
+    let settled = false;
+    let dispose = null;
+    let deadlineTimer = 0;
+    let pollTimer = 0;
+    let polling = false;
+    let lastPollError = null;
+    let resolvePromise;
+    let rejectPromise;
+    const watch = {
+      promise: new Promise((resolve, reject) => {
+        resolvePromise = resolve;
+        rejectPromise = reject;
+      }),
+      cancel(reason = "Thread operation cancelled") {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        rejectPromise(new DOMException(reason, "AbortError"));
+      },
+    };
+    const cleanup = () => {
+      if (deadlineTimer) window.clearTimeout(deadlineTimer);
+      if (pollTimer) window.clearTimeout(pollTimer);
+      deadlineTimer = 0;
+      pollTimer = 0;
+      try {
+        if (typeof dispose === "function") dispose();
+        else dispose?.dispose?.();
+      } catch {}
+      activeTurnWatches.delete(watch);
+    };
+    const finish = (error, turn) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (error) rejectPromise(error);
+      else resolvePromise(turn);
+    };
+    const onCompleted = (event) => {
+      const params = event?.params || event;
+      if (String(params?.threadId || "") !== String(threadId)) return;
+      const turn = params?.turn;
+      if (!turn || String(turn?.id || "") !== String(turnId)) return;
+      if (turn.status !== "completed") {
+        finish(new Error(turnErrorMessage(turn, timeoutMessage)));
+        return;
+      }
+      finish(null, turn);
+    };
+    const pollPersistedTurn = async () => {
+      if (settled || polling) return;
+      polling = true;
+      try {
+        const response = await client.sendRequest("thread/turns/list", {
+          threadId,
+          limit: 5,
+          sortDirection: "desc",
+          itemsView: "full",
+        });
+        const page = response?.result || response;
+        const turns = Array.isArray(page?.data) ? page.data : [];
+        const turn = turns.find((candidate) => String(candidate?.id || "") === String(turnId));
+        if (turn?.status === "completed") {
+          finish(null, turn);
+          return;
+        }
+        if (turn?.status && turn.status !== "inProgress") {
+          finish(new Error(turnErrorMessage(turn, timeoutMessage)));
+          return;
+        }
+        lastPollError = null;
+      } catch (error) {
+        lastPollError = error;
+      } finally {
+        polling = false;
+      }
+      if (!settled) pollTimer = window.setTimeout(pollPersistedTurn, 1000);
+    };
+    if (typeof client?.addNotificationCallback !== "function") {
+      finish(new Error(labels().unavailable));
+      return watch;
+    }
+    try {
+      dispose = client.addNotificationCallback("turn/completed", onCompleted);
+    } catch (error) {
+      finish(error);
+      return watch;
+    }
+    deadlineTimer = window.setTimeout(() => finish(new Error(
+      lastPollError?.message || timeoutMessage,
+    )), timeoutMs);
+    pollTimer = window.setTimeout(pollPersistedTurn, 250);
+    activeTurnWatches.add(watch);
+    return watch;
+  }
+
+  async function persistedCompactionTurnIds(client, threadId) {
+    const response = await client.sendRequest("thread/turns/list", {
+      threadId,
+      limit: 50,
+      sortDirection: "desc",
+      itemsView: "full",
+    });
+    const page = response?.result || response;
+    const turns = Array.isArray(page?.data) ? page.data : [];
+    return new Set(turns.filter((turn) =>
+      Array.isArray(turn?.items) &&
+      turn.items.some((item) => item?.type === "contextCompaction"),
+    ).map((turn) => String(turn?.id || "")).filter(Boolean));
+  }
+
+  function watchThreadCompaction(
+    client,
+    threadId,
+    ignoredTurnIds,
+    timeoutMs,
+    timeoutMessage,
+  ) {
+    let settled = false;
+    const disposers = [];
+    let deadlineTimer = 0;
+    let pollTimer = 0;
+    let polling = false;
+    let lastPollError = null;
+    let resolvePromise;
+    let rejectPromise;
+    const watch = {
+      promise: new Promise((resolve, reject) => {
+        resolvePromise = resolve;
+        rejectPromise = reject;
+      }),
+      cancel(reason = "Thread compaction cancelled") {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        rejectPromise(new DOMException(reason, "AbortError"));
+      },
+    };
+    const cleanup = () => {
+      if (deadlineTimer) window.clearTimeout(deadlineTimer);
+      if (pollTimer) window.clearTimeout(pollTimer);
+      deadlineTimer = 0;
+      pollTimer = 0;
+      for (const dispose of disposers) {
+        try {
+          if (typeof dispose === "function") dispose();
+          else dispose?.dispose?.();
+        } catch {}
+      }
+      disposers.length = 0;
+      activeTurnWatches.delete(watch);
+    };
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (error) rejectPromise(error);
+      else resolvePromise(value);
+    };
+    const paramsFor = (event) => event?.params || event;
+    const matchesThread = (params) =>
+      String(params?.threadId || "") === String(threadId);
+    const onItemCompleted = (event) => {
+      const params = paramsFor(event);
+      if (!matchesThread(params) || params?.item?.type !== "contextCompaction") return;
+      if (ignoredTurnIds.has(String(params?.turnId || ""))) return;
+      finish(null, params);
+    };
+    const onThreadCompacted = (event) => {
+      const params = paramsFor(event);
+      if (!matchesThread(params)) return;
+      finish(null, params);
+    };
+    const pollPersistedItems = async () => {
+      if (settled || polling) return;
+      polling = true;
+      try {
+        const response = await client.sendRequest("thread/turns/list", {
+          threadId,
+          limit: 5,
+          sortDirection: "desc",
+          itemsView: "full",
+        });
+        const page = response?.result || response;
+        const turns = Array.isArray(page?.data) ? page.data : [];
+        const compactionTurn = turns.find((turn) =>
+          turn?.status === "completed" &&
+          !ignoredTurnIds.has(String(turn?.id || "")) &&
+          Array.isArray(turn?.items) &&
+          turn.items.some((item) => item?.type === "contextCompaction"),
+        );
+        if (compactionTurn) {
+          finish(null, { threadId, turn: compactionTurn });
+          return;
+        }
+        lastPollError = null;
+      } catch (error) {
+        // A just-forked thread can be briefly unavailable to pagination. Keep
+        // polling until the official compaction deadline rather than failing
+        // on a transient read.
+        lastPollError = error;
+      } finally {
+        polling = false;
+      }
+      if (!settled) pollTimer = window.setTimeout(pollPersistedItems, 1250);
+    };
+    if (typeof client?.addNotificationCallback !== "function") {
+      finish(new Error(labels().unavailable));
+      return watch;
+    }
+    try {
+      // item/completed is the current protocol signal. thread/compacted is
+      // retained as a compatibility fallback for older App Server builds.
+      disposers.push(client.addNotificationCallback("item/completed", onItemCompleted));
+      disposers.push(client.addNotificationCallback("thread/compacted", onThreadCompacted));
+    } catch (error) {
+      finish(error);
+      return watch;
+    }
+    deadlineTimer = window.setTimeout(() => finish(new Error(
+      lastPollError?.message || timeoutMessage,
+    )), timeoutMs);
+    pollTimer = window.setTimeout(pollPersistedItems, 350);
+    activeTurnWatches.add(watch);
+    return watch;
+  }
+
+  function titleFromTurn(turn) {
+    const items = Array.isArray(turn?.items) ? turn.items : [];
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+      const item = items[index];
+      if (item?.type !== "agentMessage") continue;
+      const text = String(item.text || "").trim();
+      if (!text) continue;
+      try {
+        const parsed = JSON.parse(text);
+        const title = oneLine(parsed?.title).slice(0, 36).trimEnd();
+        if (title) return title;
+      } catch {}
+    }
+    return "";
+  }
+
+  async function discardTitleWorkingThread(client, threadId) {
+    if (!threadId) return;
+    try {
+      await client.sendRequest("thread/delete", { threadId });
+    } catch {
+      try {
+        await client.sendRequest("thread/resume", { threadId, excludeTurns: true });
+        await client.sendRequest("thread/delete", { threadId });
+      } catch {}
+    }
+    try {
+      await client.sendRequest("thread/unsubscribe", { threadId });
+    } catch {}
+  }
+
+  async function forkTitleWorkingThread(client, params, originalTitle) {
+    const response = await client.sendRequest("thread/fork", {
+      // Native compaction needs persisted rollout history. A system source is
+      // omitted from the App's default interactive thread listing; the fork
+      // remains readable through official turn pagination and is deleted in
+      // finally.
+      ephemeral: false,
+      excludeTurns: true,
+      threadSource: "system",
+      ...params,
+    });
+    const thread = threadFromResponse(response);
+    const threadId = String(thread?.id || "");
+    if (!threadId) throw new Error(labels().unavailable);
+    titleWorkingThreadIds.add(threadId);
+    const notificationGuarded = ensureTitleNotificationGuard();
+    if (notificationGuarded) notificationGuardedThreadIds.add(threadId);
+    patchMenus();
+    schedulePatch(0);
+    try {
+      await client.sendRequest("thread/name/set", {
+        threadId,
+        name: labels().temporaryTitle.replace(
+          "{title}",
+          originalTitle || labels().untitledThread,
+        ),
+      });
+    } catch {}
+    if (!notificationGuarded) {
+      log("warn", "title working thread notification guard unavailable", threadId);
+    }
+    return { thread, threadId };
+  }
+
+  async function regenerateThreadTitle(context) {
+    const key = `${SESSION_ACTION_REGENERATE_TITLE}:${context.threadKey}`;
+    if (inFlight.has(key)) return;
+    inFlight.add(key);
+    schedulePatch(0);
+    const epoch = operationEpoch;
+    let client = null;
+    let workingThreadId = "";
+    let progressFinished = false;
+    const initialTitle = oneLine(context.title) || labels().untitledThread;
+    let originalTitle = initialTitle;
+    const progressToast = await showTitleProgress(
+      labels().compactingTitle.replace("{title}", compactProgressText(initialTitle)),
+      scopeFromRow(context.row),
+    );
+    const finishProgress = (message, tone = "info", timeout = 6000) => {
+      progressFinished = true;
+      progressToast.update(message, tone, timeout);
+    };
+    try {
+      client = await nativeClientFor(context);
+      const sourceResponse = await client.sendRequest("thread/read", {
+        threadId: context.threadId,
+        includeTurns: false,
+      });
+      const sourceThread = threadFromResponse(sourceResponse);
+      const status = String(sourceThread?.status?.type || sourceThread?.status || "");
+      if (status && status !== "idle" && status !== "notLoaded") {
+        throw new Error(labels().busyThread);
+      }
+      originalTitle = threadTitleValue(sourceThread, context.title) || labels().untitledThread;
+      progressToast.update(
+        labels().compactingTitle.replace(
+          "{title}",
+          compactProgressText(originalTitle),
+        ),
+      );
+      const cwd = sourceThread?.latestThreadSettings?.cwd || sourceThread?.cwd || null;
+
+      ({ threadId: workingThreadId } = await forkTitleWorkingThread(client, {
+        threadId: context.threadId,
+        cwd,
+        approvalPolicy: "never",
+        permissions: ":read-only",
+        runtimeWorkspaceRoots: [],
+        config: TITLE_THREAD_CONFIG,
+      }, originalTitle));
+      const existingCompactionTurnIds = await persistedCompactionTurnIds(
+        client,
+        workingThreadId,
+      );
+      const compactWatch = watchThreadCompaction(
+        client,
+        workingThreadId,
+        existingCompactionTurnIds,
+        900000,
+        labels().compactionFailed,
+      );
+      try {
+        await client.sendRequest("thread/compact/start", { threadId: workingThreadId });
+      } catch (error) {
+        compactWatch.cancel();
+        throw error;
+      }
+      await compactWatch.promise;
+      if (epoch !== operationEpoch) return;
+
+      progressToast.update(
+        labels().generatingTitle.replace(
+          "{title}",
+          compactProgressText(originalTitle),
+        ),
+      );
+      let titleStartResponse;
+      try {
+        titleStartResponse = await client.sendRequest("turn/start", {
+          threadId: workingThreadId,
+          clientUserMessageId: globalThis.crypto?.randomUUID?.(),
+          input: [{
+            type: "text",
+            text: compactedTitlePrompt(originalTitle),
+            text_elements: [],
+          }],
+          cwd,
+          approvalPolicy: "never",
+          permissions: ":read-only",
+          runtimeWorkspaceRoots: [],
+          model: "gpt-5.6-luna",
+          effort: "low",
+          serviceTier: null,
+          personality: null,
+          outputSchema: TITLE_OUTPUT_SCHEMA,
+          collaborationMode: null,
+        });
+      } catch (error) {
+        throw error;
+      }
+      const startedTitleTurn = titleStartResponse?.turn ||
+        titleStartResponse?.result?.turn || titleStartResponse?.result;
+      const titleTurnId = String(startedTitleTurn?.id || "");
+      if (!titleTurnId) throw new Error(labels().titleUnavailable);
+      const titleWatch = watchThreadTurn(
+        client,
+        workingThreadId,
+        titleTurnId,
+        90000,
+        labels().titleUnavailable,
+      );
+      const generatedTitle = titleFromTurn(await titleWatch.promise);
+      if (!generatedTitle) throw new Error(labels().titleUnavailable);
+      if (epoch !== operationEpoch) return { status: "cancelled" };
+
+      const latestResponse = await client.sendRequest("thread/read", {
+        threadId: context.threadId,
+        includeTurns: false,
+      });
+      const latestTitle = threadTitleValue(threadFromResponse(latestResponse), context.title);
+      if (latestTitle !== originalTitle) {
+        finishProgress(
+          labels().titleChanged.replace("{title}", compactProgressText(originalTitle)),
+          "warning",
+        );
+        return { status: "title-changed", originalTitle, title: latestTitle };
+      }
+      if (generatedTitle === originalTitle) {
+        finishProgress(
+          labels().titleUnchanged.replace("{title}", compactProgressText(originalTitle)),
+          "info",
+          3800,
+        );
+        return { status: "unchanged", originalTitle, title: generatedTitle };
+      }
+      await client.sendRequest("thread/name/set", {
+        threadId: context.threadId,
+        name: generatedTitle,
+      });
+      finishProgress(
+        labels().titleRegenerated
+          .replace("{title}", compactProgressText(generatedTitle)),
+        "success",
+      );
+      return { status: "updated", originalTitle, title: generatedTitle };
+    } catch (error) {
+      if (epoch !== operationEpoch || error?.name === "AbortError") {
+        return { status: "cancelled" };
+      }
+      log("error", "thread compacted title regeneration failed", error);
+      finishProgress(
+        labels().titleError
+          .replace("{title}", compactProgressText(originalTitle, 22))
+          .replace("{error}", compactProgressText(error?.message || String(error), 36)),
+        "error",
+        7000,
+      );
+      return { status: "error", error: error?.message || String(error) };
+    } finally {
+      if (!progressFinished) progressToast.dismiss();
+      if (client) {
+        await discardTitleWorkingThread(client, workingThreadId);
+      }
+      titleWorkingThreadIds.delete(workingThreadId);
+      notificationGuardedThreadIds.delete(workingThreadId);
+      patchMenus();
+      inFlight.delete(key);
+      if (epoch === operationEpoch) schedulePatch(0);
+    }
   }
 
   async function exportThread(context) {
@@ -990,6 +1779,7 @@ function createSessionThreadActionsManager() {
   }
 
   function stop() {
+    operationEpoch += 1;
     observer?.disconnect();
     observer = null;
     if (onThreadPointerDown) {
@@ -1008,12 +1798,19 @@ function createSessionThreadActionsManager() {
     for (const [ref, record] of patchedMenuRefs) restoreMenuRef(ref, record);
     for (const timer of uiTimers) window.clearTimeout(timer);
     uiTimers.clear();
+    for (const watch of Array.from(activeTurnWatches)) watch.cancel();
+    activeTurnWatches.clear();
+    removeTitleNotificationGuard();
+    titleWorkingThreadIds.clear();
+    notificationGuardedThreadIds.clear();
     inFlight.clear();
     document.getElementById(STYLE_ID)?.remove();
     document.getElementById(TOAST_ID)?.remove();
     document.querySelector(`[${DIALOG_ATTR}] [data-bennett-delete-cancel]`)?.click();
     document.querySelector(`[${DIALOG_ATTR}]`)?.remove();
     resolverPromise = null;
+    appInitialModulesPromise = null;
+    nativeToastPromise = null;
   }
 
   return {
@@ -1041,7 +1838,34 @@ function createSessionThreadActionsManager() {
         rowCount: rows.length,
         supportedRowCount: rows.filter((row) => Boolean(threadContextFor(row))).length,
         discoverableMenuCount: rows.filter((row) => Boolean(threadMenuRefFor(row))).length,
+        titleWorkingThreadCount: titleWorkingThreadIds.size,
+        notificationGuardedTitleWorkingCount: notificationGuardedThreadIds.size,
+        titleNotificationGuardActive: Boolean(titleNotificationGuardRecord),
+        guardedTitleNotificationCount,
+        lastGuardedTitleThreadId,
+        hiddenTitleWorkingRowCount: rows.filter((row) =>
+          row.getAttribute("data-bennett-title-working-thread") === "true" &&
+          getComputedStyle(row).display === "none",
+        ).length,
       };
+    },
+    regenerateLocalThreadTitle(threadId) {
+      const id = String(threadId || "").trim();
+      const row = Array.from(document.querySelectorAll(THREAD_SELECTOR)).find((candidate) => {
+        const context = threadContextFor(candidate);
+        return context?.hostId === "local" && context?.kind === "local";
+      });
+      if (!id || !row) {
+        return Promise.resolve({ status: "error", error: labels().unavailable });
+      }
+      return regenerateThreadTitle({
+        row,
+        hostId: "local",
+        kind: "local",
+        threadId: id,
+        threadKey: `local:${id}`,
+        title: "",
+      });
     },
   };
 }
@@ -1049,6 +1873,10 @@ function createSessionThreadActionsManager() {
 // ─────────────────────────────────────────────────────────────── features ──
 
 const FEATURES = {
+  "thread-title-regeneration"(api) {
+    return sessionThreadActions.enable(SESSION_ACTION_REGENERATE_TITLE, api);
+  },
+
   "thread-markdown-export"(api) {
     return sessionThreadActions.enable(SESSION_ACTION_EXPORT, api);
   },
@@ -7928,12 +8756,13 @@ function writeFlag(api, id, on) {
       {
         id: "editor",
         title: "编辑与会话",
-        features: ["render-markdown-preview-math", "slash-menu-polish", "thread-markdown-export", "thread-permanent-delete"],
+        features: ["render-markdown-preview-math", "slash-menu-polish", "thread-title-regeneration", "thread-markdown-export", "thread-permanent-delete"],
       },
     ];
     const badges = {
       "show-usage-in-sidebar": "需额度数据",
       "render-markdown-preview-math": "LaTeX",
+      "thread-title-regeneration": "Luna low",
       "thread-markdown-export": "本地会话",
       "thread-permanent-delete": "不可撤销",
     };
@@ -8250,6 +9079,9 @@ function writeFlag(api, id, on) {
     featureInfo,
     threadActionsStatus() {
       return sessionThreadActions.status();
+    },
+    regenerateLocalThreadTitle(threadId) {
+      return sessionThreadActions.regenerateLocalThreadTitle(threadId);
     },
     setFeature(id, enabled, reload = false) {
       setFeatureEnabled(id, enabled);

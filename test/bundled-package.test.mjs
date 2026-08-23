@@ -11,7 +11,7 @@ const packageDirectory = fileURLToPath(new URL("../packages/bennett-ui-improveme
 test("bundled Bennett package is valid, attributed and lifecycle-aware", async () => {
   const descriptor = await loadScriptDescriptor(packageDirectory);
   assert.equal(descriptor.id, "co.bennett.ui-improvements");
-  assert.equal(descriptor.version, "1.4.5");
+  assert.equal(descriptor.version, "1.4.8");
   assert.equal(descriptor.lifecycleGlobal, "__bennettUiImprovementsBigPizza");
   assert.match(descriptor.source, /Original license: MIT License/u);
   assert.match(descriptor.source, /show-usage-in-sidebar/u);
@@ -35,6 +35,43 @@ test("bundled Bennett package is valid, attributed and lifecycle-aware", async (
   assert.match(descriptor.source, /submenu,/u);
   assert.match(descriptor.source, /render-markdown-preview-math/u);
   assert.match(descriptor.source, /slash-menu-polish/u);
+  assert.match(descriptor.source, /thread-title-regeneration/u);
+  assert.match(descriptor.source, /bennett-thread-regenerate-title/u);
+  assert.match(descriptor.source, /thread\/compact\/start/u);
+  assert.match(descriptor.source, /item\/completed/u);
+  assert.match(descriptor.source, /contextCompaction/u);
+  assert.match(descriptor.source, /thread\/compacted/u);
+  assert.match(descriptor.source, /thread\/turns\/list/u);
+  assert.match(descriptor.source, /itemsView:\s*"full"/u);
+  assert.match(descriptor.source, /existingCompactionTurnIds/u);
+  assert.match(descriptor.source, /turn\?\.status === "completed"/u);
+  assert.match(descriptor.source, /ephemeral:\s*false/u);
+  assert.match(descriptor.source, /threadSource:\s*"system"/u);
+  assert.match(descriptor.source, /temporaryTitle:\s*"正在生成标题（\{title\}）"/u);
+  assert.match(descriptor.source, /data-bennett-title-working-thread/u);
+  assert.match(descriptor.source, /titleWorkingThreadIds\.add\(threadId\)/u);
+  assert.match(descriptor.source, /compactingTitle:\s*"压缩中 · \{title\}"/u);
+  assert.match(descriptor.source, /generatingTitle:\s*"生成标题 · \{title\}"/u);
+  assert.match(descriptor.source, /const progressToast = await showTitleProgress\(/u);
+  assert.match(descriptor.source, /nativeToastFromScope/u);
+  assert.match(descriptor.source, /hasCloseButton:\s*true/u);
+  assert.match(descriptor.source, /duration:\s*timeout === null \? 0 : timeout \/ 1000/u);
+  assert.match(descriptor.source, /onRemove:/u);
+  assert.match(descriptor.source, /handle = toast\.info/u);
+  assert.match(descriptor.source, /events\?\.turnCompletedListeners/u);
+  assert.match(descriptor.source, /listeners\.unshift\(listener\)/u);
+  assert.match(descriptor.source, /event\.hasPendingContinuation = true/u);
+  assert.match(descriptor.source, /notificationGuardedThreadIds\.add\(threadId\)/u);
+  assert.match(descriptor.source, /progressToast\.update\(/u);
+  assert.match(descriptor.source, /thread\/name\/set/u);
+  assert.match(descriptor.source, /regenerateLocalThreadTitle/u);
+  assert.match(descriptor.source, /900000/u);
+  assert.match(descriptor.source, /thread\/delete/u);
+  assert.match(descriptor.source, /excludeTurns:\s*true/u);
+  assert.doesNotMatch(descriptor.source, /excludeTurns:\s*false/u);
+  assert.match(descriptor.source, /gpt-5\.6-luna/u);
+  assert.match(descriptor.source, /model_reasoning_effort:\s*"low"/u);
+  assert.match(descriptor.source, /outputSchema:\s*TITLE_OUTPUT_SCHEMA/u);
   assert.match(descriptor.source, /thread-markdown-export/u);
   assert.match(descriptor.source, /thread-permanent-delete/u);
   assert.match(descriptor.source, /__bennettMarkdownPreviewMath/u);
@@ -68,6 +105,7 @@ test("bundled Bennett package is valid, attributed and lifecycle-aware", async (
     "sidebar-conversation-colors",
     "render-markdown-preview-math",
     "slash-menu-polish",
+    "thread-title-regeneration",
     "thread-markdown-export",
     "thread-permanent-delete",
   ]);
