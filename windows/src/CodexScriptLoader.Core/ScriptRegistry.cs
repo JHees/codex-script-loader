@@ -1,0 +1,310 @@
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+
+namespace CodexScriptLoader.Core;
+
+public sealed partial class ScriptRegistry
+{
+    private const int MaxManifestBytes = 64 * 1024;
+    private const int MaxSourceBytes = 512 * 1024;
+    private static readonly HashSet<string> AllowedRunAt = ["document-start", "document-end"];
+    private readonly LoaderPaths paths;
+    private readonly string settingsHostModulePath;
+    private bool safeMode;
+    private bool globalEnabled = true;
+    private Dictionary<string, bool> enabledOverrides = new(StringComparer.Ordinal);
+
+    public ScriptRegistry(LoaderPaths paths, string settingsHostModulePath)
+    {
+        this.paths = paths;
+        this.settingsHostModulePath = Path.GetFullPath(settingsHostModulePath);
+    }
+
+    public bool SafeMode => safeMode;
+
+    public async Task InitializeAsync(CancellationToken cancellationToken = default)
+    {
+        paths.EnsureDirectories();
+        await ReloadConfigAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task EnsureBundledScriptAsync(string bundledDirectory, CancellationToken cancellationToken = default)
+    {
+        var descriptor = await LoadDescriptorAsync(bundledDirectory, cancellationToken).ConfigureAwait(false);
+        var target = paths.EnsureWithin(paths.ScriptsRoot, Path.Combine(paths.ScriptsRoot, descriptor.Id), "Bundled script target");
+        if (Directory.Exists(target))
+        {
+            return;
+        }
+
+        var temporary = paths.EnsureWithin(paths.ScriptsRoot, $"{target}.install-{Environment.ProcessId}", "Bundled script temporary target");
+        Directory.CreateDirectory(temporary);
+        try
+        {
+            foreach (var source in Directory.EnumerateFiles(Path.GetFullPath(bundledDirectory), "*", SearchOption.TopDirectoryOnly))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                File.Copy(source, Path.Combine(temporary, Path.GetFileName(source)), overwrite: false);
+            }
+
+            Directory.Move(temporary, target);
+        }
+        catch
+        {
+            if (Directory.Exists(temporary))
+            {
+                Directory.Delete(temporary, recursive: true);
+            }
+
+            throw;
+        }
+    }
+
+    public async Task ReloadConfigAsync(CancellationToken cancellationToken = default)
+    {
+        safeMode = false;
+        globalEnabled = true;
+        enabledOverrides = new Dictionary<string, bool>(StringComparer.Ordinal);
+        if (!File.Exists(paths.ConfigPath))
+        {
+            return;
+        }
+
+        try
+        {
+            await using var stream = File.OpenRead(paths.ConfigPath);
+            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object ||
+                (root.TryGetProperty("schemaVersion", out var schema) && schema.GetInt32() != 1))
+            {
+                throw new InvalidDataException("Unsupported loader config schema.");
+            }
+
+            if (root.TryGetProperty("globalEnabled", out var global))
+            {
+                globalEnabled = global.ValueKind == JsonValueKind.True || global.ValueKind == JsonValueKind.False
+                    ? global.GetBoolean()
+                    : throw new InvalidDataException("globalEnabled must be a boolean.");
+            }
+
+            if (root.TryGetProperty("safeMode", out var safe))
+            {
+                safeMode = safe.ValueKind == JsonValueKind.True || safe.ValueKind == JsonValueKind.False
+                    ? safe.GetBoolean()
+                    : throw new InvalidDataException("safeMode must be a boolean.");
+            }
+
+            if (root.TryGetProperty("scripts", out var scripts))
+            {
+                if (scripts.ValueKind != JsonValueKind.Object)
+                {
+                    throw new InvalidDataException("scripts must be an object.");
+                }
+
+                foreach (var property in scripts.EnumerateObject())
+                {
+                    if (!ScriptIdRegex().IsMatch(property.Name) || property.Value.ValueKind != JsonValueKind.Object)
+                    {
+                        throw new InvalidDataException("Invalid script configuration entry.");
+                    }
+
+                    if (property.Value.TryGetProperty("enabled", out var enabled))
+                    {
+                        if (enabled.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                        {
+                            throw new InvalidDataException("Script enabled state must be a boolean.");
+                        }
+
+                        enabledOverrides[property.Name] = enabled.GetBoolean();
+                    }
+                }
+            }
+        }
+        catch (Exception exception) when (exception is JsonException or IOException or InvalidDataException or UnauthorizedAccessException)
+        {
+            safeMode = true;
+        }
+    }
+
+    public async Task<InjectionPlan> BuildPlanAsync(bool force, CancellationToken cancellationToken = default)
+    {
+        await ReloadConfigAsync(cancellationToken).ConfigureAwait(false);
+        var descriptors = new List<ScriptDescriptor>();
+        foreach (var directory in Directory.EnumerateDirectories(paths.ScriptsRoot).OrderBy(value => value, StringComparer.OrdinalIgnoreCase))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var descriptor = await LoadDescriptorAsync(directory, cancellationToken).ConfigureAwait(false);
+                if (globalEnabled && !safeMode && (!enabledOverrides.TryGetValue(descriptor.Id, out var enabled) || enabled))
+                {
+                    descriptors.Add(descriptor);
+                }
+            }
+            catch (Exception exception) when (exception is IOException or JsonException or InvalidDataException or UnauthorizedAccessException)
+            {
+            }
+        }
+
+        var settingsHost = await File.ReadAllTextAsync(settingsHostModulePath, Encoding.UTF8, cancellationToken).ConfigureAwait(false);
+        return new InjectionPlan(
+            descriptors,
+            InjectionSourceBuilder.Build(descriptors, settingsHost, force),
+            safeMode);
+    }
+
+    public static async Task<ScriptDescriptor> LoadDescriptorAsync(string scriptDirectory, CancellationToken cancellationToken = default)
+    {
+        var directory = new DirectoryInfo(Path.GetFullPath(scriptDirectory));
+        if (!directory.Exists || directory.Attributes.HasFlag(FileAttributes.ReparsePoint))
+        {
+            throw new InvalidDataException("Script package must be a real directory.");
+        }
+
+        var manifestPath = Path.Combine(directory.FullName, "manifest.json");
+        var manifestInfo = new FileInfo(manifestPath);
+        if (!manifestInfo.Exists || manifestInfo.Attributes.HasFlag(FileAttributes.ReparsePoint) || manifestInfo.Length > MaxManifestBytes)
+        {
+            throw new InvalidDataException("Script manifest must be a regular file no larger than 64 KiB.");
+        }
+
+        await using var stream = manifestInfo.OpenRead();
+        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
+        var root = document.RootElement;
+        if (root.ValueKind != JsonValueKind.Object)
+        {
+            throw new InvalidDataException("Manifest must be an object.");
+        }
+
+        var schemaVersion = root.TryGetProperty("schemaVersion", out var schema) ? schema.GetInt32() : 1;
+        if (schemaVersion != 1)
+        {
+            throw new InvalidDataException("Unsupported manifest schema.");
+        }
+
+        var id = RequiredText(root, "id", 128);
+        if (!ScriptIdRegex().IsMatch(id))
+        {
+            throw new InvalidDataException("Invalid script id.");
+        }
+
+        var entry = root.TryGetProperty("main", out var main) ? main.GetString() ?? "index.js" : "index.js";
+        if (string.IsNullOrWhiteSpace(entry) || Path.IsPathRooted(entry) || entry.Length > 240 || entry.IndexOfAny(['\0', '\r', '\n']) >= 0)
+        {
+            throw new InvalidDataException("Manifest entry must be a safe relative path.");
+        }
+
+        var entryPath = Path.GetFullPath(Path.Combine(directory.FullName, entry));
+        var rootPrefix = directory.FullName.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        if (!entryPath.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException("Manifest entry escapes its script directory.");
+        }
+
+        var entryInfo = new FileInfo(entryPath);
+        if (!entryInfo.Exists || entryInfo.Attributes.HasFlag(FileAttributes.ReparsePoint) || entryInfo.Length > MaxSourceBytes)
+        {
+            throw new InvalidDataException("Script entry must be a regular file no larger than 512 KiB.");
+        }
+
+        var scope = OptionalText(root, "scope", "renderer", 64);
+        if (!string.Equals(scope, "renderer", StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("Only renderer scripts are supported.");
+        }
+
+        var runAt = OptionalText(root, "runAt", "document-start", 64);
+        if (!AllowedRunAt.Contains(runAt))
+        {
+            throw new InvalidDataException("Unsupported runAt value.");
+        }
+
+        var lifecycleGlobal = root.TryGetProperty("lifecycleGlobal", out var lifecycle) && lifecycle.ValueKind != JsonValueKind.Null
+            ? lifecycle.GetString()
+            : null;
+        if (lifecycleGlobal is not null && !LifecycleRegex().IsMatch(lifecycleGlobal))
+        {
+            throw new InvalidDataException("Invalid lifecycle global.");
+        }
+
+        var permissions = new List<string>();
+        if (root.TryGetProperty("permissions", out var permissionElement))
+        {
+            if (permissionElement.ValueKind != JsonValueKind.Array)
+            {
+                throw new InvalidDataException("Manifest permissions must be an array.");
+            }
+
+            foreach (var item in permissionElement.EnumerateArray())
+            {
+                var permission = item.GetString();
+                if (string.IsNullOrWhiteSpace(permission) || permission.Length > 64 || permission.Any(char.IsControl))
+                {
+                    throw new InvalidDataException("Invalid manifest permission.");
+                }
+
+                permissions.Add(permission);
+            }
+
+            if (permissions.Count > 32)
+            {
+                throw new InvalidDataException("Manifest declares too many permissions.");
+            }
+        }
+
+        var source = await File.ReadAllTextAsync(entryPath, Encoding.UTF8, cancellationToken).ConfigureAwait(false);
+        var fingerprint = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(source)));
+        if (root.TryGetProperty("integrity", out var integrityElement) && integrityElement.ValueKind != JsonValueKind.Null)
+        {
+            var integrity = integrityElement.GetString();
+            if (!string.Equals(integrity, $"sha256-{fingerprint}", StringComparison.Ordinal))
+            {
+                throw new InvalidDataException($"Integrity mismatch for {id}.");
+            }
+        }
+
+        return new ScriptDescriptor(
+            id,
+            OptionalText(root, "name", id, 128),
+            OptionalText(root, "version", "0.0.0", 64),
+            scope,
+            runAt,
+            lifecycleGlobal,
+            permissions,
+            source,
+            fingerprint,
+            directory.FullName,
+            OptionalText(root, "description", string.Empty, 512, allowEmpty: true),
+            OptionalText(root, "author", string.Empty, 128, allowEmpty: true));
+    }
+
+    private static string RequiredText(JsonElement root, string name, int maxLength) =>
+        root.TryGetProperty(name, out var property)
+            ? ValidateText(property.GetString(), name, maxLength, allowEmpty: false)
+            : throw new InvalidDataException($"Manifest {name} is required.");
+
+    private static string OptionalText(JsonElement root, string name, string fallback, int maxLength, bool allowEmpty = false) =>
+        root.TryGetProperty(name, out var property)
+            ? ValidateText(property.GetString(), name, maxLength, allowEmpty)
+            : fallback;
+
+    private static string ValidateText(string? value, string name, int maxLength, bool allowEmpty)
+    {
+        var text = value ?? string.Empty;
+        if ((!allowEmpty && string.IsNullOrWhiteSpace(text)) || text.Length > maxLength || text.Any(char.IsControl))
+        {
+            throw new InvalidDataException($"Manifest {name} is invalid.");
+        }
+
+        return text;
+    }
+
+    [GeneratedRegex("^[a-z0-9][a-z0-9._-]{0,127}$", RegexOptions.CultureInvariant)]
+    private static partial Regex ScriptIdRegex();
+
+    [GeneratedRegex("^[A-Za-z_$][A-Za-z0-9_$]{0,127}$", RegexOptions.CultureInvariant)]
+    private static partial Regex LifecycleRegex();
+}

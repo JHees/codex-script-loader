@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>CodexScriptLoader.RendererProbe</AssemblyName>
+    <RootNamespace>CodexScriptLoader.RendererProbe</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\CodexScriptLoader.Core\CodexScriptLoader.Core.csproj" />
+    <ProjectReference Include="..\..\src\CodexScriptLoader.Interop\CodexScriptLoader.Interop.csproj" />
+    <ProjectReference Include="..\..\src\CodexScriptLoader.Windows\CodexScriptLoader.Windows.csproj" />
+  </ItemGroup>
+</Project>

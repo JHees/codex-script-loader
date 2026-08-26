@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>CodexScriptLoader.Core</AssemblyName>
+    <RootNamespace>CodexScriptLoader.Core</RootNamespace>
+  </PropertyGroup>
+</Project>

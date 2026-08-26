@@ -3,6 +3,9 @@
 /dist/
 /artifacts/
 /node_modules/
+/.tools/
+**/bin/
+**/obj/
 
 # Local runtime state
 /.runtime/

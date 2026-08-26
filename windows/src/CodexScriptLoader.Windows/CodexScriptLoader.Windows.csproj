@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>CodexScriptLoader</AssemblyName>
+    <RootNamespace>CodexScriptLoader.Windows</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>..\..\branding\CodexScriptLoader.ico</ApplicationIcon>
+    <ApplicationVersion>0.3.0.0</ApplicationVersion>
+    <PublishSingleFile>false</PublishSingleFile>
+    <PublishReadyToRun>false</PublishReadyToRun>
+    <SelfContained>false</SelfContained>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\CodexScriptLoader.Core\CodexScriptLoader.Core.csproj" />
+    <ProjectReference Include="..\CodexScriptLoader.Interop\CodexScriptLoader.Interop.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="..\..\..\packages\bennett-ui-improvements\index.js" Link="bundled\bennett-ui-improvements\index.js" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="..\..\..\packages\bennett-ui-improvements\manifest.json" Link="bundled\bennett-ui-improvements\manifest.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="..\..\..\packages\bennett-ui-improvements\NOTICE.md" Link="bundled\bennett-ui-improvements\NOTICE.md" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="..\..\..\packages\bennett-ui-improvements\LICENSE" Link="bundled\bennett-ui-improvements\LICENSE" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="..\..\..\src\settings-host.mjs" Link="bundled\settings-host.mjs" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>
