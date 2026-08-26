@@ -260,6 +260,7 @@ function createSessionThreadActionsManager() {
   const EXPORT_ITEM_ID = "bennett-thread-export-markdown";
   const DELETE_SEPARATOR_ID = "bennett-thread-danger-separator";
   const DELETE_ITEM_ID = "bennett-thread-delete-permanently";
+  const LOCAL_THREAD_ID_PATTERN = /^(?:urn:uuid:)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
   const MENU_SOURCE_MARKERS = [
     "rename-thread",
     "archive-thread",
@@ -621,11 +622,17 @@ function createSessionThreadActionsManager() {
     if (index >= 0) listeners.splice(index, 1);
   }
 
+  function localThreadIdFromKey(threadKey) {
+    const candidate = String(threadKey || "").replace(/^local:/, "");
+    return candidate.match(LOCAL_THREAD_ID_PATTERN)?.[1] || "";
+  }
+
   function threadContextFor(row) {
     if (!(row instanceof HTMLElement)) return null;
     const hostId = row.getAttribute("data-app-action-sidebar-thread-host-id") || "";
     const kind = row.getAttribute("data-app-action-sidebar-thread-kind") || "";
     const threadKey = row.getAttribute("data-app-action-sidebar-thread-id") || "";
+    const threadId = localThreadIdFromKey(threadKey);
     const title = row.getAttribute("data-app-action-sidebar-thread-title") ||
       row.getAttribute("aria-label") || "Untitled chat";
     let ephemeral = /^(?:true|1)$/i.test(
@@ -636,13 +643,13 @@ function createSessionThreadActionsManager() {
         if (props?.isAeonThread === true || props?.isEphemeral === true) ephemeral = true;
       }
     }
-    if (hostId !== "local" || kind !== "local" || !threadKey || ephemeral) return null;
+    if (hostId !== "local" || kind !== "local" || !threadId || ephemeral) return null;
     return {
       row,
       hostId,
       kind,
       threadKey,
-      threadId: threadKey.replace(/^local:/, ""),
+      threadId,
       title: String(title).trim() || "Untitled chat",
     };
   }

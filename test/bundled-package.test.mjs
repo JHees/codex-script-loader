@@ -37,6 +37,9 @@ test("bundled Bennett package is valid, attributed and lifecycle-aware", async (
   assert.match(descriptor.source, /slash-menu-polish/u);
   assert.match(descriptor.source, /thread-title-regeneration/u);
   assert.match(descriptor.source, /bennett-thread-regenerate-title/u);
+  assert.match(descriptor.source, /const LOCAL_THREAD_ID_PATTERN = \/\^\(\?:urn:uuid:\)\?/u);
+  assert.match(descriptor.source, /const threadId = localThreadIdFromKey\(threadKey\);/u);
+  assert.doesNotMatch(descriptor.source, /threadId: threadKey\.replace\(\/\^local:\//u);
   assert.match(
     descriptor.source,
     /if \(typeof candidate\.__bennettThreadMenuOriginal === "function"\) return ref;/u,
