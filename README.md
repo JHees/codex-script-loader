@@ -29,7 +29,7 @@ Version 0.3 is a background .NET 10 `WinExe`: there is no console window and no 
 | Script lifecycle | Validates manifests and hashes, applies permissions, injects current/future documents, and cleans up the old lifecycle before reload. |
 | Quiet background host | No console, tray icon, service, scheduled task, startup entry, or administrator prompt. |
 | Built-in diagnostics | Starting a second instance opens redacted diagnostics; `--reload` requests an in-place script reload. |
-| Bennett UI included | Installs the bundled Bennett UI Improvements 1.4.8 package on first run. |
+| Bennett UI included | Installs the bundled Bennett UI Improvements 1.4.9 package on first run. |
 | Reproducible packaging | Produces x64 or arm64 self-contained MSIX payloads, an SBOM inventory, and SHA-256 sums. |
 
 ## Requirements

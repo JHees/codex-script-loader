@@ -29,7 +29,7 @@ v0.3 是 .NET 10 `WinExe` 后台宿主：无控制台窗口、无托盘图标，
 | 脚本生命周期 | 验证 manifest、权限和 SHA-256，覆盖当前/未来文档，重载前先清理旧实例。 |
 | 安静的后台宿主 | 无控制台、托盘、服务、计划任务、开机启动项或 UAC 弹窗。 |
 | 诊断与重载 | 再次启动同一 EXE 可打开脱敏诊断；`--reload` 执行原位重载。 |
-| 内置 Bennett UI | 首次运行安装 Bennett UI Improvements 1.4.8。 |
+| 内置 Bennett UI | 首次运行安装 Bennett UI Improvements 1.4.9。 |
 | 可复现打包 | 生成 x64/arm64 自包含 MSIX、SBOM 和 SHA-256 校验值。 |
 
 ## 系统要求

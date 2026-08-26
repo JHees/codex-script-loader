@@ -15,7 +15,7 @@ function option(name, fallback) {
 }
 
 const port = Number(option("--port", "9229"));
-const expectedVersion = option("--version", "1.4.8");
+const expectedVersion = option("--version", "1.4.9");
 const captureLabel = option("--capture-label", "current").replace(/[^a-z0-9_-]+/giu, "-").replace(/^-+|-+$/gu, "") || "current";
 const packageDirectory = fileURLToPath(new URL("../packages/bennett-ui-improvements/", import.meta.url));
 const descriptor = await loadScriptDescriptor(packageDirectory);

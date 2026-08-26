@@ -21,7 +21,7 @@
   "use strict";
 
   const INSTALL_KEY = "__bennettUiImprovementsBigPizza";
-  const VERSION = "1.4.8";
+  const VERSION = "1.4.9";
   const PROJECT_COLOR_STORAGE_KEY = "sidebar-project-backgrounds:colors";
   const LEGACY_STORAGE_PREFIX = "bennett-ui-improvements:";
   const LOADER_STORAGE_PREFIX = "codex-script-loader:co.bennett.ui-improvements:";
@@ -661,6 +661,10 @@ function createSessionThreadActionsManager() {
         const ref = hook.memoizedState;
         const candidate = ref?.current;
         if (typeof candidate !== "function") continue;
+        // Keep an already wrapped native menu discoverable on later scans. Without
+        // this marker check, the wrapper no longer matches the native source
+        // markers and patchMenus() immediately restores it as an inactive ref.
+        if (typeof candidate.__bennettThreadMenuOriginal === "function") return ref;
         let source = "";
         try {
           source = Function.prototype.toString.call(candidate);
