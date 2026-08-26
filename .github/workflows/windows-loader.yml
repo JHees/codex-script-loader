@@ -4,14 +4,7 @@ on:
   push:
     branches: [main]
     tags: ["v*.*.*"]
-    paths:
-      - "windows/**"
-      - "packages/bennett-ui-improvements/**"
-      - "src/settings-host.mjs"
-      - "Directory.Build.props"
-      - "global.json"
-      - "NuGet.Config"
-      - ".github/workflows/windows-loader.yml"
+  workflow_dispatch:
   pull_request:
     paths:
       - "windows/**"
