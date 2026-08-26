@@ -41,6 +41,31 @@ Before signing, verify that two independent publish passes produce identical pay
 
 The checked-in App Installer template uses a placeholder URL. Replace it with the stable HTTPS release host during packaging. Microsoft Store submission uses the same application payload with the publisher identity assigned in Partner Center.
 
+## GitHub Actions release
+
+The [`Windows Loader`](../.github/workflows/windows-loader.yml) workflow builds, tests, verifies reproducibility, and packages x64 and arm64 on pushes to `main` and on pull requests. These runs upload unsigned development MSIX artifacts for inspection.
+
+A semantic version tag such as `v0.3.0` starts the release path. The tag must match `package.json`, `Directory.Build.props`, and the Windows `ApplicationVersion`. Release jobs sign both architectures, verify the MSIX signatures, combine the SBOM and SHA-256 files, and create the matching GitHub Release.
+
+Configure these repository Actions secrets before pushing a release tag:
+
+- `WINDOWS_SIGNING_CERTIFICATE_BASE64`: Base64-encoded Authenticode PFX certificate.
+- `WINDOWS_SIGNING_CERTIFICATE_PASSWORD`: PFX password.
+- `WINDOWS_SIGNING_PUBLISHER`: certificate subject used as the MSIX publisher, for example `CN=Example Publisher`.
+
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("C:\path\to\release.pfx")) |
+  gh secret set WINDOWS_SIGNING_CERTIFICATE_BASE64 --repo JHees/codex-script-loader
+
+gh secret set WINDOWS_SIGNING_CERTIFICATE_PASSWORD --repo JHees/codex-script-loader
+gh secret set WINDOWS_SIGNING_PUBLISHER --repo JHees/codex-script-loader
+
+git tag v0.3.0
+git push origin main v0.3.0
+```
+
+Release App Installer files use the stable `releases/latest/download` URL so installed builds can discover the next published version.
+
 ## Release gate
 
 - Build twice from clean source and compare every pre-sign payload hash.

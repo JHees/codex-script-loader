@@ -12,6 +12,7 @@
     <Deterministic>true</Deterministic>
     <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
     <DebugType>embedded</DebugType>
+    <RuntimeIdentifiers Condition="'$(MSBuildProjectName)' == 'CodexScriptLoader.Windows' Or '$(MSBuildProjectName)' == 'CodexScriptLoader.Core' Or '$(MSBuildProjectName)' == 'CodexScriptLoader.Interop'">win-x64;win-arm64</RuntimeIdentifiers>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <RestoreLockedMode Condition="'$(CI)' == 'true'">true</RestoreLockedMode>
     <EnableSourceLink Condition="'$(RepositoryUrl)' == ''">false</EnableSourceLink>

@@ -2,6 +2,8 @@ name: Windows Loader
 
 on:
   push:
+    branches: [main]
+    tags: ["v*.*.*"]
     paths:
       - "windows/**"
       - "packages/bennett-ui-improvements/**"
@@ -22,6 +24,10 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: windows-loader-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 jobs:
   build-test-package:
@@ -51,15 +57,147 @@ jobs:
       - name: Verify reproducible pre-sign payload
         shell: pwsh
         run: ./windows/scripts/verify-reproducible.ps1 -RuntimeIdentifier ${{ matrix.runtime }}
-      - name: Package latest build
+      - name: Package development build
         shell: pwsh
         run: ./windows/scripts/package.ps1 -RuntimeIdentifier ${{ matrix.runtime }}
       - name: Verify package structure and GUI subsystem
         shell: pwsh
-        run: ./windows/scripts/verify-package.ps1 -PackagePath bin/CodexScriptLoader-0.3.0.0-${{ matrix.runtime == 'win-x64' && 'x64' || 'arm64' }}.msix -Architecture ${{ matrix.runtime == 'win-x64' && 'x64' || 'arm64' }}
+        env:
+          PACKAGE_ARCHITECTURE: ${{ matrix.runtime == 'win-x64' && 'x64' || 'arm64' }}
+        run: |
+          $packages = @(Get-ChildItem -LiteralPath bin -Filter *.msix -File)
+          if ($packages.Count -ne 1) { throw "Expected one MSIX package, found $($packages.Count)." }
+          ./windows/scripts/verify-package.ps1 -PackagePath $packages[0].FullName -Architecture $env:PACKAGE_ARCHITECTURE
       - name: Upload unsigned development package
+        if: github.ref_type != 'tag'
         uses: actions/upload-artifact@v4
         with:
           name: codex-script-loader-${{ matrix.runtime }}-unsigned
           path: bin/*.msix
           if-no-files-found: error
+
+  release_metadata:
+    if: github.ref_type == 'tag'
+    runs-on: windows-2025
+    outputs:
+      product_version: ${{ steps.version.outputs.product_version }}
+      package_version: ${{ steps.version.outputs.package_version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate release tag and synchronized versions
+        id: version
+        shell: pwsh
+        run: |
+          $productVersion = (Get-Content -LiteralPath package.json -Raw | ConvertFrom-Json).version
+          if ($productVersion -notmatch '^\d+\.\d+\.\d+$') { throw "package.json version is not semantic: $productVersion" }
+          if ($env:GITHUB_REF_NAME -ne "v$productVersion") { throw "Tag $env:GITHUB_REF_NAME does not match package.json version $productVersion." }
+
+          [xml]$buildProps = Get-Content -LiteralPath Directory.Build.props -Raw
+          $propsVersion = [string]$buildProps.Project.PropertyGroup.Version
+          if ($propsVersion -ne $productVersion) { throw "Directory.Build.props version $propsVersion does not match $productVersion." }
+
+          [xml]$windowsProject = Get-Content -LiteralPath windows/src/CodexScriptLoader.Windows/CodexScriptLoader.Windows.csproj -Raw
+          $packageVersion = [string]$windowsProject.Project.PropertyGroup.ApplicationVersion
+          if ($packageVersion -ne "$productVersion.0") { throw "ApplicationVersion $packageVersion does not match $productVersion.0." }
+
+          "product_version=$productVersion" >> $env:GITHUB_OUTPUT
+          "package_version=$packageVersion" >> $env:GITHUB_OUTPUT
+
+  release_package:
+    if: github.ref_type == 'tag'
+    needs: [build-test-package, release_metadata]
+    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: [win-x64, win-arm64]
+    env:
+      SIGNING_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_BASE64 }}
+      SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_PASSWORD }}
+      SIGNING_PUBLISHER: ${{ secrets.WINDOWS_SIGNING_PUBLISHER }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: "windows/**/packages.lock.json"
+      - name: Restore signing certificate
+        id: certificate
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:SIGNING_CERTIFICATE_BASE64)) { throw "WINDOWS_SIGNING_CERTIFICATE_BASE64 is not configured." }
+          if ([string]::IsNullOrWhiteSpace($env:SIGNING_CERTIFICATE_PASSWORD)) { throw "WINDOWS_SIGNING_CERTIFICATE_PASSWORD is not configured." }
+          if ([string]::IsNullOrWhiteSpace($env:SIGNING_PUBLISHER)) { throw "WINDOWS_SIGNING_PUBLISHER is not configured." }
+          $certificatePath = Join-Path $env:RUNNER_TEMP "codex-script-loader-release.pfx"
+          [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:SIGNING_CERTIFICATE_BASE64))
+          "path=$certificatePath" >> $env:GITHUB_OUTPUT
+      - name: Build and sign release package
+        shell: pwsh
+        run: |
+          $outputRoot = Join-Path $env:RUNNER_TEMP "release/${{ matrix.runtime }}"
+          ./windows/scripts/package.ps1 `
+            -RuntimeIdentifier "${{ matrix.runtime }}" `
+            -Version "${{ needs.release_metadata.outputs.package_version }}" `
+            -Publisher $env:SIGNING_PUBLISHER `
+            -ReleaseBaseUri "https://github.com/${{ github.repository }}/releases/latest/download" `
+            -CertificatePath "${{ steps.certificate.outputs.path }}" `
+            -CertificatePassword $env:SIGNING_CERTIFICATE_PASSWORD `
+            -OutputRoot $outputRoot
+      - name: Verify signed release package
+        shell: pwsh
+        env:
+          PACKAGE_ARCHITECTURE: ${{ matrix.runtime == 'win-x64' && 'x64' || 'arm64' }}
+        run: |
+          $outputRoot = Join-Path $env:RUNNER_TEMP "release/${{ matrix.runtime }}"
+          $packages = @(Get-ChildItem -LiteralPath $outputRoot -Filter *.msix -File)
+          if ($packages.Count -ne 1) { throw "Expected one signed MSIX package, found $($packages.Count)." }
+          ./windows/scripts/verify-package.ps1 -PackagePath $packages[0].FullName -Architecture $env:PACKAGE_ARCHITECTURE -RequireSignature
+      - name: Remove signing certificate
+        if: always() && steps.certificate.outputs.path != ''
+        shell: pwsh
+        run: Remove-Item -LiteralPath "${{ steps.certificate.outputs.path }}" -Force -ErrorAction SilentlyContinue
+      - name: Upload signed release payload
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.runtime }}
+          path: |
+            ${{ runner.temp }}/release/${{ matrix.runtime }}/*.msix
+            ${{ runner.temp }}/release/${{ matrix.runtime }}/*.appinstaller
+            ${{ runner.temp }}/release/${{ matrix.runtime }}/*.spdx.json
+          if-no-files-found: error
+
+  publish_release:
+    if: github.ref_type == 'tag'
+    needs: [release_metadata, release_package]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download signed payloads
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-win-*
+          path: release-payload
+          merge-multiple: true
+      - name: Create combined SHA-256 manifest
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem -LiteralPath release-payload -File | Sort-Object Name)
+          if ($files.Count -ne 6) { throw "Expected six release files before checksums, found $($files.Count)." }
+          $lines = foreach ($file in $files) {
+            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $file.FullName).Hash.ToLowerInvariant()
+            "$hash  $($file.Name)"
+          }
+          Set-Content -LiteralPath release-payload/SHA256SUMS.txt -Value $lines -Encoding ascii
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_VERSION: ${{ needs.release_metadata.outputs.product_version }}
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release-payload/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$RELEASE_TAG" release-payload/* --verify-tag --generate-notes --title "Codex Script Loader v$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY"
+          fi
