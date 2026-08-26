@@ -1,36 +1,131 @@
+<div align="center">
+
+<img src="windows/branding/CodexScriptLoader-master.png" alt="Codex Script Loader icon" width="160" />
+
 # Codex Script Loader
 
-一个不修改 `app.asar` 的 Codex Desktop renderer 插件加载器。它只负责发现插件包、建立生命周期、热重载，并向插件提供受限 API。
+**A native, no-console script loader for Microsoft Store Codex on Windows.**
 
-当前 v1 边界：
+[![Version](https://img.shields.io/badge/version-0.3.0-f97316)](https://github.com/JHees/codex-script-loader)
+[![Windows](https://img.shields.io/badge/Windows-11-0078d4?logo=windows11)](#requirements)
+[![.NET](https://img.shields.io/badge/.NET-10-512bd4?logo=dotnet)](global.json)
+[![Windows Loader](https://github.com/JHees/codex-script-loader/actions/workflows/windows-loader.yml/badge.svg)](https://github.com/JHees/codex-script-loader/actions/workflows/windows-loader.yml)
+[![License](https://img.shields.io/badge/code-MIT-blue.svg)](LICENSE)
 
-- `manifest.json + index.js` renderer 插件包；
-- `start(api)` / `stop()` 生命周期；
-- scoped storage、日志、DOM observer、事件清理；
-- 仿照 b-nnett/codex-plusplus 的 `api.settings.register()` 与 `registerPage()`；
-- Codex 设置中的内建 `Loader` 状态与脚本热重载页；
-- 内置 Bennett UI Improvements `1.4.8`；
-- Windows 先行，macOS 复用同一插件层。
+**English** · [简体中文](README.zh-CN.md)
 
-账户、供应商、Responses 代理、MCP、Skills、CC Switch 导入和独立控制中心不属于当前版本。
+</div>
 
-## Windows 原生启动
+Codex Script Loader launches the official Microsoft Store build of Codex with a random loopback Chrome DevTools Protocol (CDP) endpoint, verifies the endpoint owner, and loads explicitly installed renderer scripts. It does not modify `app.asar`, copy or re-sign Codex, enumerate `WindowsApps`, or require administrator privileges.
 
-v0.3 的生产入口是无控制台、无托盘图标的 `.NET 10 WinForms WinExe` 后台宿主及其每用户 MSIX。安装后从开始菜单或桌面快捷方式启动；它会启动并监督 Codex，在 Codex 退出后自动结束，不需要 Node.js、PowerShell、cmd 或管理员权限。
+Version 0.3 is a background .NET 10 `WinExe`: there is no console window and no tray icon. It starts with Codex, supervises the renderer, and exits after the Codex instance it launched closes.
 
-原生宿主通过 Windows 包 API发现当前用户的 Microsoft Store Codex，并通过 `IApplicationActivationManager` 传入随机 loopback CDP 端口。它不枚举 `WindowsApps`、不直接运行包内 EXE，也不复制或修改官方 Codex。详细构建、签名和发布说明见 [`windows/README.md`](windows/README.md)。
+> [!IMPORTANT]
+> No signed public binary has been published yet. Locally built, unsigned MSIX files are development artifacts, not release packages. Do not disable antivirus protection or add exclusions to install them.
 
-仓库中的旧批处理入口仅供开发兼容，不进入 MSIX，也不再是受支持的生产启动路径。Node CLI 同样只保留为开发与 parity 工具：
+## Highlights
 
-```text
-node src\cli.mjs run --live --data-dir .runtime\manual
+| Area | What it provides |
+| --- | --- |
+| Native launch | Discovers the current user's Store package and activates its real AUMID through Windows package APIs. |
+| Verified CDP | Uses a random `127.0.0.1` port, verifies its PID and package family, and accepts only `app://-/index.html`. |
+| Script lifecycle | Validates manifests and hashes, applies permissions, injects current/future documents, and cleans up the old lifecycle before reload. |
+| Quiet background host | No console, tray icon, service, scheduled task, startup entry, or administrator prompt. |
+| Built-in diagnostics | Starting a second instance opens redacted diagnostics; `--reload` requests an in-place script reload. |
+| Bennett UI included | Installs the bundled Bennett UI Improvements 1.4.8 package on first run. |
+| Reproducible packaging | Produces x64 or arm64 self-contained MSIX payloads, an SBOM inventory, and SHA-256 sums. |
+
+## Requirements
+
+- Windows 11 x64 or arm64.
+- The official Codex app installed from Microsoft Store for the current user.
+- A standard interactive user account; elevation is neither required nor requested.
+- For source builds: .NET 10 SDK and Windows SDK 10.0.26100 or newer.
+
+Codex must be completely closed before the Loader starts a managed instance. Once running, start Codex through the Loader rather than launching Codex separately.
+
+## Install and run
+
+### Signed release package
+
+When a signed build is available, download the package matching your architecture from [GitHub Releases](https://github.com/JHees/codex-script-loader/releases), verify its publisher and SHA-256 value, and install the per-user MSIX or `.appinstaller`. A release must install without UAC, antivirus exclusions, services, drivers, or scheduled tasks.
+
+### Build from source
+
+```powershell
+git clone https://github.com/JHees/codex-script-loader.git
+Set-Location .\codex-script-loader
+.\windows\scripts\package.ps1 -RuntimeIdentifier win-x64
 ```
 
-降低 Defender、卡巴斯基等产品的误报是发布门禁，但任何架构、签名或测试流程都无法绝对保证“不被拦截”。正式方案不会要求关闭杀毒软件或添加本地排除项。
+Use `win-arm64` instead on Windows on Arm. Packaging clears the repository-level `bin` directory first and leaves only the latest architecture and version:
 
-## 插件包
+```text
+bin/
+├── app/CodexScriptLoader.exe
+├── layout/
+├── CodexScriptLoader-0.3.0.0-x64.msix
+├── CodexScriptLoader-x64.appinstaller
+├── CodexScriptLoader-0.3.0.0-x64.spdx.json
+└── SHA256SUMS.txt
+```
 
-`manifest.json`：
+Run `bin\app\CodexScriptLoader.exe` to test the unpackaged self-contained build. An unsigned MSIX may require a trusted development certificate and must not be presented as a release.
+
+### What to expect
+
+1. The Loader validates its data directory and installed script manifests.
+2. It finds the Store Codex package and actual AUMID without reading `C:\Program Files\WindowsApps`.
+3. It activates Codex with a random loopback CDP port.
+4. It verifies the listener PID, package family, and exact renderer URL before injection.
+5. Bennett UI and other enabled scripts start inside the renderer.
+6. When the managed Codex process exits, the Loader releases its connections and exits automatically.
+
+Start the Loader executable a second time to open diagnostics. To reload installed scripts without focusing or refreshing Codex, run the same compatible executable as a second instance:
+
+```powershell
+& .\bin\app\CodexScriptLoader.exe --reload
+```
+
+## How it works
+
+```text
+User
+  └─ CodexScriptLoader.exe (WinExe, single instance)
+       ├─ Windows package APIs ──> Microsoft Store Codex
+       ├─ random loopback CDP ───> verified Codex renderer
+       ├─ script registry ───────> manifest / permissions / SHA-256
+       └─ lifecycle supervisor ──> inject / reload / cleanup / exit
+```
+
+Production data lives under:
+
+```text
+%LOCALAPPDATA%\CodexScriptLoader\
+├── config.json
+├── scripts\
+├── quarantine\
+├── logs\
+└── state\
+```
+
+Logs use UTF-8 JSON Lines. Diagnostic exports redact user-specific paths and unrelated command-line details.
+
+## Security boundaries
+
+- Does not patch, copy, unpack, or re-sign the official Codex application.
+- Does not enumerate or write to the protected `WindowsApps` directory.
+- Does not invoke PowerShell, cmd, Node.js, `tasklist`, `netstat`, temporary scripts, self-extractors, or reflection loaders in the production launch path.
+- Binds CDP only to loopback at a random port and verifies ownership before injection.
+- Accepts only the exact main renderer target `app://-/index.html`.
+- Limits the current-user single-instance pipe to `ShowStatus` and `ReloadScripts`.
+- Fails closed on unknown required manifest fields, hash mismatches, permission failures, and invalid paths.
+
+These choices reduce suspicious behavior and false-positive risk, but no architecture or signature can guarantee that security software will never block a build. Defender or Kaspersky detections are release blockers. Disabling protection or recommending local exclusions is not a supported solution.
+
+## Script packages
+
+A renderer package contains `manifest.json` and an entry script:
 
 ```json
 {
@@ -45,52 +140,81 @@ node src\cli.mjs run --live --data-dir .runtime\manual
 }
 ```
 
-`index.js`：
-
 ```js
 module.exports = {
   start(api) {
     const page = api.settings.registerPage({
       id: "main",
       title: "Example",
-      description: "Plugin settings",
       render(root) {
-        root.textContent = "Hello";
+        root.textContent = "Hello from Codex Script Loader";
       },
     });
-    api.log.info("started");
+
     return () => page.unregister();
   },
 };
 ```
 
-Loader 自身位于 Codex 设置侧栏的 `Loader` 分组，只显示运行状态并提供 `Reload scripts`。插件页统一挂入后续的 `Tweaks` 分组；插件不需要复制设置导航、覆盖 Codex 路由或放置悬浮按钮。
+The bundled [Bennett UI Improvements](packages/bennett-ui-improvements) package is the reference implementation. Its manifest, permission, SHA-256, attribution, and lifecycle semantics are preserved.
 
-## CLI
+## Development
 
-```text
-node src\cli.mjs status
-node src\cli.mjs scripts
-node src\cli.mjs doctor
-node src\cli.mjs install <file-or-directory> --enable
-node src\cli.mjs reload [--live]
-node src\cli.mjs safe-mode <on|off>
-```
+The repository pins the .NET SDK in [`global.json`](global.json), locks NuGet dependencies, treats warnings as errors, and enables deterministic builds.
 
-## 安全边界
+```powershell
+# Native build and tests
+dotnet build .\windows\CodexScriptLoader.Windows.sln -c Release --configfile .\NuGet.Config
+dotnet run --project .\windows\tests\CodexScriptLoader.Tests\CodexScriptLoader.Tests.csproj -c Release
 
-- 不修改、复制或重新签名官方 Codex；
-- CDP 仅绑定 loopback；
-- 设置页通过当前受管 CDP target 上的随机、限权 binding 调用状态与重载，不开放 HTTP 控制端口；
-- 插件只在 renderer 中运行；
-- Loader 不保存账户凭据或供应商密钥；
-- Windows 生产启动路径不使用 PowerShell、cmd、Node、临时脚本、自解压或动态 C# 编译；
-- 热重载先执行旧实例清理，再加载新实例。
-
-## 验证
-
-```text
+# Node compatibility and parity checks
 npm run check
 npm test
-npm run smoke:live
+
+# Reproducible pre-sign payload verification
+.\windows\scripts\verify-reproducible.ps1 -RuntimeIdentifier win-x64
+.\windows\scripts\verify-reproducible.ps1 -RuntimeIdentifier win-arm64
 ```
+
+Run the development-only [`ActivationProbe`](windows/tools/ActivationProbe) only with Codex completely closed. A passing probe must discover the real application ID, activate Codex with CDP arguments, verify listener ownership, and report `ACTIVATION_PASS`.
+
+See [`windows/README.md`](windows/README.md) for signing, MSIX, App Installer, and release-gate details.
+
+## Repository layout
+
+| Path | Responsibility |
+| --- | --- |
+| `windows/src/CodexScriptLoader.Core` | Configuration, manifests, permissions, hashes, quarantine, and injection plans. |
+| `windows/src/CodexScriptLoader.Interop` | Windows package, activation, process identity, and TCP owner APIs. |
+| `windows/src/CodexScriptLoader.Windows` | WinForms background host, CDP, lifecycle supervision, diagnostics, and single instance. |
+| `windows/packaging` | MSIX and App Installer templates and image assets. |
+| `windows/scripts` | Build-time packaging, icon generation, validation, and reproducibility tools. |
+| `packages/bennett-ui-improvements` | Bundled, attributed Bennett UI package. |
+| `src` | Legacy Node development/parity implementation; not the Windows production entry point. |
+
+## Troubleshooting
+
+- **“Codex is already running”** — close all Codex windows, wait for its process to exit, and start the Loader again.
+- **Loader starts but no window appears** — this is expected. Start it a second time to open diagnostics.
+- **A script is degraded** — inspect diagnostics and `%LOCALAPPDATA%\CodexScriptLoader\logs`, then correct the manifest, permission, or lifecycle error.
+- **MSIX will not install** — verify that it is an Authenticode-signed release from the expected publisher. Local unsigned packages are development-only.
+- **A Codex update breaks activation** — close Codex and run Activation Probe. Do not fall back to launching package files from `WindowsApps`.
+- **Security software reports the Loader** — preserve the detection name, definitions version, signature, hash, process tree, and redacted logs; do not disable protection.
+
+## Compatibility and scope
+
+Codex Script Loader currently targets the Microsoft Store build of Codex on Windows. It is an independent, unofficial project and is not affiliated with or endorsed by OpenAI or Microsoft. Codex updates may change renderer behavior and require Loader or script compatibility work.
+
+Accounts, provider switching, MCP management, Skills management, and a separate control-center application are outside the Loader's scope.
+
+## Contributing
+
+Issues and focused pull requests are welcome. Changes to activation, package discovery, CDP ownership, or release packaging should test failure paths and preserve the no-elevation/no-shell production boundary. Do not commit runtime data, credentials, signing certificates, local packages, or generated `bin` output.
+
+## Credits and license
+
+- Bundled plugin: [Bennett UI Improvements for Codex++](https://github.com/JHees/bennett-ui-improvements-for-codexplusplus), with original authorship and MIT notices preserved.
+- Bennett upstream: [b-nnett/codex-plusplus-bennett-ui](https://github.com/b-nnett/codex-plusplus-bennett-ui).
+- Editorial icon method: [ZzzLc0405/photo-abstract-editorial](https://github.com/ZzzLc0405/photo-abstract-editorial).
+
+Loader code is released under the [MIT License](LICENSE). Bundled third-party code remains under its included license and notices. Adapted assets under `windows/branding` are excluded from the MIT code license and remain subject to the non-commercial restrictions documented in [`windows/branding/README.md`](windows/branding/README.md); obtain the original author's authorization before commercial distribution of those assets.
