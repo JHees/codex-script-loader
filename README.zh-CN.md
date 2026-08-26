@@ -4,10 +4,11 @@
 
 # Codex Script Loader
 
-**为 Windows Microsoft Store Codex 提供的原生、无控制台脚本加载器。**
+**打开 Codex 调试入口，加载用户脚本，并自动管理注入、重载与清理。**
 
 [![Version](https://img.shields.io/badge/version-0.3.0-f97316)](https://github.com/JHees/codex-script-loader)
 [![Windows](https://img.shields.io/badge/Windows-11-0078d4?logo=windows11)](#系统要求)
+[![macOS](https://img.shields.io/badge/macOS-未测试-999999?logo=apple)](#平台支持)
 [![.NET](https://img.shields.io/badge/.NET-10-512bd4?logo=dotnet)](global.json)
 [![Windows Loader](https://github.com/JHees/codex-script-loader/actions/workflows/windows-loader.yml/badge.svg)](https://github.com/JHees/codex-script-loader/actions/workflows/windows-loader.yml)
 [![License](https://img.shields.io/badge/code-MIT-blue.svg)](LICENSE)
@@ -16,30 +17,30 @@
 
 </div>
 
-Codex Script Loader 通过 Windows 包 API 启动 Microsoft Store 官方 Codex，为本次运行分配随机 loopback CDP 端口，核对端口所有者后加载明确安装的 renderer 脚本。它不修改 `app.asar`，不复制或重签名 Codex，不枚举 `WindowsApps`，也不需要管理员权限。
+Codex Script Loader 启动 Codex 时打开本地 Chrome DevTools Protocol（CDP）调试入口，并加载用户安装的 renderer 脚本。它会自动完成脚本发现、manifest 与哈希验证、权限配置、当前及未来文档注入、原位重载、旧实例清理，以及随 Codex 退出。
 
-v0.3 是 .NET 10 `WinExe` 后台宿主：无控制台窗口、无托盘图标，随受管 Codex 启动和退出。
+Windows 使用无控制台、无托盘图标的原生 .NET 10 后台宿主，是当前经过实机验证的主要平台；macOS 使用 Node.js live runtime，代码已经实现，但尚未在 macOS 实机测试。
 
 ## 功能亮点
 
 | 领域 | 提供的能力 |
 | --- | --- |
-| 原生启动 | 发现当前用户 Store 包，并通过 Windows 包 API 激活真实 AUMID。 |
-| CDP 验证 | 使用随机 `127.0.0.1` 端口，校验 PID 与包族，只接受 `app://-/index.html`。 |
-| 脚本生命周期 | 验证 manifest、权限和 SHA-256，覆盖当前/未来文档，重载前先清理旧实例。 |
-| 安静的后台宿主 | 无控制台、托盘、服务、计划任务、开机启动项或 UAC 弹窗。 |
-| 诊断与重载 | 再次启动同一 EXE 可打开脱敏诊断；`--reload` 执行原位重载。 |
+| 调试模式启动 | 打开 Codex 本地调试入口，为 renderer 脚本提供运行环境。 |
+| 用户自定义脚本 | 从 Loader 数据目录加载 `manifest.json + index.js` 脚本包。 |
+| 全自动生命周期 | 自动验证、注入、重载、替换并清理当前及未来 renderer 中的脚本。 |
+| Windows 原生宿主 | 在后台随 Codex 运行，并在受管 Codex 退出后自动结束。 |
+| macOS runtime | 发现 `Codex.app`，通过 Node.js 提供相同的 CDP 与脚本流程；当前未测试。 |
+| 诊断与重载 | Windows 再次启动同一 EXE 可打开诊断；`--reload` 原位替换脚本。 |
 | 内置 Bennett UI | 首次运行安装 Bennett UI Improvements 1.4.9。 |
-| 可复现打包 | 生成 x64/arm64 自包含 MSIX、SBOM 和 SHA-256 校验值。 |
+| Windows 打包 | 生成 x64/arm64 自包含程序和 MSIX 安装包。 |
 
 ## 系统要求
 
-- Windows 11 x64 或 arm64。
-- 当前用户已从 Microsoft Store 安装官方 Codex。
-- 普通交互用户权限；Loader 不申请提权。
-- 源码构建需要 .NET 10 SDK 与 Windows SDK 10.0.26100 或更高版本。
+- Windows 11 x64 或 arm64，并已安装 Microsoft Store 版 Codex。
+- macOS 已将 `Codex.app` 安装到 `/Applications` 或 `~/Applications`，并安装 Node.js 22 或更高版本（尚未实机测试）。
+- Windows 源码构建需要 .NET 10 SDK 与 Windows SDK 10.0.26100 或更高版本。
 
-通过 Loader 启动受管 Codex 前，必须先完全退出已运行的 Codex。
+启动 Loader 前先完全退出已有的 Codex 进程；受管会话统一通过 Loader 打开 Codex。
 
 ## 安装与运行
 
@@ -65,13 +66,25 @@ bin/
 └── SHA256SUMS.txt
 ```
 
+### macOS live runtime（尚未测试）
+
+```bash
+git clone https://github.com/JHees/codex-script-loader.git
+cd codex-script-loader
+node src/cli.mjs run --live
+```
+
+macOS runtime 会发现 `Codex.app`，以随机 loopback CDP 端口启动它，加载相同格式的脚本包，并在终端中持续监督本次会话。数据目录为 `~/Library/Application Support/codex-script-loader`。
+
+### Windows 运行流程
+
 再次启动 Loader EXE 会打开诊断窗口。如需在不刷新、不聚焦 Codex 的情况下重载脚本，执行：
 
 ```powershell
 & .\bin\app\CodexScriptLoader.exe --reload
 ```
 
-## 架构与数据
+## Windows 架构与数据
 
 ```text
 用户
@@ -84,17 +97,7 @@ bin/
 
 生产数据位于 `%LOCALAPPDATA%\CodexScriptLoader`，包含 `config.json`、`scripts`、`quarantine`、`logs` 和 `state`。日志使用 UTF-8 JSON Lines，诊断摘要会脱敏用户路径和无关命令行。
 
-## 设计边界
-
-- 不修改、复制、解包或重签名官方 Codex。
-- 不枚举或写入受保护的 `WindowsApps` 目录。
-- 生产启动链不调用 PowerShell、cmd、Node.js、`tasklist`、`netstat`、临时脚本、自解压或反射加载。
-- CDP 只侦听随机 loopback 端口，注入前必须校验所有权。
-- 只接受 `app://-/index.html` 主 renderer。
-- 当前用户单实例管道只接受 `ShowStatus` 和 `ReloadScripts`。
-- 未知必填字段、哈希不符、权限失败和非法路径都会直接失败。
-
-这些设计可以降低误报风险，但无法保证所有安全软件都接受每个构建。检测到的发布包会先暂停发布并调查，不会要求用户关闭防护。
+Windows 宿主通过官方包 API 启动 Codex，使用随机 loopback CDP 端口，并在注入前核对所属进程和目标 renderer。整个过程保持 Codex 应用文件不变，也不需要访问 `WindowsApps` 或申请管理员权限。
 
 ## 脚本包
 
@@ -115,6 +118,12 @@ Renderer 包由 `manifest.json` 与入口脚本组成：
 
 内置的 [Bennett UI Improvements](packages/bennett-ui-improvements) 是参考实现，Loader 保留其 manifest、权限、SHA-256、归属声明与生命周期语义。
 
+Windows 添加自定义脚本时，将脚本包目录放入 `%LOCALAPPDATA%\CodexScriptLoader\scripts\<script-id>`，再运行 `CodexScriptLoader.exe --reload`。Node.js runtime 可用以下命令安装脚本包或单个 `.js` 文件：
+
+```bash
+node src/cli.mjs install /path/to/script --enable
+```
+
 ## 开发与验证
 
 ```powershell
@@ -131,7 +140,7 @@ npm test
 .\windows\scripts\verify-reproducible.ps1 -RuntimeIdentifier win-arm64
 ```
 
-[`ActivationProbe`](windows/tools/ActivationProbe) 只能在 Codex 完全关闭时运行。通过标准是发现真实 application ID、带 CDP 参数激活 Codex、校验 listener 所有权，并输出 `ACTIVATION_PASS`。签名、MSIX、App Installer 和发布门禁见 [`windows/README.md`](windows/README.md)。
+在 Codex 完全关闭时运行 [`ActivationProbe`](windows/tools/ActivationProbe)。它会发现真实 application ID、带 CDP 参数激活 Codex、校验 listener 所有权，并在通过后输出 `ACTIVATION_PASS`。签名、MSIX、App Installer 和发布说明见 [`windows/README.md`](windows/README.md)。
 
 ## 故障排查
 
@@ -141,9 +150,14 @@ npm test
 - **本地 MSIX 无法安装**：安装开发证书，或直接运行 `bin\app` 下的免安装构建。
 - **Codex 更新后无法激活**：关闭 Codex 并运行 Activation Probe，获取包身份与 CDP 诊断。
 
-## 兼容性与范围
+## 平台支持
 
-Codex Script Loader 面向 Windows Microsoft Store 版 Codex。Codex 更新可能需要 Loader 或脚本适配。本项目独立开发，与 OpenAI 或 Microsoft 无隶属关系。
+| 平台 | Runtime | 状态 |
+| --- | --- | --- |
+| Windows 11 x64/arm64 | 原生 .NET 10 后台宿主 | 已测试并提供打包 |
+| macOS | Node.js 22 live runtime | 已实现，尚未在 macOS 实机测试 |
+
+Codex 更新可能需要 Loader 或脚本适配。本项目独立开发，与 OpenAI 或 Microsoft 无隶属关系。
 
 ## 贡献
 
@@ -151,7 +165,7 @@ Codex Script Loader 面向 Windows Microsoft Store 版 Codex。Codex 更新可�
 
 ## 来源与许可
 
-- 内置插件：[Bennett UI Improvements for Codex++](https://github.com/JHees/bennett-ui-improvements-for-codexplusplus)。
+- 内置插件：[Better UI Improvements for Codex](https://github.com/JHees/better-ui-improvements-for-codex)。保留 Bennett 包标识、原作者和 MIT 声明；Codex++ 支持已止于市场发布的 `1.2.4`，当前版本面向本 Loader。
 - Bennett 上游：[b-nnett/codex-plusplus-bennett-ui](https://github.com/b-nnett/codex-plusplus-bennett-ui)。
 - 编辑抽象图标方法：[ZzzLc0405/photo-abstract-editorial](https://github.com/ZzzLc0405/photo-abstract-editorial)。
 

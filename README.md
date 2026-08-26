@@ -4,10 +4,11 @@
 
 # Codex Script Loader
 
-**A native, no-console script loader for Microsoft Store Codex on Windows.**
+**Open Codex for user scripts, with automatic injection, reload, and cleanup.**
 
 [![Version](https://img.shields.io/badge/version-0.3.0-f97316)](https://github.com/JHees/codex-script-loader)
 [![Windows](https://img.shields.io/badge/Windows-11-0078d4?logo=windows11)](#requirements)
+[![macOS](https://img.shields.io/badge/macOS-untested-999999?logo=apple)](#platform-support)
 [![.NET](https://img.shields.io/badge/.NET-10-512bd4?logo=dotnet)](global.json)
 [![Windows Loader](https://github.com/JHees/codex-script-loader/actions/workflows/windows-loader.yml/badge.svg)](https://github.com/JHees/codex-script-loader/actions/workflows/windows-loader.yml)
 [![License](https://img.shields.io/badge/code-MIT-blue.svg)](LICENSE)
@@ -16,30 +17,30 @@
 
 </div>
 
-Codex Script Loader launches the official Microsoft Store build of Codex with a random loopback Chrome DevTools Protocol (CDP) endpoint, verifies the endpoint owner, and loads explicitly installed renderer scripts. It does not modify `app.asar`, copy or re-sign Codex, enumerate `WindowsApps`, or require administrator privileges.
+Codex Script Loader starts Codex with a local Chrome DevTools Protocol (CDP) debugging endpoint and loads user-installed renderer scripts. It manages the full script lifecycle automatically: discovery, manifest and hash validation, permission setup, injection into current and future documents, in-place reload, cleanup, and shutdown with Codex.
 
-Version 0.3 is a background .NET 10 `WinExe`: there is no console window and no tray icon. It starts with Codex, supervises the renderer, and exits after the Codex instance it launched closes.
+Windows uses the native .NET 10 background host with no console or tray icon and is the tested primary platform. macOS uses the Node.js live runtime; the implementation is available but has not yet been tested on macOS hardware.
 
 ## Highlights
 
 | Area | What it provides |
 | --- | --- |
-| Native launch | Discovers the current user's Store package and activates its real AUMID through Windows package APIs. |
-| Verified CDP | Uses a random `127.0.0.1` port, verifies its PID and package family, and accepts only `app://-/index.html`. |
-| Script lifecycle | Validates manifests and hashes, applies permissions, injects current/future documents, and cleans up the old lifecycle before reload. |
-| Quiet background host | No console, tray icon, service, scheduled task, startup entry, or administrator prompt. |
-| Built-in diagnostics | Starting a second instance opens redacted diagnostics; `--reload` requests an in-place script reload. |
+| Debug-enabled launch | Opens Codex with a local debugging endpoint ready for renderer scripts. |
+| User scripts | Loads `manifest.json + index.js` packages from the Loader data directory. |
+| Automatic lifecycle | Validates, injects, reloads, replaces, and cleans up scripts across renderer documents. |
+| Native Windows host | Runs quietly with Codex and exits when the Codex instance it launched closes. |
+| macOS runtime | Discovers `Codex.app` and provides the same managed CDP/script flow through Node.js; currently untested. |
+| Diagnostics and reload | Starting a second Windows instance opens diagnostics; `--reload` replaces scripts in place. |
 | Bennett UI included | Installs the bundled Bennett UI Improvements 1.4.9 package on first run. |
-| Reproducible packaging | Produces x64 or arm64 self-contained MSIX payloads, an SBOM inventory, and SHA-256 sums. |
+| Windows packaging | Produces x64 or arm64 self-contained builds and MSIX packages. |
 
 ## Requirements
 
-- Windows 11 x64 or arm64.
-- The official Codex app installed from Microsoft Store for the current user.
-- A standard interactive user account; elevation is neither required nor requested.
-- For source builds: .NET 10 SDK and Windows SDK 10.0.26100 or newer.
+- Windows 11 x64 or arm64 with the Microsoft Store Codex app.
+- macOS with `Codex.app` in `/Applications` or `~/Applications` and Node.js 22 or newer (untested).
+- Windows source builds require .NET 10 SDK and Windows SDK 10.0.26100 or newer.
 
-Codex must be completely closed before the Loader starts a managed instance. Once running, start Codex through the Loader rather than launching Codex separately.
+Close any running Codex instance before starting the Loader. For a managed session, launch Codex through the Loader.
 
 ## Install and run
 
@@ -67,7 +68,17 @@ bin/
 
 Run `bin\app\CodexScriptLoader.exe` to use the unpackaged self-contained build. Installing a locally generated MSIX requires a trusted development certificate.
 
-### What to expect
+### macOS live runtime (untested)
+
+```bash
+git clone https://github.com/JHees/codex-script-loader.git
+cd codex-script-loader
+node src/cli.mjs run --live
+```
+
+The macOS runtime discovers `Codex.app`, starts it with a random loopback CDP port, loads the same script package format, and stays in the terminal while supervising the session. Its data directory is `~/Library/Application Support/codex-script-loader`.
+
+### Windows runtime
 
 1. The Loader validates its data directory and installed script manifests.
 2. It finds the Store Codex package and actual AUMID without reading `C:\Program Files\WindowsApps`.
@@ -82,7 +93,7 @@ Start the Loader executable a second time to open diagnostics. To reload install
 & .\bin\app\CodexScriptLoader.exe --reload
 ```
 
-## How it works
+## Windows architecture
 
 ```text
 User
@@ -106,17 +117,7 @@ Production data lives under:
 
 Logs use UTF-8 JSON Lines. Diagnostic exports redact user-specific paths and unrelated command-line details.
 
-## Design boundaries
-
-- Does not patch, copy, unpack, or re-sign the official Codex application.
-- Does not enumerate or write to the protected `WindowsApps` directory.
-- Does not invoke PowerShell, cmd, Node.js, `tasklist`, `netstat`, temporary scripts, self-extractors, or reflection loaders in the production launch path.
-- Binds CDP only to loopback at a random port and verifies ownership before injection.
-- Accepts only the exact main renderer target `app://-/index.html`.
-- Limits the current-user single-instance pipe to `ShowStatus` and `ReloadScripts`.
-- Fails closed on unknown required manifest fields, hash mismatches, permission failures, and invalid paths.
-
-These choices reduce false-positive risk, but no architecture or signature can guarantee acceptance by every security product. A detected release is investigated and held back rather than shipped with instructions to disable protection.
+The Windows host uses official package APIs to start Codex, keeps CDP on a random loopback port, and verifies the owning process and exact renderer target before injection. Codex application files remain untouched, and the launch path needs neither `WindowsApps` access nor administrator privileges.
 
 ## Script packages
 
@@ -153,6 +154,12 @@ module.exports = {
 
 The bundled [Bennett UI Improvements](packages/bennett-ui-improvements) package is the reference implementation. Its manifest, permission, SHA-256, attribution, and lifecycle semantics are preserved.
 
+To add a custom package on Windows, place its directory under `%LOCALAPPDATA%\CodexScriptLoader\scripts\<script-id>` and run `CodexScriptLoader.exe --reload`. With the Node.js runtime, install a package or a single `.js` file with:
+
+```bash
+node src/cli.mjs install /path/to/script --enable
+```
+
 ## Development
 
 The repository pins the .NET SDK in [`global.json`](global.json), locks NuGet dependencies, treats warnings as errors, and enables deterministic builds.
@@ -171,7 +178,7 @@ npm test
 .\windows\scripts\verify-reproducible.ps1 -RuntimeIdentifier win-arm64
 ```
 
-Run the development-only [`ActivationProbe`](windows/tools/ActivationProbe) only with Codex completely closed. A passing probe must discover the real application ID, activate Codex with CDP arguments, verify listener ownership, and report `ACTIVATION_PASS`.
+Run the development-only [`ActivationProbe`](windows/tools/ActivationProbe) with Codex completely closed. A passing probe discovers the real application ID, activates Codex with CDP arguments, verifies listener ownership, and reports `ACTIVATION_PASS`.
 
 See [`windows/README.md`](windows/README.md) for signing, MSIX, App Installer, and release-gate details.
 
@@ -195,9 +202,14 @@ See [`windows/README.md`](windows/README.md) for signing, MSIX, App Installer, a
 - **A local MSIX will not install** — install the development certificate or run the unpackaged build from `bin\app`.
 - **A Codex update breaks activation** — close Codex and run Activation Probe to capture the package and CDP diagnostics.
 
-## Compatibility and scope
+## Platform support
 
-Codex Script Loader targets the Microsoft Store build of Codex on Windows. Codex updates may require Loader or script compatibility changes. This independent project is not affiliated with OpenAI or Microsoft.
+| Platform | Runtime | Status |
+| --- | --- | --- |
+| Windows 11 x64/arm64 | Native .NET 10 background host | Tested and packaged |
+| macOS | Node.js 22 live runtime | Implemented, not yet tested on macOS hardware |
+
+Codex updates may require Loader or script compatibility changes. This independent project is not affiliated with OpenAI or Microsoft.
 
 ## Contributing
 
@@ -205,7 +217,7 @@ Issues and focused pull requests are welcome. For setup, architecture, testing, 
 
 ## Credits and license
 
-- Bundled plugin: [Bennett UI Improvements for Codex++](https://github.com/JHees/bennett-ui-improvements-for-codexplusplus), with original authorship and MIT notices preserved.
+- Bundled plugin: [Better UI Improvements for Codex](https://github.com/JHees/better-ui-improvements-for-codex), with the Bennett package identity, original authorship, and MIT notices preserved. Codex++ support ended at the market-published `1.2.4`; current builds target this Loader.
 - Bennett upstream: [b-nnett/codex-plusplus-bennett-ui](https://github.com/b-nnett/codex-plusplus-bennett-ui).
 - Editorial icon method: [ZzzLc0405/photo-abstract-editorial](https://github.com/ZzzLc0405/photo-abstract-editorial).
 
