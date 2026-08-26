@@ -20,9 +20,6 @@ Codex Script Loader 通过 Windows 包 API 启动 Microsoft Store 官方 Codex�
 
 v0.3 是 .NET 10 `WinExe` 后台宿主：无控制台窗口、无托盘图标，随受管 Codex 启动和退出。
 
-> [!IMPORTANT]
-> 目前尚未发布已签名的公开二进制包。本地生成的未签名 MSIX 只是开发产物，不是正式发布包。不要通过关闭杀毒软件或添加排除项来安装。
-
 ## 功能亮点
 
 | 领域 | 提供的能力 |
@@ -46,9 +43,7 @@ v0.3 是 .NET 10 `WinExe` 后台宿主：无控制台窗口、无托盘图标，
 
 ## 安装与运行
 
-### 已签名发布包
-
-已签名版本发布后，从 [GitHub Releases](https://github.com/JHees/codex-script-loader/releases) 下载匹配架构的 MSIX 或 `.appinstaller`，验证发布者与 SHA-256 后按每用户方式安装。
+仓库目前提供源码构建。签名后的每用户 MSIX 和 `.appinstaller` 将发布在 [GitHub Releases](https://github.com/JHees/codex-script-loader/releases)。
 
 ### 从源码构建
 
@@ -58,7 +53,7 @@ Set-Location .\codex-script-loader
 .\windows\scripts\package.ps1 -RuntimeIdentifier win-x64
 ```
 
-Windows on Arm 使用 `win-arm64`。打包前会清理仓库根目录的 `bin`，然后只保留当次最新架构和版本。可直接运行 `bin\app\CodexScriptLoader.exe` 测试自包含构建。
+Windows on Arm 使用 `win-arm64`。打包前会清理仓库根目录的 `bin`，然后只保留当次最新架构和版本。可直接运行 `bin\app\CodexScriptLoader.exe` 使用自包含构建；安装本地生成的 MSIX 需要受信任的开发证书。
 
 ```text
 bin/
@@ -89,7 +84,7 @@ bin/
 
 生产数据位于 `%LOCALAPPDATA%\CodexScriptLoader`，包含 `config.json`、`scripts`、`quarantine`、`logs` 和 `state`。日志使用 UTF-8 JSON Lines，诊断摘要会脱敏用户路径和无关命令行。
 
-## 安全边界
+## 设计边界
 
 - 不修改、复制、解包或重签名官方 Codex。
 - 不枚举或写入受保护的 `WindowsApps` 目录。
@@ -99,7 +94,7 @@ bin/
 - 当前用户单实例管道只接受 `ShowStatus` 和 `ReloadScripts`。
 - 未知必填字段、哈希不符、权限失败和非法路径都会直接失败。
 
-这些边界可以降低误报风险，但不能绝对保证不被安全软件拦截。Defender 或卡巴斯基检测应阻断发布；关闭防护或要求用户添加白名单不是支持方案。
+这些设计可以降低误报风险，但无法保证所有安全软件都接受每个构建。检测到的发布包会先暂停发布并调查，不会要求用户关闭防护。
 
 ## 脚本包
 
@@ -143,17 +138,16 @@ npm test
 - **Codex 已运行**：关闭所有 Codex 窗口并等待进程退出，再启动 Loader。
 - **Loader 启动后没有窗口**：这是预期行为；再启动一次可打开诊断。
 - **脚本状态为 Degraded**：查看诊断窗口和 `%LOCALAPPDATA%\CodexScriptLoader\logs`。
-- **MSIX 无法安装**：确认它是来自预期发布者的 Authenticode 已签名包。
-- **Codex 更新后无法激活**：关闭 Codex 并运行 Activation Probe，不得回退到直接启动 `WindowsApps` 文件。
-- **杀毒软件报告 Loader**：保留检测名、定义版本、签名、哈希、进程树和脱敏日志，不要关闭防护。
+- **本地 MSIX 无法安装**：安装开发证书，或直接运行 `bin\app` 下的免安装构建。
+- **Codex 更新后无法激活**：关闭 Codex 并运行 Activation Probe，获取包身份与 CDP 诊断。
 
 ## 兼容性与范围
 
-Codex Script Loader 当前面向 Windows Microsoft Store 版 Codex。这是独立非官方项目，不隶属于 OpenAI 或 Microsoft，也未获得其背书。Codex 更新可能需要 Loader 或脚本适配。账户、provider、MCP、Skills 和独立控制中心不属于 Loader 范围。
+Codex Script Loader 面向 Windows Microsoft Store 版 Codex。Codex 更新可能需要 Loader 或脚本适配。本项目独立开发，与 OpenAI 或 Microsoft 无隶属关系。
 
 ## 贡献
 
-欢迎提交 Issue 和范围清晰的 Pull Request。修改应用激活、包发现、CDP 所有权或发布打包时，必须测试失败路径，并保留无提权、无 shell 的生产边界。不得提交运行数据、凭据、签名证书、本地安装包或生成的 `bin` 产物。
+欢迎提交 Issue 和范围清晰的 Pull Request。环境配置、架构、测试与打包说明见 [`windows/README.md`](windows/README.md)。
 
 ## 来源与许可
 

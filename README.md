@@ -20,9 +20,6 @@ Codex Script Loader launches the official Microsoft Store build of Codex with a 
 
 Version 0.3 is a background .NET 10 `WinExe`: there is no console window and no tray icon. It starts with Codex, supervises the renderer, and exits after the Codex instance it launched closes.
 
-> [!IMPORTANT]
-> No signed public binary has been published yet. Locally built, unsigned MSIX files are development artifacts, not release packages. Do not disable antivirus protection or add exclusions to install them.
-
 ## Highlights
 
 | Area | What it provides |
@@ -46,9 +43,7 @@ Codex must be completely closed before the Loader starts a managed instance. Onc
 
 ## Install and run
 
-### Signed release package
-
-When a signed build is available, download the package matching your architecture from [GitHub Releases](https://github.com/JHees/codex-script-loader/releases), verify its publisher and SHA-256 value, and install the per-user MSIX or `.appinstaller`. A release must install without UAC, antivirus exclusions, services, drivers, or scheduled tasks.
+The repository currently ships source builds. Signed per-user MSIX and `.appinstaller` packages will be published on [GitHub Releases](https://github.com/JHees/codex-script-loader/releases).
 
 ### Build from source
 
@@ -70,7 +65,7 @@ bin/
 └── SHA256SUMS.txt
 ```
 
-Run `bin\app\CodexScriptLoader.exe` to test the unpackaged self-contained build. An unsigned MSIX may require a trusted development certificate and must not be presented as a release.
+Run `bin\app\CodexScriptLoader.exe` to use the unpackaged self-contained build. Installing a locally generated MSIX requires a trusted development certificate.
 
 ### What to expect
 
@@ -111,7 +106,7 @@ Production data lives under:
 
 Logs use UTF-8 JSON Lines. Diagnostic exports redact user-specific paths and unrelated command-line details.
 
-## Security boundaries
+## Design boundaries
 
 - Does not patch, copy, unpack, or re-sign the official Codex application.
 - Does not enumerate or write to the protected `WindowsApps` directory.
@@ -121,7 +116,7 @@ Logs use UTF-8 JSON Lines. Diagnostic exports redact user-specific paths and unr
 - Limits the current-user single-instance pipe to `ShowStatus` and `ReloadScripts`.
 - Fails closed on unknown required manifest fields, hash mismatches, permission failures, and invalid paths.
 
-These choices reduce suspicious behavior and false-positive risk, but no architecture or signature can guarantee that security software will never block a build. Defender or Kaspersky detections are release blockers. Disabling protection or recommending local exclusions is not a supported solution.
+These choices reduce false-positive risk, but no architecture or signature can guarantee acceptance by every security product. A detected release is investigated and held back rather than shipped with instructions to disable protection.
 
 ## Script packages
 
@@ -197,19 +192,16 @@ See [`windows/README.md`](windows/README.md) for signing, MSIX, App Installer, a
 - **“Codex is already running”** — close all Codex windows, wait for its process to exit, and start the Loader again.
 - **Loader starts but no window appears** — this is expected. Start it a second time to open diagnostics.
 - **A script is degraded** — inspect diagnostics and `%LOCALAPPDATA%\CodexScriptLoader\logs`, then correct the manifest, permission, or lifecycle error.
-- **MSIX will not install** — verify that it is an Authenticode-signed release from the expected publisher. Local unsigned packages are development-only.
-- **A Codex update breaks activation** — close Codex and run Activation Probe. Do not fall back to launching package files from `WindowsApps`.
-- **Security software reports the Loader** — preserve the detection name, definitions version, signature, hash, process tree, and redacted logs; do not disable protection.
+- **A local MSIX will not install** — install the development certificate or run the unpackaged build from `bin\app`.
+- **A Codex update breaks activation** — close Codex and run Activation Probe to capture the package and CDP diagnostics.
 
 ## Compatibility and scope
 
-Codex Script Loader currently targets the Microsoft Store build of Codex on Windows. It is an independent, unofficial project and is not affiliated with or endorsed by OpenAI or Microsoft. Codex updates may change renderer behavior and require Loader or script compatibility work.
-
-Accounts, provider switching, MCP management, Skills management, and a separate control-center application are outside the Loader's scope.
+Codex Script Loader targets the Microsoft Store build of Codex on Windows. Codex updates may require Loader or script compatibility changes. This independent project is not affiliated with OpenAI or Microsoft.
 
 ## Contributing
 
-Issues and focused pull requests are welcome. Changes to activation, package discovery, CDP ownership, or release packaging should test failure paths and preserve the no-elevation/no-shell production boundary. Do not commit runtime data, credentials, signing certificates, local packages, or generated `bin` output.
+Issues and focused pull requests are welcome. For setup, architecture, testing, and packaging details, see [`windows/README.md`](windows/README.md).
 
 ## Credits and license
 
