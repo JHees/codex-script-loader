@@ -51,7 +51,11 @@ public sealed record ScriptDescriptor(
     string Fingerprint,
     string Directory,
     string Description,
-    string Author);
+    string Author,
+    string? Documentation,
+    string SettingsMode,
+    string? SettingsPageId,
+    string? SettingsPageTitle);
 
 public sealed record InjectionPlan(
     IReadOnlyList<ScriptDescriptor> Scripts,
@@ -65,3 +69,43 @@ public sealed record QuarantineRecord(
     string Version,
     bool Enabled,
     DateTimeOffset QuarantinedAt);
+
+public sealed record PluginSnapshot(
+    string Id,
+    string Name,
+    string Version,
+    string Description,
+    string Author,
+    bool Enabled,
+    bool Bundled,
+    string Status,
+    string? Error,
+    IReadOnlyList<string> Permissions,
+    string SettingsMode,
+    string? SettingsPageId,
+    string? SettingsPageTitle,
+    string? Documentation,
+    string? DocumentationExcerpt,
+    bool Legacy);
+
+public sealed record PluginInstallPreview(
+    string Token,
+    string Id,
+    string Name,
+    string Version,
+    string Description,
+    string Author,
+    IReadOnlyList<string> Permissions,
+    string SettingsMode,
+    string? SettingsPageTitle,
+    string? DocumentationExcerpt,
+    bool Legacy);
+
+public sealed record PluginOperationResult(
+    string Mode,
+    IReadOnlyList<string> RequestedIds,
+    int ScriptCount,
+    int TargetCount,
+    IReadOnlyList<string> Succeeded,
+    IReadOnlyList<string> Failed,
+    DateTimeOffset? LastInjectionAt);

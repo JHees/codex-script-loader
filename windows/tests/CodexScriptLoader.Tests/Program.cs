@@ -1,3 +1,4 @@
+using System.IO.Compression;
 using System.Text.Json;
 using CodexScriptLoader.Core;
 
@@ -15,6 +16,8 @@ internal static class Program
             await TestDescriptorAndInjectionAsync(testRoot);
             await TestInvalidConfigForcesSafeModeAsync(testRoot);
             await TestQuarantineRoundTripAsync(testRoot);
+            await TestPluginManagementAsync(testRoot);
+            await TestArchiveSafetyAsync(testRoot);
             TestPathBoundary(testRoot);
             TestLogRedaction(testRoot);
             Console.WriteLine($"PASS {passed} tests");
@@ -43,10 +46,12 @@ internal static class Program
         var plan = await registry.BuildPlanAsync(force: true);
         Equal(1, plan.Scripts.Count, "Bundled script count");
         Equal("co.bennett.ui-improvements", plan.Scripts[0].Id, "Bundled script id");
-        True(plan.Source.Contains("runtime.runtimeVersion = \"0.3.0\"", StringComparison.Ordinal), "Runtime version source");
+        True(plan.Source.Contains("runtime.runtimeVersion = \"0.4.1\"", StringComparison.Ordinal), "Runtime version source");
         True(plan.Source.Contains("__bennettUiImprovementsBigPizza", StringComparison.Ordinal), "Lifecycle source");
         True(plan.Source.Contains("installSettingsHost", StringComparison.Ordinal), "Settings host source");
         True(plan.Source.Contains("sha256-" + plan.Scripts[0].Fingerprint, StringComparison.Ordinal), "Integrity source");
+        Equal("page", plan.Scripts[0].SettingsMode, "Bundled settings declaration");
+        Equal("README.md", plan.Scripts[0].Documentation, "Bundled documentation declaration");
     }
 
     private static async Task TestInvalidConfigForcesSafeModeAsync(string testRoot)
@@ -67,8 +72,8 @@ internal static class Program
         var paths = LoaderPaths.FromRoot(Path.Combine(testRoot, "quarantine"));
         var registry = new ScriptRegistry(paths, Path.Combine(AppContext.BaseDirectory, "fixtures", "settings-host.mjs"));
         await registry.InitializeAsync();
-        await registry.EnsureBundledScriptAsync(Path.Combine(AppContext.BaseDirectory, "fixtures", "bennett-ui-improvements"));
-        var quarantined = await registry.QuarantineAsync("co.bennett.ui-improvements");
+        await CreateTestPluginAsync(paths, "local.removable");
+        var quarantined = await registry.QuarantineAsync("local.removable");
         True(!Directory.Exists(Path.Combine(paths.ScriptsRoot, quarantined.ScriptId)), "Quarantine removes installed path");
         Equal(1, (await registry.ListQuarantinedAsync()).Count, "Quarantine list count");
         var plan = await registry.BuildPlanAsync(force: true);
@@ -76,6 +81,71 @@ internal static class Program
         var restored = await registry.RestoreQuarantinedAsync(quarantined.Key);
         Equal(quarantined.ScriptId, restored.ScriptId, "Restored script id");
         Equal(1, (await registry.BuildPlanAsync(force: true)).Scripts.Count, "Restored script returns to plan");
+    }
+
+    private static async Task TestPluginManagementAsync(string testRoot)
+    {
+        var paths = LoaderPaths.FromRoot(Path.Combine(testRoot, "management"));
+        var registry = new ScriptRegistry(paths, Path.Combine(AppContext.BaseDirectory, "fixtures", "settings-host.mjs"));
+        await registry.InitializeAsync();
+        await registry.EnsureBundledScriptAsync(Path.Combine(AppContext.BaseDirectory, "fixtures", "bennett-ui-improvements"));
+        Throws<InvalidOperationException>(() => registry.QuarantineAsync("co.bennett.ui-improvements").GetAwaiter().GetResult(), "Bundled plugin removal rejected");
+        var bundled = (await registry.ListPluginsAsync()).Single();
+        True(bundled.Bundled, "Bundled plugin marker");
+        True(!bundled.Legacy, "Bundled plugin follows current contract");
+        await registry.SetEnabledAsync(bundled.Id, false);
+        Equal(0, (await registry.BuildPlanAsync(force: false)).Scripts.Count, "Disabled plugin leaves injection plan");
+        await registry.SetEnabledAsync(bundled.Id, true);
+        Equal(1, (await registry.BuildPlanAsync(force: false)).Scripts.Count, "Enabled plugin returns to injection plan");
+
+        var source = Path.Combine(testRoot, "install-source");
+        var sourcePaths = LoaderPaths.FromRoot(source);
+        sourcePaths.EnsureDirectories();
+        await CreateTestPluginAsync(sourcePaths, "local.installable");
+        var preview = await registry.StagePackageAsync(Path.Combine(sourcePaths.ScriptsRoot, "local.installable"), archive: false);
+        Equal("local.installable", preview.Id, "Install preview id");
+        var installed = await registry.InstallPendingAsync(preview.Token, enabled: false);
+        Equal("disabled", installed.Status, "Installed plugin disabled state");
+    }
+
+    private static async Task CreateTestPluginAsync(LoaderPaths paths, string id)
+    {
+        paths.EnsureDirectories();
+        var directory = Path.Combine(paths.ScriptsRoot, id);
+        Directory.CreateDirectory(directory);
+        await File.WriteAllTextAsync(Path.Combine(directory, "manifest.json"), $$"""
+        {
+          "schemaVersion": 1,
+          "id": "{{id}}",
+          "name": "Test plugin",
+          "version": "1.0.0",
+          "main": "index.js",
+          "scope": "renderer",
+          "runAt": "document-start",
+          "documentation": "README.md",
+          "settings": { "mode": "none" },
+          "permissions": []
+        }
+        """);
+        await File.WriteAllTextAsync(Path.Combine(directory, "index.js"), "module.exports = { start() {}, stop() {} };\n");
+        await File.WriteAllTextAsync(Path.Combine(directory, "README.md"), "# Test plugin\n");
+    }
+
+    private static async Task TestArchiveSafetyAsync(string testRoot)
+    {
+        var paths = LoaderPaths.FromRoot(Path.Combine(testRoot, "archive-safety"));
+        var registry = new ScriptRegistry(paths, Path.Combine(AppContext.BaseDirectory, "fixtures", "settings-host.mjs"));
+        await registry.InitializeAsync();
+        var archivePath = Path.Combine(testRoot, "traversal.zip");
+        using (var archive = ZipFile.Open(archivePath, ZipArchiveMode.Create))
+        {
+            var entry = archive.CreateEntry("../escape.txt");
+            await using var writer = new StreamWriter(entry.Open());
+            await writer.WriteAsync("escape");
+        }
+
+        Throws<InvalidDataException>(() => registry.StagePackageAsync(archivePath, archive: true).GetAwaiter().GetResult(), "ZIP traversal rejected");
+        True(!File.Exists(Path.Combine(testRoot, "escape.txt")), "ZIP traversal wrote no file");
     }
 
     private static void TestPathBoundary(string testRoot)

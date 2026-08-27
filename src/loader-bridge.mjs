@@ -2,7 +2,11 @@ import { randomBytes } from "node:crypto";
 import { assertLoopbackEndpoint, pickCodexTargets } from "./cdp.mjs";
 
 const BRIDGE_GLOBAL = "__codexScriptLoaderHostBridge";
-const ALLOWED_COMMANDS = new Set(["get_app_status", "reload_scripts"]);
+const ALLOWED_COMMANDS = new Set([
+  "get_app_status", "list_plugins", "set_plugin_enabled", "reload_scripts", "reload_plugins",
+  "pick_plugin_folder", "pick_plugin_archive", "install_plugin", "cancel_plugin_install",
+  "remove_plugin", "list_quarantined", "restore_plugin", "restart_codex"
+]);
 const MAX_REQUEST_BYTES = 16 * 1024;
 
 function createBindingName() {
@@ -88,11 +92,13 @@ function parseRequest(payload) {
     throw new Error("Loader bridge request envelope is invalid");
   }
   if (!ALLOWED_COMMANDS.has(request.command)) throw new Error("Loader bridge command is not allowed");
-  if (request.command === "get_app_status") return { id: request.id, command: request.command, payload: {} };
   if (request.payload !== undefined && (typeof request.payload !== "object" || request.payload === null || Array.isArray(request.payload))) {
     throw new Error("Loader bridge request payload is invalid");
   }
-  return { id: request.id, command: request.command, payload: { live: true } };
+  const body = request.payload || {};
+  if (request.command === "reload_scripts") return { id: request.id, command: request.command, payload: { live: true } };
+  if (request.command === "reload_plugins") return { id: request.id, command: request.command, payload: { live: true, ...(Array.isArray(body.ids) ? { ids: body.ids } : {}) } };
+  return { id: request.id, command: request.command, payload: body };
 }
 
 export class LoaderHostBridge {
@@ -171,7 +177,7 @@ export class LoaderHostBridge {
       const request = parseRequest(params?.payload);
       requestId = request.id;
       const dispatched = await this.dispatch(request.command, request.payload);
-      const result = request.command === "reload_scripts"
+      const result = request.command === "reload_scripts" || request.command === "reload_plugins"
         ? {
             mode: "live",
             targetCount: Number(dispatched?.targetCount || 0),

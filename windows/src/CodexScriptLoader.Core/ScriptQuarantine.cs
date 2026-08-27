@@ -17,6 +17,11 @@ public sealed partial class ScriptRegistry
             throw new ArgumentException("Invalid script id.", nameof(id));
         }
 
+        if (bundledIds.Contains(id))
+        {
+            throw new InvalidOperationException("Bundled plugins can be disabled but cannot be removed.");
+        }
+
         await ReloadConfigAsync(cancellationToken).ConfigureAwait(false);
         var source = paths.EnsureWithin(paths.ScriptsRoot, Path.Combine(paths.ScriptsRoot, id), "Installed script");
         var descriptor = await LoadDescriptorAsync(source, cancellationToken).ConfigureAwait(false);

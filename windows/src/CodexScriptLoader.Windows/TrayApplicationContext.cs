@@ -19,6 +19,7 @@ internal sealed class LoaderApplicationContext : ApplicationContext
 
         supervisor.StateChanged += snapshot => Post(() => ApplySnapshot(snapshot));
         supervisor.ManagedCodexExited += () => Post(ExitAfterManagedCodex);
+        supervisor.PackagePickerAsync = PickPluginPackageAsync;
         instance.CommandReceived += command => Post(() => HandleInstanceCommand(command));
         instance.StartServer();
         dispatcher.BeginInvoke(async () => await StartAsync());
@@ -103,8 +104,48 @@ internal sealed class LoaderApplicationContext : ApplicationContext
         }
     }
 
+    private async Task<string?> PickPluginPackageAsync(bool archive, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var completion = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var registration = cancellationToken.Register(() => completion.TrySetCanceled(cancellationToken));
+        dispatcher.BeginInvoke(() =>
+        {
+            try
+            {
+                if (archive)
+                {
+                    using var dialog = new OpenFileDialog
+                    {
+                        Title = "Select a Script-Loader plugin ZIP",
+                        Filter = "Plugin ZIP (*.zip)|*.zip",
+                        CheckFileExists = true,
+                        Multiselect = false,
+                    };
+                    completion.TrySetResult(dialog.ShowDialog() == DialogResult.OK ? dialog.FileName : null);
+                }
+                else
+                {
+                    using var dialog = new FolderBrowserDialog
+                    {
+                        Description = "Select a Script-Loader plugin folder containing manifest.json",
+                        UseDescriptionForTitle = true,
+                        ShowNewFolderButton = false,
+                    };
+                    completion.TrySetResult(dialog.ShowDialog() == DialogResult.OK ? dialog.SelectedPath : null);
+                }
+            }
+            catch (Exception exception)
+            {
+                completion.TrySetException(exception);
+            }
+        });
+        return await completion.Task.ConfigureAwait(false);
+    }
+
     protected override void ExitThreadCore()
     {
+        supervisor.PackagePickerAsync = null;
         diagnostics?.Dispose();
         dispatcher.Dispose();
         base.ExitThreadCore();

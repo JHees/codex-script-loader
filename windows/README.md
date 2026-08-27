@@ -45,7 +45,7 @@ The checked-in App Installer template uses a placeholder URL. Replace it with th
 
 The [`Windows Loader`](../.github/workflows/windows-loader.yml) workflow builds, tests, verifies reproducibility, and packages x64 and arm64 on pushes to `main` and on pull requests. These runs upload unsigned development MSIX artifacts for inspection.
 
-A semantic version tag such as `v0.3.0` starts the release path. The tag must match `package.json`, `Directory.Build.props`, and the Windows `ApplicationVersion`. Release jobs sign both architectures, verify the MSIX signatures, combine the SBOM and SHA-256 files, and create the matching GitHub Release.
+A semantic version tag such as `v0.4.1` starts the release path. The tag must match `package.json`, `Directory.Build.props`, and the Windows `ApplicationVersion`. Release jobs sign both architectures, verify the MSIX signatures, combine the SBOM and SHA-256 files, and create the matching GitHub Release.
 
 Configure these repository Actions secrets before pushing a release tag:
 
@@ -60,8 +60,8 @@ Configure these repository Actions secrets before pushing a release tag:
 gh secret set WINDOWS_SIGNING_CERTIFICATE_PASSWORD --repo JHees/codex-script-loader
 gh secret set WINDOWS_SIGNING_PUBLISHER --repo JHees/codex-script-loader
 
-git tag v0.3.0
-git push origin main v0.3.0
+git tag v0.4.1
+git push origin main v0.4.1
 ```
 
 Release App Installer files use the stable `releases/latest/download` URL so installed builds can discover the next published version.

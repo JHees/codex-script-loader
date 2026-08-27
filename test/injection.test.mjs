@@ -78,24 +78,28 @@ test("settings API is permission-gated and owned by the loader host", () => {
   assert.equal(typeof context.__settingsApi.registerPage, "function");
   assert.equal(typeof context.__settingsApi.register, "function");
   assert.equal(context.__processKind, "renderer");
-  assert.equal(context.__codexScriptLoader.settingsHost.snapshot().version, "0.3.2");
+  assert.equal(context.__codexScriptLoader.settingsHost.snapshot().version, "0.4.1");
 
   const withoutPermission = { ...descriptor({ id: "test.no-settings", source: "globalThis.__settingsWithoutPermission = api.settings;" }), permissions: [] };
   vm.runInContext(buildInjectionSource([withoutPermission]), context);
   assert.equal(context.__settingsWithoutPermission, undefined);
 });
 
-test("settings host keeps Loader management separate from plugin pages without refreshing Codex", () => {
+test("settings host groups management and plugin pages under Script-Loader without refreshing Codex", () => {
   const source = buildInjectionSource([]);
-  assert.ok(source.indexOf("groupHeader(groupLabels.loaderGroup)") < source.indexOf("groupHeader(groupLabels.tweaksGroup)"));
-  assert.match(source, /loaderGroup: "加载器"/);
-  assert.match(source, /tweaksGroup: "插件"/);
-  assert.match(source, /Reload plugin scripts/);
-  assert.match(source, /重新加载插件脚本/);
+  assert.match(source, /loaderGroup: "Script-Loader"/);
+  assert.doesNotMatch(source, /tweaksGroup:/);
+  assert.match(source, /title: loaderLabels\(\)\.settings/);
+  assert.match(source, /Add folder/);
+  assert.match(source, /添加文件夹/);
+  assert.match(source, /reload_plugins/);
+  assert.match(source, /restart_codex/);
   assert.match(source, /color-background-primary/);
-  assert.match(source, /border-radius:14px/);
+  assert.match(source, /p-panel/);
+  assert.match(source, /max-w-3xl/);
+  assert.match(source, /rounded-2xl/);
+  assert.match(source, /px-4 gap-6 py-3/);
   assert.match(source, /mountedGroups/);
   assert.match(source, /get_app_status/);
-  assert.match(source, /reload_scripts/);
   assert.doesNotMatch(source, /location\.reload\s*\(/);
 });

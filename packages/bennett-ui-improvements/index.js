@@ -1,15 +1,16 @@
 /*
- * Bennett UI Improvements for BigPizzaV3 Codex++
+ * Bennett UI Improvements for Codex
  *
  * Source project: https://github.com/b-nnett/codex-plusplus-bennett-ui
  * Original tweak id: co.bennett.ui-improvements
  * Original author: bennett
  * Original license: MIT License, Copyright (c) 2026 Bennett
  *
- * This file is a compatibility migration from the b-nnett Codex++ tweak
- * runtime to the BigPizzaV3 Codex++ renderer-only user script runtime.
- * The UI implementation below is not original work by the migrator; the
- * wrapper only adapts storage/logging/renderer lifecycle assumptions.
+ * This file began as a compatibility migration from the b-nnett Codex++
+ * tweak. BigPizzaV3 Codex++ support ended with the market-published 1.2.4;
+ * active versions now target Codex Script Loader. The UI implementation
+ * below is not original work by the migrator; the wrapper only adapts
+ * storage/logging/renderer lifecycle assumptions.
  *
  * MIT permission notice from the source project applies: permission is
  * granted to use, copy, modify, merge, publish, distribute, sublicense,
@@ -21,7 +22,7 @@
   "use strict";
 
   const INSTALL_KEY = "__bennettUiImprovementsBigPizza";
-  const VERSION = "1.4.9";
+  const VERSION = "1.4.10";
   const PROJECT_COLOR_STORAGE_KEY = "sidebar-project-backgrounds:colors";
   const LEGACY_STORAGE_PREFIX = "bennett-ui-improvements:";
   const LOADER_STORAGE_PREFIX = "codex-script-loader:co.bennett.ui-improvements:";
@@ -145,7 +146,7 @@
  * Bennett's UI Improvements
  *
  * A bag of small, individually-toggleable UI tweaks for Codex. Settings
- * live on a dedicated sidebar entry under the "Tweaks" group.
+ * live on a dedicated sidebar entry under the Script-Loader group.
  *
  * Features
  * --------
@@ -8778,19 +8779,23 @@ function writeFlag(api, id, on) {
       "thread-permanent-delete": "不可撤销",
     };
     return `
-      <div class="bennett-ui-settings-page">
+      <div class="bennett-ui-settings-page flex flex-col gap-10">
         ${groups.map((group) => `
-          <section class="bennett-ui-settings-section" data-bennett-ui-section="${escapeAttr(group.id)}">
-            <h2 class="bennett-ui-section-title">${escapeHtmlLocal(group.title)}</h2>
-            <div class="bennett-ui-settings-group">
+          <section class="bennett-ui-settings-section flex flex-col" data-bennett-ui-section="${escapeAttr(group.id)}">
+            <div class="flex justify-between gap-4 min-h-toolbar items-center pb-1.5">
+              <div class="flex min-w-0 flex-1 flex-col gap-0.5">
+                <div class="bennett-ui-section-title font-medium text-default text-base">${escapeHtmlLocal(group.title)}</div>
+              </div>
+            </div>
+            <div class="bennett-ui-settings-group flex flex-col [&>*:not(:last-child)]:relative [&>*:not(:last-child)]:after:pointer-events-none [&>*:not(:last-child)]:after:absolute [&>*:not(:last-child)]:after:inset-x-4 [&>*:not(:last-child)]:after:bottom-0 [&>*:not(:last-child)]:after:h-[0.5px] [&>*:not(:last-child)]:after:bg-border [&>*:not(:last-child)]:after:content-[''] rounded-2xl overflow-hidden border border-default">
               ${group.features.map((id) => featureInfo.find((item) => item.id === id)).filter(Boolean).map((item) => `
-                <div class="codex-plus-row bennett-ui-feature-row" data-bennett-ui-row="${escapeAttr(item.id)}">
-                  <div class="bennett-ui-feature-copy">
+                <div class="codex-plus-row bennett-ui-feature-row flex items-center justify-between px-4 gap-6 py-3" data-bennett-ui-row="${escapeAttr(item.id)}">
+                  <div class="bennett-ui-feature-copy flex min-w-0 flex-1 flex-col gap-0.5">
                     <div class="bennett-ui-feature-title-line">
-                      <div class="codex-plus-row-title">${escapeHtmlLocal(item.title)}</div>
+                      <div class="codex-plus-row-title min-w-0 text-sm text-default font-medium">${escapeHtmlLocal(item.title)}</div>
                       ${badges[item.id] ? `<span class="bennett-ui-feature-badge" data-tone="${item.id === "thread-permanent-delete" ? "danger" : "neutral"}">${escapeHtmlLocal(badges[item.id])}</span>` : ""}
                     </div>
-                    <div class="codex-plus-row-description">${escapeHtmlLocal(item.detail)}</div>
+                    <div class="codex-plus-row-description text-sm text-secondary">${escapeHtmlLocal(item.detail)}</div>
                   </div>
                   <button type="button" role="switch" aria-label="${escapeAttr(item.title)}" aria-checked="false" class="codex-plus-toggle bennett-ui-toggle" data-bennett-ui-feature="${escapeAttr(item.id)}" ${item.disabled ? "disabled" : ""}><span></span></button>
                 </div>
@@ -8798,7 +8803,7 @@ function writeFlag(api, id, on) {
             </div>
           </section>
         `).join("")}
-        <div class="bennett-ui-settings-footer">Bennett UI Improvements · ${escapeHtmlLocal(VERSION)}</div>
+        <div class="bennett-ui-settings-footer text-xs text-secondary">Bennett UI Improvements · ${escapeHtmlLocal(VERSION)}</div>
       </div>
     `;
   }
@@ -8828,38 +8833,37 @@ function writeFlag(api, id, on) {
       [data-bennett-ui-settings-root="true"] .bennett-ui-settings-page {
         display: flex;
         flex-direction: column;
-        gap: 36px;
+        gap: 40px;
       }
       [data-bennett-ui-settings-root="true"] .bennett-ui-settings-section {
         display: flex;
         flex-direction: column;
-        gap: 14px;
       }
       [data-bennett-ui-settings-root="true"] .bennett-ui-section-title {
         margin: 0;
         color: var(--color-text-primary, var(--color-token-text-primary, currentColor));
-        font-size: 16px;
-        font-weight: 600;
-        line-height: 1.4;
+        font-size: 13px;
+        font-weight: 500;
+        line-height: 1.5;
       }
       [data-bennett-ui-settings-root="true"] .bennett-ui-settings-group {
         overflow: hidden;
-        border: 1px solid var(--color-border-default, color-mix(in srgb, currentColor 14%, transparent));
-        border-radius: 14px;
+        border: 1px solid var(--color-border-default, color-mix(in srgb, currentColor 8%, transparent));
+        border-radius: 20px;
         background: var(--color-background-primary, transparent);
       }
       [data-bennett-ui-settings-root="true"] .codex-plus-row {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 28px;
-        min-height: 76px;
-        padding: 15px 20px;
-        border-bottom: 1px solid var(--color-border-default, color-mix(in srgb, currentColor 11%, transparent));
+        gap: 24px;
+        padding: 12px 16px;
       }
-      [data-bennett-ui-settings-root="true"] .codex-plus-row:last-child { border-bottom: 0; }
       [data-bennett-ui-settings-root="true"] .bennett-ui-feature-copy {
         min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
       }
       [data-bennett-ui-settings-root="true"] .bennett-ui-feature-title-line {
         display: flex;
@@ -8869,15 +8873,15 @@ function writeFlag(api, id, on) {
       }
       [data-bennett-ui-settings-root="true"] .codex-plus-row-title {
         color: var(--color-text-primary, currentColor);
-        font-size: 14px;
-        font-weight: 600;
-        line-height: 1.35;
+        font-size: 13px;
+        font-weight: 500;
+        line-height: 1.43;
       }
       [data-bennett-ui-settings-root="true"] .codex-plus-row-description {
-        margin-top: 4px;
+        margin-top: 0;
         color: var(--color-text-secondary, var(--color-token-text-secondary, #8f96a3));
         font-size: 13px;
-        line-height: 1.45;
+        line-height: 1.43;
       }
       [data-bennett-ui-settings-root="true"] .bennett-ui-feature-badge {
         flex: 0 0 auto;

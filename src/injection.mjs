@@ -30,6 +30,12 @@ export function wrapScript(descriptor, { force = false } = {}) {
     author: descriptor.raw?.author || "",
     permissions: descriptor.permissions || [],
     scope: descriptor.scope || "renderer",
+    documentation: descriptor.documentation || null,
+    settings: descriptor.settingsMode === "legacy" ? null : {
+      mode: descriptor.settingsMode,
+      pageId: descriptor.settingsPageId,
+      title: descriptor.settingsPageTitle,
+    },
   });
   const source = descriptor.source;
   return `(() => {
@@ -37,7 +43,7 @@ export function wrapScript(descriptor, { force = false } = {}) {
   const previous = runtime.scripts[${id}];
   if (!${force ? "true" : "false"} && previous && previous.fingerprint === ${fingerprint} && previous.status === "running") return;
   if (previous && typeof previous.stop === "function") {
-    try { previous.stop(); } catch (error) { runtime.recordError({ id: ${id}, phase: "stop", error: String(error) }); }
+    try { previous.stop({ reason: "reload" }); } catch (error) { runtime.recordError({ id: ${id}, phase: "stop", error: String(error) }); }
   }
   const record = { id: ${id}, version: ${JSON.stringify(descriptor.version)}, fingerprint: ${fingerprint}, integrity: ${JSON.stringify(integrityLabel(descriptor.fingerprint))}, status: "loading", stop: null };
   runtime.scripts[${id}] = record;
@@ -120,16 +126,16 @@ export function wrapScript(descriptor, { force = false } = {}) {
     }
     const moduleValue = module.exports;
     let startResult = null;
-    if (moduleValue && typeof moduleValue.start === "function") startResult = moduleValue.start(api);
-    const exportedStop = moduleValue && typeof moduleValue.stop === "function" ? () => moduleValue.stop() : typeof startResult === "function" ? startResult : startResult && typeof startResult.stop === "function" ? () => startResult.stop() : null;
+    if (moduleValue && typeof moduleValue.start === "function") startResult = moduleValue.start(api, { reason: previous ? "reload" : "enable" });
+    const exportedStop = moduleValue && typeof moduleValue.stop === "function" ? context => moduleValue.stop(context) : typeof startResult === "function" ? startResult : startResult && typeof startResult.stop === "function" ? context => startResult.stop(context) : null;
     const lifecycleValue = ${lifecycleGlobal} ? globalThis[${lifecycleGlobal}] : null;
     const lifecycleStop = !exportedStop && lifecycleValue && typeof lifecycleValue.stop === "function" ? () => {
       try { lifecycleValue.stop(); }
       finally { if (globalThis[${lifecycleGlobal}] === lifecycleValue) delete globalThis[${lifecycleGlobal}]; }
     } : null;
-    if (exportedStop || lifecycleStop || disposers.length) record.stop = () => {
+    if (exportedStop || lifecycleStop || disposers.length) record.stop = (context = { reason: "cleanup" }) => {
       try {
-        if (exportedStop) exportedStop();
+        if (exportedStop) exportedStop(context);
         else if (lifecycleStop) lifecycleStop();
       }
       finally { for (const dispose of disposers.splice(0).reverse()) { try { dispose(); } catch {} } }
@@ -141,7 +147,7 @@ export function wrapScript(descriptor, { force = false } = {}) {
     if (${lifecycleGlobal}) {
       const failedLifecycle = globalThis[${lifecycleGlobal}];
       if (failedLifecycle && typeof failedLifecycle.stop === "function") {
-        try { failedLifecycle.stop(); } catch (stopError) { runtime.recordError({ id: ${id}, phase: "failed-start-stop", error: String(stopError) }); }
+        try { failedLifecycle.stop({ reason: "failed-start" }); } catch (stopError) { runtime.recordError({ id: ${id}, phase: "failed-start-stop", error: String(stopError) }); }
       }
       if (globalThis[${lifecycleGlobal}] === failedLifecycle) delete globalThis[${lifecycleGlobal}];
     }
@@ -160,7 +166,7 @@ export function buildLifecycleSyncSource(descriptors) {
     if (active.has(id)) continue;
     const record = runtime.scripts[id];
     if (record && typeof record.stop === "function") {
-      try { record.stop(); } catch (error) { runtime.recordError({ id, phase: "stop", error: String(error) }); }
+      try { record.stop({ reason: "disable" }); } catch (error) { runtime.recordError({ id, phase: "stop", error: String(error) }); }
     }
     delete runtime.scripts[id];
   }

@@ -39,12 +39,15 @@ function fakeSession() {
   };
 }
 
-test("bridge parser only accepts the two Loader page commands", () => {
+test("bridge parser accepts only the Loader management command allowlist", () => {
   assert.deepEqual(parseRequest(JSON.stringify({ version: 1, id: "a", command: "get_app_status" })), {
     id: "a", command: "get_app_status", payload: {},
   });
   assert.deepEqual(parseRequest(JSON.stringify({ version: 1, id: "b", command: "reload_scripts", payload: { ignored: true } })), {
     id: "b", command: "reload_scripts", payload: { live: true },
+  });
+  assert.deepEqual(parseRequest(JSON.stringify({ version: 1, id: "c", command: "reload_plugins", payload: { ids: ["local.example"] } })), {
+    id: "c", command: "reload_plugins", payload: { live: true, ids: ["local.example"] },
   });
   assert.throws(() => parseRequest(JSON.stringify({ version: 1, id: "c", command: "remove_script" })), /not allowed/);
   assert.throws(() => parseRequest("{"), /invalid JSON/);

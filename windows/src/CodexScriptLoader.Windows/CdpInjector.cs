@@ -111,7 +111,7 @@ internal sealed class CdpInjector
           const runtime = globalThis.__codexScriptLoader;
           if (!runtime?.scripts) return;
           for (const [id, record] of Object.entries(runtime.scripts)) {
-            try { record?.stop?.(); } catch (error) { runtime.recordError?.({ id, phase: "stop", error: String(error) }); }
+            try { record?.stop?.({ reason: "shutdown" }); } catch (error) { runtime.recordError?.({ id, phase: "stop", error: String(error) }); }
             delete runtime.scripts[id];
           }
           try { runtime.settingsHost?.stop?.(); } catch {}

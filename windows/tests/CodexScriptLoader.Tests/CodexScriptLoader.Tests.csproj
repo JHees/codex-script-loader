@@ -12,6 +12,7 @@
     <Content Include="..\..\..\packages\bennett-ui-improvements\index.js" Link="fixtures\bennett-ui-improvements\index.js" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\..\packages\bennett-ui-improvements\manifest.json" Link="fixtures\bennett-ui-improvements\manifest.json" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\..\packages\bennett-ui-improvements\NOTICE.md" Link="fixtures\bennett-ui-improvements\NOTICE.md" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\..\packages\bennett-ui-improvements\README.md" Link="fixtures\bennett-ui-improvements\README.md" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\..\packages\bennett-ui-improvements\LICENSE" Link="fixtures\bennett-ui-improvements\LICENSE" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\..\src\settings-host.mjs" Link="fixtures\settings-host.mjs" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

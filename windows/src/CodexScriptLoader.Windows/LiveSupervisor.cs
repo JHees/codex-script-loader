@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Security.Cryptography.X509Certificates;
+using System.Text.Json;
 using CodexScriptLoader.Core;
 using CodexScriptLoader.Interop;
 
@@ -10,7 +11,7 @@ namespace CodexScriptLoader.Windows;
 
 internal sealed class LiveSupervisor : IAsyncDisposable
 {
-    public const string Version = "0.3.0";
+    public const string Version = "0.4.1";
     private readonly LoaderPaths paths;
     private readonly JsonlLogger logger;
     private readonly SemaphoreSlim operation = new(1, 1);
@@ -24,7 +25,9 @@ internal sealed class LiveSupervisor : IAsyncDisposable
     private CdpEndpointIdentity? endpoint;
     private IReadOnlyList<ScriptLoadResult> scripts = [];
     private Task? monitorTask;
+    private CancellationTokenSource? monitorLifetime;
     private int? activationProcessId;
+    private int lastTargetCount;
     private string? lastError;
     private DateTimeOffset? lastInjectionAt;
 
@@ -40,6 +43,8 @@ internal sealed class LiveSupervisor : IAsyncDisposable
     public event Action<DiagnosticSnapshot>? StateChanged;
 
     public event Action? ManagedCodexExited;
+
+    public Func<bool, CancellationToken, Task<string?>>? PackagePickerAsync { get; set; }
 
     public DiagnosticSnapshot Snapshot => new(
         Version,
@@ -102,8 +107,8 @@ internal sealed class LiveSupervisor : IAsyncDisposable
             injector = new CdpInjector(client);
             bridge = new LoaderHostBridge(client, DispatchBridgeAsync);
             await bridge.SyncAsync(targets, cancellationToken).ConfigureAwait(false);
-            await InjectAsync(targets, force: true, cancellationToken).ConfigureAwait(false);
-            monitorTask = Task.Run(MonitorAsync);
+            await InjectAsync(targets, forceIds: null, cancellationToken).ConfigureAwait(false);
+            StartMonitor();
         }
         catch (Exception exception)
         {
@@ -118,6 +123,11 @@ internal sealed class LiveSupervisor : IAsyncDisposable
     }
 
     public async Task ReloadAsync(CancellationToken cancellationToken)
+    {
+        await ReloadAsync(null, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task ReloadAsync(IReadOnlySet<string>? forceIds, CancellationToken cancellationToken)
     {
         await operation.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -135,7 +145,7 @@ internal sealed class LiveSupervisor : IAsyncDisposable
             }
 
             await bridge.SyncAsync(targets, cancellationToken).ConfigureAwait(false);
-            await InjectAsync(targets, force: true, cancellationToken).ConfigureAwait(false);
+            await InjectAsync(targets, forceIds, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception exception)
         {
@@ -147,6 +157,45 @@ internal sealed class LiveSupervisor : IAsyncDisposable
         {
             operation.Release();
         }
+    }
+
+    public async Task RestartAsync(CancellationToken cancellationToken)
+    {
+        await StopMonitorAsync().ConfigureAwait(false);
+        var closed = await CloseManagedCodexAsync(cancellationToken).ConfigureAwait(false);
+        if (!closed)
+        {
+            StartMonitor();
+            throw new InvalidOperationException("Codex could not be closed for restart.");
+        }
+
+        await operation.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (bridge is not null)
+            {
+                await bridge.DisposeAsync().ConfigureAwait(false);
+            }
+
+            client?.Dispose();
+            bridge = null;
+            injector = null;
+            client = null;
+            registry = null;
+            package = null;
+            endpoint = null;
+            scripts = [];
+            activationProcessId = null;
+            lastTargetCount = 0;
+            lastInjectionAt = null;
+        }
+        finally
+        {
+            operation.Release();
+        }
+
+        await StartAsync(cancellationToken).ConfigureAwait(false);
+        logger.Info("codex-restarted", new { activationProcessId, targetCount = lastTargetCount });
     }
 
     public void FocusCodex()
@@ -218,21 +267,97 @@ internal sealed class LiveSupervisor : IAsyncDisposable
         }
     }
 
-    private async Task InjectAsync(IReadOnlyList<CdpTarget> targets, bool force, CancellationToken cancellationToken)
+    private async Task InjectAsync(IReadOnlyList<CdpTarget> targets, IReadOnlySet<string>? forceIds, CancellationToken cancellationToken)
     {
-        var plan = await registry!.BuildPlanAsync(force, cancellationToken).ConfigureAwait(false);
+        var plan = await registry!.BuildPlanAsync(forceIds, cancellationToken).ConfigureAwait(false);
         scripts = await injector!.InjectAsync(plan.Source, plan.Scripts, targets, cancellationToken).ConfigureAwait(false);
+        lastTargetCount = targets.Count;
         lastInjectionAt = DateTimeOffset.UtcNow;
         var failed = scripts.Count(script => script.LifecycleResult != "running");
         SetState(failed == 0 ? LoaderState.Healthy : LoaderState.Degraded, failed == 0 ? null : $"{failed} renderer scripts failed to start.");
         logger.Info("scripts-injected", new { targetCount = targets.Count, scriptCount = plan.Scripts.Count, failed, plan.SafeMode });
     }
 
-    private async Task<object> DispatchBridgeAsync(string command, CancellationToken cancellationToken)
+    private async Task<object> DispatchBridgeAsync(string command, JsonElement payload, CancellationToken cancellationToken)
     {
-        if (command == "reload_scripts")
+        if (registry is null)
         {
-            await ReloadAsync(cancellationToken).ConfigureAwait(false);
+            throw new InvalidOperationException("Managed runtime is not ready.");
+        }
+
+        if (command is "reload_scripts" or "reload_plugins")
+        {
+            var ids = command == "reload_plugins" ? ReadIds(payload) : null;
+            return await ReloadPluginsAsync(ids, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (command == "list_plugins")
+        {
+            return await registry.ListPluginsAsync(RuntimeById(), cancellationToken).ConfigureAwait(false);
+        }
+
+        if (command == "set_plugin_enabled")
+        {
+            var id = RequiredPayloadText(payload, "id", 128);
+            var enabled = RequiredPayloadBoolean(payload, "enabled");
+            await registry.SetEnabledAsync(id, enabled, cancellationToken).ConfigureAwait(false);
+            await ReloadAsync(new HashSet<string>(StringComparer.Ordinal), cancellationToken).ConfigureAwait(false);
+            return (await registry.ListPluginsAsync(RuntimeById(), cancellationToken).ConfigureAwait(false)).Single(plugin => plugin.Id == id);
+        }
+
+        if (command is "pick_plugin_folder" or "pick_plugin_archive")
+        {
+            var picker = PackagePickerAsync ?? throw new InvalidOperationException("Plugin package picker is unavailable.");
+            var archive = command == "pick_plugin_archive";
+            var source = await picker(archive, cancellationToken).ConfigureAwait(false);
+            return source is null
+                ? new { cancelled = true }
+                : await registry.StagePackageAsync(source, archive, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (command == "install_plugin")
+        {
+            var token = RequiredPayloadText(payload, "token", 64);
+            var enabled = RequiredPayloadBoolean(payload, "enabled");
+            var plugin = await registry.InstallPendingAsync(token, enabled, cancellationToken).ConfigureAwait(false);
+            if (enabled) await ReloadAsync(new HashSet<string>(StringComparer.Ordinal), cancellationToken).ConfigureAwait(false);
+            return plugin;
+        }
+
+        if (command == "cancel_plugin_install")
+        {
+            await registry.CancelPendingPackageAsync(RequiredPayloadText(payload, "token", 64), cancellationToken).ConfigureAwait(false);
+            return new { cancelled = true };
+        }
+
+        if (command == "remove_plugin")
+        {
+            var record = await registry.QuarantineAsync(RequiredPayloadText(payload, "id", 128), cancellationToken).ConfigureAwait(false);
+            await ReloadAsync(new HashSet<string>(StringComparer.Ordinal), cancellationToken).ConfigureAwait(false);
+            return record;
+        }
+
+        if (command == "list_quarantined")
+        {
+            return await registry.ListQuarantinedAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        if (command == "restore_plugin")
+        {
+            var record = await registry.RestoreQuarantinedAsync(RequiredPayloadText(payload, "key", 128), cancellationToken).ConfigureAwait(false);
+            await ReloadAsync(new HashSet<string>(StringComparer.Ordinal), cancellationToken).ConfigureAwait(false);
+            return record;
+        }
+
+        if (command == "restart_codex")
+        {
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(250).ConfigureAwait(false);
+                try { await RestartAsync(CancellationToken.None).ConfigureAwait(false); }
+                catch (Exception exception) { logger.Error("restart-failed", exception); }
+            });
+            return new { accepted = true };
         }
 
         var snapshot = Snapshot;
@@ -243,7 +368,7 @@ internal sealed class LiveSupervisor : IAsyncDisposable
             cdp = snapshot.State.ToString().ToLowerInvariant(),
             safeMode = registry?.SafeMode ?? false,
             managedProcess = snapshot.ActivationProcessId.HasValue,
-            targetCount = snapshot.Cdp is null ? 0 : 1,
+            targetCount = lastTargetCount,
             enabledScripts = snapshot.Scripts.Count,
             failedScripts = snapshot.Scripts.Count(script => script.LifecycleResult != "running"),
             configHealthy = !(registry?.SafeMode ?? false),
@@ -254,15 +379,99 @@ internal sealed class LiveSupervisor : IAsyncDisposable
         };
     }
 
-    private async Task MonitorAsync()
+    private async Task<PluginOperationResult> ReloadPluginsAsync(IReadOnlySet<string>? requestedIds, CancellationToken cancellationToken)
+    {
+        var installed = await registry!.ListPluginsAsync(RuntimeById(), cancellationToken).ConfigureAwait(false);
+        var requested = requestedIds is null || requestedIds.Count == 0
+            ? installed.Where(plugin => plugin.Enabled && plugin.Status != "invalid").Select(plugin => plugin.Id).ToArray()
+            : requestedIds.ToArray();
+        var installedById = installed.ToDictionary(plugin => plugin.Id, StringComparer.Ordinal);
+        foreach (var id in requested)
+        {
+            if (!installedById.TryGetValue(id, out var plugin)) throw new InvalidOperationException($"Unknown plugin: {id}.");
+            if (!plugin.Enabled) throw new InvalidOperationException($"Plugin is disabled: {id}.");
+            if (plugin.Status == "invalid") throw new InvalidOperationException($"Plugin package is invalid: {id}.");
+        }
+
+        await ReloadAsync(requested.ToHashSet(StringComparer.Ordinal), cancellationToken).ConfigureAwait(false);
+        var resultById = RuntimeById();
+        var succeeded = requested.Where(id => resultById.TryGetValue(id, out var item) && item.LifecycleResult == "running").ToArray();
+        var failed = requested.Except(succeeded, StringComparer.Ordinal).ToArray();
+        return new PluginOperationResult(
+            "live",
+            requested,
+            requested.Length,
+            lastTargetCount,
+            succeeded,
+            failed,
+            lastInjectionAt);
+    }
+
+    private IReadOnlyDictionary<string, ScriptLoadResult> RuntimeById() => scripts
+        .GroupBy(script => script.Id, StringComparer.Ordinal)
+        .ToDictionary(group => group.Key, group => group.Last(), StringComparer.Ordinal);
+
+    private static IReadOnlySet<string>? ReadIds(JsonElement payload)
+    {
+        if (!payload.TryGetProperty("ids", out var ids) || ids.ValueKind == JsonValueKind.Null) return null;
+        if (ids.ValueKind != JsonValueKind.Array || ids.GetArrayLength() > 64) throw new InvalidDataException("Plugin ids must be an array of at most 64 entries.");
+        var result = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var item in ids.EnumerateArray())
+        {
+            var id = item.GetString();
+            if (string.IsNullOrWhiteSpace(id) || id.Length > 128) throw new InvalidDataException("Plugin id is invalid.");
+            result.Add(id);
+        }
+
+        return result;
+    }
+
+    private static string RequiredPayloadText(JsonElement payload, string name, int maxLength)
+    {
+        var value = payload.TryGetProperty(name, out var element) ? element.GetString() : null;
+        if (string.IsNullOrWhiteSpace(value) || value.Length > maxLength || value.Any(char.IsControl)) throw new InvalidDataException($"Bridge payload {name} is invalid.");
+        return value;
+    }
+
+    private static bool RequiredPayloadBoolean(JsonElement payload, string name)
+    {
+        if (!payload.TryGetProperty(name, out var element) || element.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) throw new InvalidDataException($"Bridge payload {name} is invalid.");
+        return element.GetBoolean();
+    }
+
+    private void StartMonitor()
+    {
+        monitorLifetime?.Cancel();
+        monitorLifetime?.Dispose();
+        monitorLifetime = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+        monitorTask = Task.Run(() => MonitorAsync(monitorLifetime.Token));
+    }
+
+    private async Task StopMonitorAsync()
+    {
+        var cancellation = monitorLifetime;
+        var task = monitorTask;
+        monitorLifetime = null;
+        monitorTask = null;
+        cancellation?.Cancel();
+        if (task is not null)
+        {
+            try { await task.ConfigureAwait(false); }
+            catch (OperationCanceledException) { }
+        }
+
+        cancellation?.Dispose();
+    }
+
+    private async Task MonitorAsync(CancellationToken cancellationToken)
     {
         var missingTicks = 0;
-        while (!lifetime.IsCancellationRequested)
+        while (!cancellationToken.IsCancellationRequested)
         {
             try
             {
-                await Task.Delay(1000, lifetime.Token).ConfigureAwait(false);
-                var targets = client is null ? [] : await client.GetCodexTargetsAsync(lifetime.Token).ConfigureAwait(false);
+                await Task.Delay(1000, cancellationToken).ConfigureAwait(false);
+                var targets = client is null ? [] : await client.GetCodexTargetsAsync(cancellationToken).ConfigureAwait(false);
                 if (targets.Count == 0)
                 {
                     missingTicks++;
@@ -278,11 +487,11 @@ internal sealed class LiveSupervisor : IAsyncDisposable
                     missingTicks = 0;
                     if (bridge is not null)
                     {
-                        await bridge.SyncAsync(targets, lifetime.Token).ConfigureAwait(false);
+                        await bridge.SyncAsync(targets, cancellationToken).ConfigureAwait(false);
                     }
                 }
             }
-            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 return;
             }
@@ -363,16 +572,7 @@ internal sealed class LiveSupervisor : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         lifetime.Cancel();
-        if (monitorTask is not null)
-        {
-            try
-            {
-                await monitorTask.ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-            }
-        }
+        await StopMonitorAsync().ConfigureAwait(false);
 
         if (bridge is not null)
         {

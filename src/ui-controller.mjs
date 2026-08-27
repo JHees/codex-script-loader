@@ -7,10 +7,13 @@ import { sha256Text } from "./hash.mjs";
 
 const COMMANDS = new Set([
   "get_app_status",
+  "list_plugins",
+  "set_plugin_enabled",
   "list_scripts",
   "get_script",
   "set_script_enabled",
   "reload_scripts",
+  "reload_plugins",
   "set_safe_mode",
   "inspect_script_source",
   "inspect_script_text",
@@ -19,6 +22,8 @@ const COMMANDS = new Set([
   "list_quarantined",
   "remove_script",
   "restore_quarantined",
+  "remove_plugin",
+  "restore_plugin",
   "run_doctor",
 ]);
 
@@ -39,11 +44,14 @@ export class UiController {
     if (!COMMANDS.has(command)) throw new Error(`unsupported loader command: ${command}`);
     switch (command) {
       case "get_app_status": return this.getAppStatus();
+      case "list_plugins": return this.listPlugins();
+      case "set_plugin_enabled": return this.setScriptEnabled(payload.id, payload.enabled);
       case "list_scripts": return this.listScripts();
       case "get_script": return this.getScript(payload.id);
       case "set_script_enabled": return this.setScriptEnabled(payload.id, payload.enabled);
       case "set_safe_mode": return this.setSafeMode(payload.enabled);
       case "reload_scripts": return this.reloadScripts(payload);
+      case "reload_plugins": return this.reloadScripts({ ...payload, live: true });
       case "inspect_script_source": return this.inspectScriptSource(payload.sourcePath);
       case "inspect_script_text": return this.inspectScriptText(payload);
       case "install_script": return this.registry.install(payload.sourcePath, payload.options || {});
@@ -51,6 +59,8 @@ export class UiController {
       case "list_quarantined": return this.registry.listQuarantined();
       case "remove_script": return this.registry.quarantineScript(payload.id, { mode: payload.mode || "quarantine" });
       case "restore_quarantined": return this.registry.restoreQuarantined(payload.key);
+      case "remove_plugin": return this.registry.quarantineScript(payload.id, { mode: "quarantine" });
+      case "restore_plugin": return this.registry.restoreQuarantined(payload.key);
       case "run_doctor": return this.getDoctorReport();
       default: throw new Error(`unreachable command: ${command}`);
     }
@@ -109,6 +119,19 @@ export class UiController {
     return scripts.map((script) => ({
       ...script,
       status: script.status === "failed" ? "failed" : statusById.get(script.id) || script.status,
+    }));
+  }
+
+  async listPlugins() {
+    return (await this.listScripts()).map(script => ({
+      ...script,
+      bundled: false,
+      settingsMode: script.settingsMode || "legacy",
+      settingsPageId: script.settingsPageId || null,
+      settingsPageTitle: script.settingsPageTitle || null,
+      documentation: script.documentation || null,
+      documentationExcerpt: null,
+      legacy: !script.documentation || (script.settingsMode || "legacy") === "legacy",
     }));
   }
 

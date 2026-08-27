@@ -38,7 +38,7 @@ internal static class Program
                 throw new InvalidOperationException($"Expected one exact renderer target, found {targets.Count}.");
             }
 
-            await using var bridge = new LoaderHostBridge(client, (command, _) => Task.FromResult<object>(new
+            await using var bridge = new LoaderHostBridge(client, (command, _, _) => Task.FromResult<object>(new
             {
                 loader = "healthy",
                 codex = "healthy",

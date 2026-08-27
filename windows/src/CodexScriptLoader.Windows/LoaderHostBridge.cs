@@ -6,13 +6,14 @@ namespace CodexScriptLoader.Windows;
 internal sealed class LoaderHostBridge : IAsyncDisposable
 {
     private const string BridgeGlobal = "__codexScriptLoaderHostBridge";
+    private static readonly JsonSerializerOptions BridgeJsonOptions = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
     private readonly CdpClient client;
-    private readonly Func<string, CancellationToken, Task<object>> dispatch;
+    private readonly Func<string, JsonElement, CancellationToken, Task<object>> dispatch;
     private readonly string bindingName = $"__codex_loader_{Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(12))}";
     private readonly Dictionary<string, BridgeSession> sessions = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim sync = new(1, 1);
 
-    public LoaderHostBridge(CdpClient client, Func<string, CancellationToken, Task<object>> dispatch)
+    public LoaderHostBridge(CdpClient client, Func<string, JsonElement, CancellationToken, Task<object>> dispatch)
     {
         this.client = client;
         this.dispatch = dispatch;
@@ -125,15 +126,38 @@ internal sealed class LoaderHostBridge : IAsyncDisposable
             }
 
             var command = root.GetProperty("command").GetString();
-            if (command is not ("get_app_status" or "reload_scripts"))
+            if (command is not (
+                "get_app_status" or
+                "list_plugins" or
+                "set_plugin_enabled" or
+                "reload_scripts" or
+                "reload_plugins" or
+                "pick_plugin_folder" or
+                "pick_plugin_archive" or
+                "install_plugin" or
+                "cancel_plugin_install" or
+                "remove_plugin" or
+                "list_quarantined" or
+                "restore_plugin" or
+                "restart_codex"))
             {
                 throw new InvalidDataException("Bridge command is not allowed.");
             }
 
-            var result = await dispatch(command, CancellationToken.None).ConfigureAwait(false);
+            var payloadElement = root.TryGetProperty("payload", out var commandPayload) ? commandPayload : default;
+            if (payloadElement.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
+            {
+                payloadElement = JsonSerializer.SerializeToElement(new { });
+            }
+            else if (payloadElement.ValueKind != JsonValueKind.Object)
+            {
+                throw new InvalidDataException("Bridge command payload must be an object.");
+            }
+
+            var result = await dispatch(command!, payloadElement.Clone(), CancellationToken.None).ConfigureAwait(false);
             response = new { id = requestId, ok = true, result };
         }
-        catch (Exception exception) when (exception is InvalidDataException or JsonException or InvalidOperationException)
+        catch (Exception exception) when (exception is InvalidDataException or JsonException or InvalidOperationException or IOException or UnauthorizedAccessException or ArgumentException or KeyNotFoundException)
         {
             if (requestId is null)
             {
@@ -148,7 +172,7 @@ internal sealed class LoaderHostBridge : IAsyncDisposable
             return;
         }
 
-        var expression = $"globalThis[{JsonSerializer.Serialize(BridgeGlobal)}]?.receive({JsonSerializer.Serialize(response)});";
+        var expression = $"globalThis[{JsonSerializer.Serialize(BridgeGlobal)}]?.receive({JsonSerializer.Serialize(response, BridgeJsonOptions)});";
         var contextId = parameters.TryGetProperty("executionContextId", out var context) ? context.GetInt32() : (int?)null;
         try
         {
@@ -202,7 +226,7 @@ internal sealed class LoaderHostBridge : IAsyncDisposable
     }
 
     private string BuildClientSource() => $$"""
-    ((bindingName, globalName, requestTimeoutMs) => {
+    ((bindingName, globalName, requestTimeoutMs, mutationTimeoutMs, pickerTimeoutMs) => {
       const binding = globalThis[bindingName];
       const previous = globalThis[globalName];
       try { previous?.dispose?.("Loader bridge reconnected"); } catch {}
@@ -219,7 +243,12 @@ internal sealed class LoaderHostBridge : IAsyncDisposable
           if (disposed) return Promise.reject(new Error("Loader sidecar is not connected"));
           const id = `${Date.now().toString(36)}-${(nextId++).toString(36)}`;
           return new Promise((resolve, reject) => {
-            const timer = setTimeout(() => { pending.delete(id); reject(new Error("Loader request timed out")); }, requestTimeoutMs);
+            const timeoutMs = command === "pick_plugin_folder" || command === "pick_plugin_archive"
+              ? pickerTimeoutMs
+              : command === "get_app_status" || command === "list_plugins" || command === "list_quarantined"
+                ? requestTimeoutMs
+                : mutationTimeoutMs;
+            const timer = setTimeout(() => { pending.delete(id); reject(new Error("Loader request timed out")); }, timeoutMs);
             pending.set(id, { resolve, reject, timer });
             try { binding(JSON.stringify({ version: 1, id, command, payload })); }
             catch (error) { clearTimeout(timer); pending.delete(id); reject(error); }
@@ -240,7 +269,7 @@ internal sealed class LoaderHostBridge : IAsyncDisposable
           pending.clear();
         }
       };
-    })({{JsonSerializer.Serialize(bindingName)}}, {{JsonSerializer.Serialize(BridgeGlobal)}}, 8000);
+    })({{JsonSerializer.Serialize(bindingName)}}, {{JsonSerializer.Serialize(BridgeGlobal)}}, 8000, 30000, 300000);
     """;
 
     public async ValueTask DisposeAsync()

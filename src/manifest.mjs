@@ -67,6 +67,26 @@ export function validateManifest(input, scriptDirectory) {
   if (permissions.length > 32) throw new Error("manifest declares too many permissions");
   const integrity = input.integrity == null ? null : String(input.integrity);
   if (integrity !== null && !/^sha256-[a-f0-9]{64}$/u.test(integrity)) throw new Error("manifest integrity must be a sha256 hex label");
+  let documentation = null;
+  let documentationPath = null;
+  if (input.documentation != null) {
+    documentation = String(input.documentation);
+    if (!documentation || documentation.length > 240 || /[\u0000-\u001f\u007f]/u.test(documentation) || path.isAbsolute(documentation)) throw new Error("manifest documentation must be a safe relative path");
+    documentationPath = assertWithinDirectory(scriptDirectory, path.join(scriptDirectory, documentation), "manifest documentation");
+  }
+  let settingsMode = "legacy";
+  let settingsPageId = null;
+  let settingsPageTitle = null;
+  if (input.settings !== undefined) {
+    if (!input.settings || typeof input.settings !== "object" || Array.isArray(input.settings)) throw new Error("manifest settings must be an object");
+    settingsMode = String(input.settings.mode || "");
+    if (!new Set(["page", "none"]).has(settingsMode)) throw new Error("manifest settings mode must be page or none");
+    if (settingsMode === "page") {
+      settingsPageId = boundedText(input.settings.pageId, "main", "settings pageId", 64);
+      settingsPageTitle = boundedText(input.settings.title, input.name || id, "settings title", 128);
+      if (!permissions.includes("settings")) throw new Error("a settings page requires the settings permission");
+    }
+  }
 
   return {
     schemaVersion,
@@ -81,6 +101,11 @@ export function validateManifest(input, scriptDirectory) {
     lifecycleGlobal,
     permissions,
     integrity,
+    documentation,
+    documentationPath,
+    settingsMode,
+    settingsPageId,
+    settingsPageTitle,
     raw: input
   };
 }
@@ -101,6 +126,12 @@ export async function loadScriptDescriptor(scriptDirectory) {
   const canonicalEntryPath = await realpath(manifest.entryPath);
   assertWithinDirectory(canonicalDirectory, canonicalEntryPath, "manifest entry");
   const source = await readFile(canonicalEntryPath, "utf8");
+  if (manifest.documentationPath) {
+    const documentationInfo = await lstat(manifest.documentationPath);
+    if (!documentationInfo.isFile() || documentationInfo.isSymbolicLink() || documentationInfo.size > 256 * 1024) throw new Error("declared plugin documentation is missing or invalid");
+    const canonicalDocumentationPath = await realpath(manifest.documentationPath);
+    assertWithinDirectory(canonicalDirectory, canonicalDocumentationPath, "manifest documentation");
+  }
   const fingerprint = sha256Text(source);
   if (manifest.integrity && manifest.integrity !== integrityLabel(fingerprint)) {
     throw new Error(`integrity mismatch for ${manifest.id}`);

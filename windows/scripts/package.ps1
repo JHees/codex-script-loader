@@ -3,7 +3,7 @@ param(
   [ValidateSet("win-x64", "win-arm64")]
   [string]$RuntimeIdentifier = "win-x64",
   [ValidatePattern("^\d+\.\d+\.\d+\.\d+$")]
-  [string]$Version = "0.3.0.0",
+  [string]$Version = "0.4.1.0",
   [string]$PackageName = "CodexScriptLoader.Windows",
   [string]$Publisher = "CN=Codex Script Loader Development",
   [ValidatePattern("^https://")]

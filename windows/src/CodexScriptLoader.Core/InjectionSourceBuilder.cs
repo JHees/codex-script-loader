@@ -7,13 +7,21 @@ public static class InjectionSourceBuilder
 {
     public static string Build(IReadOnlyList<ScriptDescriptor> descriptors, string settingsHostModule, bool force)
     {
+        var forceIds = force
+            ? descriptors.Select(descriptor => descriptor.Id).ToHashSet(StringComparer.Ordinal)
+            : new HashSet<string>(StringComparer.Ordinal);
+        return Build(descriptors, settingsHostModule, forceIds);
+    }
+
+    public static string Build(IReadOnlyList<ScriptDescriptor> descriptors, string settingsHostModule, IReadOnlySet<string> forceIds)
+    {
         var builder = new StringBuilder();
         builder.AppendLine(BootstrapSource);
         builder.AppendLine(ExtractSettingsHost(settingsHostModule));
         builder.AppendLine(BuildLifecycleSync(descriptors));
         foreach (var descriptor in descriptors)
         {
-            builder.AppendLine(WrapScript(descriptor, force));
+            builder.AppendLine(WrapScript(descriptor, forceIds.Contains(descriptor.Id)));
         }
 
         builder.AppendLine(SnapshotSource);
@@ -54,7 +62,7 @@ public static class InjectionSourceBuilder
             if (active.has(id)) continue;
             const record = runtime.scripts[id];
             if (record && typeof record.stop === "function") {
-              try { record.stop(); } catch (error) { runtime.recordError({ id, phase: "stop", error: String(error) }); }
+              try { record.stop({ reason: "disable" }); } catch (error) { runtime.recordError({ id, phase: "stop", error: String(error) }); }
             }
             delete runtime.scripts[id];
           }
@@ -79,6 +87,13 @@ public static class InjectionSourceBuilder
             author = descriptor.Author,
             permissions = descriptor.Permissions,
             scope = descriptor.Scope,
+            documentation = descriptor.Documentation,
+            settings = descriptor.SettingsMode == "legacy" ? null : new
+            {
+                mode = descriptor.SettingsMode,
+                pageId = descriptor.SettingsPageId,
+                title = descriptor.SettingsPageTitle,
+            },
         });
         var forceValue = force ? "true" : "false";
         return $$"""
@@ -87,7 +102,7 @@ public static class InjectionSourceBuilder
           const previous = runtime.scripts[{{id}}];
           if (!{{forceValue}} && previous && previous.fingerprint === {{fingerprint}} && previous.status === "running") return;
           if (previous && typeof previous.stop === "function") {
-            try { previous.stop(); } catch (error) { runtime.recordError({ id: {{id}}, phase: "stop", error: String(error) }); }
+            try { previous.stop({ reason: "reload" }); } catch (error) { runtime.recordError({ id: {{id}}, phase: "stop", error: String(error) }); }
           }
           const record = { id: {{id}}, version: {{version}}, fingerprint: {{fingerprint}}, integrity: {{integrity}}, status: "loading", stop: null };
           runtime.scripts[{{id}}] = record;
@@ -126,18 +141,18 @@ public static class InjectionSourceBuilder
             } finally { if (runtime.activeApi === api) delete runtime.activeApi; }
             const moduleValue = module.exports;
             let startResult = null;
-            if (moduleValue && typeof moduleValue.start === "function") startResult = moduleValue.start(api);
-            const exportedStop = moduleValue && typeof moduleValue.stop === "function" ? () => moduleValue.stop() : typeof startResult === "function" ? startResult : startResult && typeof startResult.stop === "function" ? () => startResult.stop() : null;
+            if (moduleValue && typeof moduleValue.start === "function") startResult = moduleValue.start(api, { reason: previous ? "reload" : "enable" });
+            const exportedStop = moduleValue && typeof moduleValue.stop === "function" ? (context) => moduleValue.stop(context) : typeof startResult === "function" ? startResult : startResult && typeof startResult.stop === "function" ? (context) => startResult.stop(context) : null;
             const lifecycleValue = {{lifecycle}} ? globalThis[{{lifecycle}}] : null;
             const lifecycleStop = !exportedStop && lifecycleValue && typeof lifecycleValue.stop === "function" ? () => { try { lifecycleValue.stop(); } finally { if (globalThis[{{lifecycle}}] === lifecycleValue) delete globalThis[{{lifecycle}}]; } } : null;
-            if (exportedStop || lifecycleStop || disposers.length) record.stop = () => { try { if (exportedStop) exportedStop(); else if (lifecycleStop) lifecycleStop(); } finally { for (const dispose of disposers.splice(0).reverse()) { try { dispose(); } catch {} } } };
+            if (exportedStop || lifecycleStop || disposers.length) record.stop = (context = { reason: "cleanup" }) => { try { if (exportedStop) exportedStop(context); else if (lifecycleStop) lifecycleStop(); } finally { for (const dispose of disposers.splice(0).reverse()) { try { dispose(); } catch {} } } };
             record.status = "running";
           } catch (error) {
             record.status = "failed";
             record.error = String(error && (error.stack || error.message) || error);
             if ({{lifecycle}}) {
               const failedLifecycle = globalThis[{{lifecycle}}];
-              if (failedLifecycle && typeof failedLifecycle.stop === "function") { try { failedLifecycle.stop(); } catch (stopError) { runtime.recordError({ id: {{id}}, phase: "failed-start-stop", error: String(stopError) }); } }
+              if (failedLifecycle && typeof failedLifecycle.stop === "function") { try { failedLifecycle.stop({ reason: "failed-start" }); } catch (stopError) { runtime.recordError({ id: {{id}}, phase: "failed-start-stop", error: String(stopError) }); } }
               if (globalThis[{{lifecycle}}] === failedLifecycle) delete globalThis[{{lifecycle}}];
             }
             runtime.recordError({ id: {{id}}, phase: "start", error: record.error });
@@ -150,7 +165,7 @@ public static class InjectionSourceBuilder
     (() => {
       const existing = globalThis.__codexScriptLoader;
       const runtime = existing && typeof existing === "object" ? existing : {};
-      runtime.runtimeVersion = "0.3.0";
+      runtime.runtimeVersion = "0.4.1";
       runtime.documentId = runtime.documentId || Math.random().toString(36).slice(2);
       runtime.scripts = runtime.scripts || Object.create(null);
       runtime.errors = Array.isArray(runtime.errors) ? runtime.errors.slice(-100) : [];

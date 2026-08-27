@@ -11,7 +11,7 @@ const packageDirectory = fileURLToPath(new URL("../packages/bennett-ui-improveme
 test("bundled Bennett package is valid, attributed and lifecycle-aware", async () => {
   const descriptor = await loadScriptDescriptor(packageDirectory);
   assert.equal(descriptor.id, "co.bennett.ui-improvements");
-  assert.equal(descriptor.version, "1.4.9");
+  assert.equal(descriptor.version, "1.4.10");
   assert.equal(descriptor.lifecycleGlobal, "__bennettUiImprovementsBigPizza");
   assert.match(descriptor.source, /Original license: MIT License/u);
   assert.match(descriptor.source, /show-usage-in-sidebar/u);

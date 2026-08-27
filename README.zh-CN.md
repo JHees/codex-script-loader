@@ -6,7 +6,7 @@
 
 **打开 Codex 调试入口，加载用户脚本，并自动管理注入、重载与清理。**
 
-[![Version](https://img.shields.io/badge/version-0.3.0-f97316)](https://github.com/JHees/codex-script-loader)
+[![Version](https://img.shields.io/badge/version-0.4.1-f97316)](https://github.com/JHees/codex-script-loader)
 [![Windows](https://img.shields.io/badge/Windows-11-0078d4?logo=windows11)](#系统要求)
 [![macOS](https://img.shields.io/badge/macOS-未测试-999999?logo=apple)](#平台支持)
 [![.NET](https://img.shields.io/badge/.NET-10-512bd4?logo=dotnet)](global.json)
@@ -31,7 +31,7 @@ Windows 使用无控制台、无托盘图标的原生 .NET 10 后台宿主，是
 | Windows 原生宿主 | 在后台随 Codex 运行，并在受管 Codex 退出后自动结束。 |
 | macOS runtime | 发现 `Codex.app`，通过 Node.js 提供相同的 CDP 与脚本流程；当前未测试。 |
 | 诊断与重载 | Windows 再次启动同一 EXE 可打开诊断；`--reload` 原位替换脚本。 |
-| 内置 Bennett UI | 首次运行安装 Bennett UI Improvements 1.4.9。 |
+| 内置 Bennett UI | 首次运行安装 Bennett UI Improvements 1.4.10。 |
 | Windows 打包 | 生成 x64/arm64 自包含程序和 MSIX 安装包。 |
 
 ## 系统要求
@@ -60,9 +60,9 @@ Windows on Arm 使用 `win-arm64`。打包前会清理仓库根目录的 `bin`�
 bin/
 ├── app/CodexScriptLoader.exe
 ├── layout/
-├── CodexScriptLoader-0.3.0.0-x64.msix
+├── CodexScriptLoader-0.4.1.0-x64.msix
 ├── CodexScriptLoader-x64.appinstaller
-├── CodexScriptLoader-0.3.0.0-x64.spdx.json
+├── CodexScriptLoader-0.4.1.0-x64.spdx.json
 └── SHA256SUMS.txt
 ```
 
@@ -100,6 +100,10 @@ macOS runtime 会发现 `Codex.app`，以随机 loopback CDP 端口启动它，�
 Windows 宿主通过官方包 API 启动 Codex，使用随机 loopback CDP 端口，并在注入前核对所属进程和目标 renderer。整个过程保持 Codex 应用文件不变，也不需要访问 `WindowsApps` 或申请管理员权限。
 
 ## 脚本包
+
+已安装插件统一在 **Codex 设置 → Script-Loader → 设置** 中管理。该页面展示实时状态，支持启用/禁用、单个或全部重载、本地文件夹/ZIP 安装、隔离与恢复，以及受控的 Codex 重启。声明了设置页的插件会直接列在“设置”入口下方。
+
+完整的插件编写与生命周期约定见 [`docs/PLUGIN_SPEC.md`](docs/PLUGIN_SPEC.md)。
 
 Renderer 包由 `manifest.json` 与入口脚本组成：
 

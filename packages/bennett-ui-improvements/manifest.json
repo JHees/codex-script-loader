@@ -2,11 +2,17 @@
   "schemaVersion": 1,
   "id": "co.bennett.ui-improvements",
   "name": "Bennett UI Improvements",
-  "version": "1.4.9",
+  "version": "1.4.10",
   "main": "index.js",
   "scope": "renderer",
   "runAt": "document-start",
   "lifecycleGlobal": "__bennettUiImprovementsBigPizza",
+  "documentation": "README.md",
+  "settings": {
+    "mode": "page",
+    "pageId": "main",
+    "title": "界面增强"
+  },
   "permissions": [
     "dom",
     "local-storage",

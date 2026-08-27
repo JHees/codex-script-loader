@@ -6,7 +6,7 @@
 
 **Open Codex for user scripts, with automatic injection, reload, and cleanup.**
 
-[![Version](https://img.shields.io/badge/version-0.3.0-f97316)](https://github.com/JHees/codex-script-loader)
+[![Version](https://img.shields.io/badge/version-0.4.1-f97316)](https://github.com/JHees/codex-script-loader)
 [![Windows](https://img.shields.io/badge/Windows-11-0078d4?logo=windows11)](#requirements)
 [![macOS](https://img.shields.io/badge/macOS-untested-999999?logo=apple)](#platform-support)
 [![.NET](https://img.shields.io/badge/.NET-10-512bd4?logo=dotnet)](global.json)
@@ -31,7 +31,7 @@ Windows uses the native .NET 10 background host with no console or tray icon and
 | Native Windows host | Runs quietly with Codex and exits when the Codex instance it launched closes. |
 | macOS runtime | Discovers `Codex.app` and provides the same managed CDP/script flow through Node.js; currently untested. |
 | Diagnostics and reload | Starting a second Windows instance opens diagnostics; `--reload` replaces scripts in place. |
-| Bennett UI included | Installs the bundled Bennett UI Improvements 1.4.9 package on first run. |
+| Bennett UI included | Installs the bundled Bennett UI Improvements 1.4.10 package on first run. |
 | Windows packaging | Produces x64 or arm64 self-contained builds and MSIX packages. |
 
 ## Requirements
@@ -60,9 +60,9 @@ Use `win-arm64` instead on Windows on Arm. Packaging clears the repository-level
 bin/
 ├── app/CodexScriptLoader.exe
 ├── layout/
-├── CodexScriptLoader-0.3.0.0-x64.msix
+├── CodexScriptLoader-0.4.1.0-x64.msix
 ├── CodexScriptLoader-x64.appinstaller
-├── CodexScriptLoader-0.3.0.0-x64.spdx.json
+├── CodexScriptLoader-0.4.1.0-x64.spdx.json
 └── SHA256SUMS.txt
 ```
 
@@ -120,6 +120,10 @@ Logs use UTF-8 JSON Lines. Diagnostic exports redact user-specific paths and unr
 The Windows host uses official package APIs to start Codex, keeps CDP on a random loopback port, and verifies the owning process and exact renderer target before injection. Codex application files remain untouched, and the launch path needs neither `WindowsApps` access nor administrator privileges.
 
 ## Script packages
+
+Installed plugins are managed under **Codex Settings → Script-Loader → Settings**. The page shows live status, supports enable/disable, targeted or full reload, local folder/ZIP installation, quarantine and restore, and a controlled Codex restart. Plugins that declare a settings page appear directly below the Settings entry.
+
+The complete authoring and lifecycle contract is documented in [`docs/PLUGIN_SPEC.md`](docs/PLUGIN_SPEC.md).
 
 A renderer package contains `manifest.json` and an entry script:
 

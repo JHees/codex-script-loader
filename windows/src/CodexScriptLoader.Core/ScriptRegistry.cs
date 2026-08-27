@@ -12,6 +12,8 @@ public sealed partial class ScriptRegistry
     private static readonly HashSet<string> AllowedRunAt = ["document-start", "document-end"];
     private readonly LoaderPaths paths;
     private readonly string settingsHostModulePath;
+    private readonly SemaphoreSlim registryMutation = new(1, 1);
+    private readonly HashSet<string> bundledIds = new(StringComparer.Ordinal);
     private bool safeMode;
     private bool globalEnabled = true;
     private Dictionary<string, bool> enabledOverrides = new(StringComparer.Ordinal);
@@ -24,6 +26,8 @@ public sealed partial class ScriptRegistry
 
     public bool SafeMode => safeMode;
 
+    public LoaderPaths Paths => paths;
+
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
         paths.EnsureDirectories();
@@ -33,6 +37,7 @@ public sealed partial class ScriptRegistry
     public async Task EnsureBundledScriptAsync(string bundledDirectory, CancellationToken cancellationToken = default)
     {
         var descriptor = await LoadDescriptorAsync(bundledDirectory, cancellationToken).ConfigureAwait(false);
+        bundledIds.Add(descriptor.Id);
         var target = paths.EnsureWithin(paths.ScriptsRoot, Path.Combine(paths.ScriptsRoot, descriptor.Id), "Bundled script target");
         if (Directory.Exists(target))
         {
@@ -131,6 +136,12 @@ public sealed partial class ScriptRegistry
 
     public async Task<InjectionPlan> BuildPlanAsync(bool force, CancellationToken cancellationToken = default)
     {
+        var forceIds = force ? null : new HashSet<string>(StringComparer.Ordinal);
+        return await BuildPlanAsync(forceIds, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<InjectionPlan> BuildPlanAsync(IReadOnlySet<string>? forceIds, CancellationToken cancellationToken = default)
+    {
         await ReloadConfigAsync(cancellationToken).ConfigureAwait(false);
         var descriptors = new List<ScriptDescriptor>();
         foreach (var directory in Directory.EnumerateDirectories(paths.ScriptsRoot).OrderBy(value => value, StringComparer.OrdinalIgnoreCase))
@@ -152,7 +163,10 @@ public sealed partial class ScriptRegistry
         var settingsHost = await File.ReadAllTextAsync(settingsHostModulePath, Encoding.UTF8, cancellationToken).ConfigureAwait(false);
         return new InjectionPlan(
             descriptors,
-            InjectionSourceBuilder.Build(descriptors, settingsHost, force),
+            InjectionSourceBuilder.Build(
+                descriptors,
+                settingsHost,
+                forceIds ?? descriptors.Select(descriptor => descriptor.Id).ToHashSet(StringComparer.Ordinal)),
             safeMode);
     }
 
@@ -266,6 +280,36 @@ public sealed partial class ScriptRegistry
             }
         }
 
+        var documentation = root.TryGetProperty("documentation", out var documentationElement) && documentationElement.ValueKind != JsonValueKind.Null
+            ? ValidateRelativePackagePath(documentationElement.GetString(), "documentation")
+            : null;
+        var settingsMode = "legacy";
+        string? settingsPageId = null;
+        string? settingsPageTitle = null;
+        if (root.TryGetProperty("settings", out var settingsElement))
+        {
+            if (settingsElement.ValueKind != JsonValueKind.Object)
+            {
+                throw new InvalidDataException("Manifest settings must be an object.");
+            }
+
+            settingsMode = RequiredText(settingsElement, "mode", 16);
+            if (settingsMode is not ("page" or "none"))
+            {
+                throw new InvalidDataException("Manifest settings mode must be page or none.");
+            }
+
+            if (settingsMode == "page")
+            {
+                settingsPageId = OptionalText(settingsElement, "pageId", "main", 64);
+                settingsPageTitle = OptionalText(settingsElement, "title", OptionalText(root, "name", id, 128), 128);
+                if (!permissions.Contains("settings", StringComparer.Ordinal))
+                {
+                    throw new InvalidDataException("A settings page requires the settings permission.");
+                }
+            }
+        }
+
         return new ScriptDescriptor(
             id,
             OptionalText(root, "name", id, 128),
@@ -278,7 +322,22 @@ public sealed partial class ScriptRegistry
             fingerprint,
             directory.FullName,
             OptionalText(root, "description", string.Empty, 512, allowEmpty: true),
-            OptionalText(root, "author", string.Empty, 128, allowEmpty: true));
+            OptionalText(root, "author", string.Empty, 128, allowEmpty: true),
+            documentation,
+            settingsMode,
+            settingsPageId,
+            settingsPageTitle);
+    }
+
+    private static string ValidateRelativePackagePath(string? value, string name)
+    {
+        var path = value ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(path) || path.Length > 240 || Path.IsPathRooted(path) || path.IndexOfAny(['\0', '\r', '\n']) >= 0)
+        {
+            throw new InvalidDataException($"Manifest {name} must be a safe relative path.");
+        }
+
+        return path.Replace('/', Path.DirectorySeparatorChar);
     }
 
     private static string RequiredText(JsonElement root, string name, int maxLength) =>

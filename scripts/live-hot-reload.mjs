@@ -15,7 +15,7 @@ function option(name, fallback) {
 }
 
 const port = Number(option("--port", "9229"));
-const expectedVersion = option("--version", "1.4.9");
+const expectedVersion = option("--version", "1.4.10");
 const captureLabel = option("--capture-label", "current").replace(/[^a-z0-9_-]+/giu, "-").replace(/^-+|-+$/gu, "") || "current";
 const packageDirectory = fileURLToPath(new URL("../packages/bennett-ui-improvements/", import.meta.url));
 const descriptor = await loadScriptDescriptor(packageDirectory);
@@ -163,7 +163,7 @@ try {
   if (!reloadRect) throw new Error("Reload scripts button was not found");
   await new Promise(resolve => setTimeout(resolve, 2600));
   const loaderAfterReload = await evaluate(`(() => { const host = document.querySelector('[data-codex-loader-settings="panel-host"]'); return { text: String(host?.textContent || '').replace(/\\s+/g, ' ').trim(), reloadCount: globalThis.__codexScriptLoader?.scripts?.["co.bennett.ui-improvements"]?.status || null }; })()`);
-  if (!/Reloaded 1 script across 1 Codex page\.|已重新加载 1 个脚本，已应用到 1 个 Codex 页面。/u.test(loaderAfterReload.text)) throw new Error(`Loader reload feedback is missing: ${JSON.stringify({ loaderAfterReload, lastBridgeDispatch })}`);
+  if (!/Reloaded 1 plugin across 1 Codex page\.|已重新加载 1 个插件，已应用到 1 个 Codex 页面。/u.test(loaderAfterReload.text)) throw new Error(`Loader reload feedback is missing: ${JSON.stringify({ loaderAfterReload, lastBridgeDispatch })}`);
 
   const entryRect = await evaluate(`(() => { const target = document.querySelector('[data-codex-loader-settings="nav:co.bennett.ui-improvements:main"]'); if (!target) return null; target.click(); const rect = target.getBoundingClientRect(); return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }; })()`);
   if (!entryRect) throw new Error("Bennett UI entry was not mounted under Tweaks");
