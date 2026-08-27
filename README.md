@@ -6,7 +6,7 @@
 
 **Open Codex for user scripts, with automatic injection, reload, and cleanup.**
 
-[![Version](https://img.shields.io/badge/version-0.4.1-f97316)](https://github.com/JHees/codex-script-loader)
+[![Version](https://img.shields.io/badge/version-0.4.2-f97316)](https://github.com/JHees/codex-script-loader)
 [![Windows](https://img.shields.io/badge/Windows-11-0078d4?logo=windows11)](#requirements)
 [![macOS](https://img.shields.io/badge/macOS-untested-999999?logo=apple)](#platform-support)
 [![.NET](https://img.shields.io/badge/.NET-10-512bd4?logo=dotnet)](global.json)
@@ -60,9 +60,9 @@ Use `win-arm64` instead on Windows on Arm. Packaging clears only generated files
 build/
 ├── README.md
 ├── app/CodexScriptLoader.exe
-├── CodexScriptLoader-0.4.1-windows-x64-setup.exe
-├── CodexScriptLoader-0.4.1-windows-x64.zip
-├── CodexScriptLoader-0.4.1-x64.spdx.json
+├── CodexScriptLoader-0.4.2-windows-x64-setup.exe
+├── CodexScriptLoader-0.4.2-windows-x64.zip
+├── CodexScriptLoader-0.4.2-x64.spdx.json
 └── SHA256SUMS.txt
 ```
 

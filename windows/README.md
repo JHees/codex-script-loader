@@ -22,8 +22,8 @@ Source Link is enabled when the build supplies a stable `RepositoryUrl`. It is d
 Packaging requires NSIS 3.12.0. Install it normally, or extract the portable NSIS distribution to `.tools\nsis`.
 
 ```powershell
-.\windows\scripts\package.ps1 -RuntimeIdentifier win-x64 -Version 0.4.1
-.\windows\scripts\package.ps1 -RuntimeIdentifier win-arm64 -Version 0.4.1
+.\windows\scripts\package.ps1 -RuntimeIdentifier win-x64 -Version 0.4.2
+.\windows\scripts\package.ps1 -RuntimeIdentifier win-arm64 -Version 0.4.2
 ```
 
 The command clears only previously generated files in the repository-level `build` directory, preserves its `README.md`, and leaves the latest runtime and version there. It never cleans or overwrites `bin`:
@@ -32,9 +32,9 @@ The command clears only previously generated files in the repository-level `buil
 build/
 ├── README.md
 ├── app/CodexScriptLoader.exe
-├── CodexScriptLoader-0.4.1-windows-x64-setup.exe
-├── CodexScriptLoader-0.4.1-windows-x64.zip
-├── CodexScriptLoader-0.4.1-x64.spdx.json
+├── CodexScriptLoader-0.4.2-windows-x64-setup.exe
+├── CodexScriptLoader-0.4.2-windows-x64.zip
+├── CodexScriptLoader-0.4.2-x64.spdx.json
 └── SHA256SUMS.txt
 ```
 
@@ -59,8 +59,8 @@ Pass `-CertificatePath` and `-CertificatePassword` only when an Authenticode cer
 Each package also includes an SPDX 2.3 inventory and `SHA256SUMS.txt`. Verify two independent application payloads before release:
 
 ```powershell
-.\windows\scripts\verify-reproducible.ps1 -RuntimeIdentifier win-x64 -Version 0.4.1
-.\windows\scripts\verify-reproducible.ps1 -RuntimeIdentifier win-arm64 -Version 0.4.1
+.\windows\scripts\verify-reproducible.ps1 -RuntimeIdentifier win-x64 -Version 0.4.2
+.\windows\scripts\verify-reproducible.ps1 -RuntimeIdentifier win-arm64 -Version 0.4.2
 ```
 
 `verify-package.ps1` checks the installer metadata, portable archive contents and hashes, Windows GUI PE subsystem, target architecture, required self-contained files, SBOM, checksums, and absence of development probes, command shells, and script launchers. Use `-RequireSignature` only for a signed release. `test-installer.ps1` performs an x64 silent install/uninstall test and verifies shortcuts plus the HKCU uninstall entry. It refuses to overwrite an existing installed copy, but a separately running development copy no longer blocks the test and is left untouched.
@@ -69,7 +69,7 @@ Each package also includes an SPDX 2.3 inventory and `SHA256SUMS.txt`. Verify tw
 
 The [`Windows Loader`](../.github/workflows/windows-loader.yml) workflow uses pinned NSIS 3.12.0. Pushes and pull requests build, test, verify reproducibility, and package x64 and arm64. Each job uploads its setup executable, portable ZIP, and SBOM as an Actions artifact.
 
-A semantic version tag such as `v0.4.1` must match `package.json`, `Directory.Build.props`, and the Windows `ApplicationVersion`. After both architectures pass, the workflow creates or updates the matching GitHub Release with:
+A semantic version tag such as `v0.4.2` must match `package.json`, `Directory.Build.props`, and the Windows `ApplicationVersion`. After both architectures pass, the workflow creates or updates the matching GitHub Release with:
 
 - x64 and arm64 NSIS setup executables;
 - x64 and arm64 portable ZIP archives;

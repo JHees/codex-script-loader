@@ -6,7 +6,7 @@
 
 **打开 Codex 调试入口，加载用户脚本，并自动管理注入、重载与清理。**
 
-[![Version](https://img.shields.io/badge/version-0.4.1-f97316)](https://github.com/JHees/codex-script-loader)
+[![Version](https://img.shields.io/badge/version-0.4.2-f97316)](https://github.com/JHees/codex-script-loader)
 [![Windows](https://img.shields.io/badge/Windows-11-0078d4?logo=windows11)](#系统要求)
 [![macOS](https://img.shields.io/badge/macOS-未测试-999999?logo=apple)](#平台支持)
 [![.NET](https://img.shields.io/badge/.NET-10-512bd4?logo=dotnet)](global.json)
@@ -60,9 +60,9 @@ Windows on Arm 使用 `win-arm64`。打包前只清理仓库根目录 `build` �
 build/
 ├── README.md
 ├── app/CodexScriptLoader.exe
-├── CodexScriptLoader-0.4.1-windows-x64-setup.exe
-├── CodexScriptLoader-0.4.1-windows-x64.zip
-├── CodexScriptLoader-0.4.1-x64.spdx.json
+├── CodexScriptLoader-0.4.2-windows-x64-setup.exe
+├── CodexScriptLoader-0.4.2-windows-x64.zip
+├── CodexScriptLoader-0.4.2-x64.spdx.json
 └── SHA256SUMS.txt
 ```
 

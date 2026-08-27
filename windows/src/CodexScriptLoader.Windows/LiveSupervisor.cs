@@ -11,7 +11,11 @@ namespace CodexScriptLoader.Windows;
 
 internal sealed class LiveSupervisor : IAsyncDisposable
 {
-    public const string Version = "0.4.1";
+    public const string Version = "0.4.2";
+    private static readonly TimeSpan GracefulRestartShutdownTimeout = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan ForcedRestartShutdownTimeout = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan PackageExitPollInterval = TimeSpan.FromMilliseconds(250);
+    private static readonly TimeSpan StablePackageExitWindow = TimeSpan.FromMilliseconds(500);
     private readonly LoaderPaths paths;
     private readonly JsonlLogger logger;
     private readonly SemaphoreSlim operation = new(1, 1);
@@ -247,24 +251,86 @@ internal sealed class LiveSupervisor : IAsyncDisposable
                 logger.Warn("browser-close-failed", new { message = JsonlLogger.Redact(exception.Message) });
             }
 
-            var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(10);
-            while (DateTimeOffset.UtcNow < deadline)
+            var packageFamilyName = package.PackageFamilyName;
+            if (await WaitForPackageExitAsync(packageFamilyName, GracefulRestartShutdownTimeout, cancellationToken).ConfigureAwait(false))
             {
-                if (ProcessIdentity.FindProcessesByPackageFamily(package.PackageFamilyName).Count == 0)
-                {
-                    return true;
-                }
-
-                await Task.Delay(250, cancellationToken).ConfigureAwait(false);
+                return true;
             }
 
-            SetState(LoaderState.Degraded, "Codex did not close within 10 seconds. Close it manually before exiting Loader.");
+            var gracefulRemaining = ProcessIdentity.FindProcessesByPackageFamily(packageFamilyName);
+            logger.Warn("codex-graceful-close-incomplete", new { remainingProcessCount = gracefulRemaining.Count });
+            var terminated = new HashSet<int>();
+            var failureCodes = new Dictionary<int, int>();
+            var deadline = DateTimeOffset.UtcNow + ForcedRestartShutdownTimeout;
+            DateTimeOffset? emptySince = null;
+            while (DateTimeOffset.UtcNow < deadline)
+            {
+                var remaining = ProcessIdentity.FindProcessesByPackageFamily(packageFamilyName);
+                if (remaining.Count == 0)
+                {
+                    emptySince ??= DateTimeOffset.UtcNow;
+                    if (DateTimeOffset.UtcNow - emptySince >= StablePackageExitWindow)
+                    {
+                        logger.Info("codex-force-closed", new { terminatedProcessCount = terminated.Count, failureCount = failureCodes.Count });
+                        return true;
+                    }
+                }
+                else
+                {
+                    emptySince = null;
+                    var result = ProcessIdentity.TerminateProcessesByPackageFamily(packageFamilyName);
+                    terminated.UnionWith(result.TerminatedProcessIds);
+                    foreach (var failure in result.FailureCodes)
+                    {
+                        failureCodes[failure.Key] = failure.Value;
+                    }
+                }
+
+                await Task.Delay(PackageExitPollInterval, cancellationToken).ConfigureAwait(false);
+            }
+
+            var finalRemaining = ProcessIdentity.FindProcessesByPackageFamily(packageFamilyName);
+            logger.Warn("codex-force-close-incomplete", new
+            {
+                terminatedProcessCount = terminated.Count,
+                remainingProcessCount = finalRemaining.Count,
+                failureCodes = failureCodes.Values.Distinct().Order().ToArray(),
+            });
+            SetState(LoaderState.Degraded, "Codex package processes could not be stopped for a managed restart.");
             return false;
         }
         finally
         {
             operation.Release();
         }
+    }
+
+    private static async Task<bool> WaitForPackageExitAsync(
+        string packageFamilyName,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        DateTimeOffset? emptySince = null;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if (ProcessIdentity.FindProcessesByPackageFamily(packageFamilyName).Count == 0)
+            {
+                emptySince ??= DateTimeOffset.UtcNow;
+                if (DateTimeOffset.UtcNow - emptySince >= StablePackageExitWindow)
+                {
+                    return true;
+                }
+            }
+            else
+            {
+                emptySince = null;
+            }
+
+            await Task.Delay(PackageExitPollInterval, cancellationToken).ConfigureAwait(false);
+        }
+
+        return false;
     }
 
     private async Task InjectAsync(IReadOnlyList<CdpTarget> targets, IReadOnlySet<string>? forceIds, CancellationToken cancellationToken)

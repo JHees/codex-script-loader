@@ -37,7 +37,7 @@
 **States and interactions checked**
 
 - Navigated between native General, Script-Loader Settings, and Bennett settings, then returned to Script-Loader Settings.
-- Confirmed the pre-release Loader host remained mounted at lifecycle version `0.3.4`, Bennett remained `running` at `1.4.9`, and the exact renderer URL remained `app://-/index.html`. Release metadata is now frozen at Loader `0.4.1` and Bennett `1.4.10`.
+- Confirmed the pre-release Loader host remained mounted at lifecycle version `0.3.4`, Bennett remained `running` at `1.4.9`, and the exact renderer URL remained `app://-/index.html`. Release metadata is now frozen at Loader `0.4.2` and Bennett `1.4.10`.
 - Confirmed one Loader navigation group, one panel host, and one page shell in the active Loader state.
 - Add, remove, enable/disable, reload, and restart actions were not invoked during visual QA because they mutate plugin or application state; their implementation contracts are covered by the automated test suite.
 

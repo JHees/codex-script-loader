@@ -5,8 +5,8 @@
       "CodexScriptLoader": {
         "type": "Project",
         "dependencies": {
-          "CodexScriptLoader.Core": "[0.4.1, )",
-          "CodexScriptLoader.Interop": "[0.4.1, )"
+          "CodexScriptLoader.Core": "[0.4.2, )",
+          "CodexScriptLoader.Interop": "[0.4.2, )"
         }
       },
       "codexscriptloader.core": {

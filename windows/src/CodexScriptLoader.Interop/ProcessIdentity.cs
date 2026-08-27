@@ -4,11 +4,18 @@ using System.Text;
 
 namespace CodexScriptLoader.Interop;
 
+public sealed record PackageProcessTerminationResult(
+    IReadOnlyList<int> MatchedProcessIds,
+    IReadOnlyList<int> TerminatedProcessIds,
+    IReadOnlyDictionary<int, int> FailureCodes);
+
 public static class ProcessIdentity
 {
+    private const uint ProcessTerminate = 0x0001;
     private const uint ProcessQueryLimitedInformation = 0x1000;
     private const uint Th32csSnapProcess = 0x00000002;
     private const int AppModelErrorNoPackage = 15700;
+    private const int ErrorInvalidParameter = 87;
     private static readonly IntPtr InvalidHandleValue = new(-1);
 
     public static string? TryGetPackageFamilyName(int processId)
@@ -21,26 +28,85 @@ public static class ProcessIdentity
 
         try
         {
-            uint length = 0;
-            var result = GetPackageFamilyName(process, ref length, null);
-            if (result == AppModelErrorNoPackage)
-            {
-                return null;
-            }
-
-            if (result != 122)
-            {
-                return null;
-            }
-
-            var builder = new StringBuilder(checked((int)length));
-            result = GetPackageFamilyName(process, ref length, builder);
-            return result == 0 ? builder.ToString() : null;
+            return TryGetPackageFamilyName(process);
         }
         finally
         {
             CloseHandle(process);
         }
+    }
+
+    public static PackageProcessTerminationResult TerminateProcessesByPackageFamily(string packageFamilyName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(packageFamilyName);
+        var matched = FindProcessesByPackageFamily(packageFamilyName)
+            .Where(processId => processId != Environment.ProcessId)
+            .Distinct()
+            .Order()
+            .ToArray();
+        var terminated = new List<int>();
+        var failures = new Dictionary<int, int>();
+        foreach (var processId in matched)
+        {
+            var process = OpenProcess(ProcessQueryLimitedInformation | ProcessTerminate, false, checked((uint)processId));
+            if (process == IntPtr.Zero)
+            {
+                var error = Marshal.GetLastWin32Error();
+                if (error != ErrorInvalidParameter)
+                {
+                    failures[processId] = error;
+                }
+
+                continue;
+            }
+
+            try
+            {
+                var currentFamily = TryGetPackageFamilyName(process);
+                if (!string.Equals(currentFamily, packageFamilyName, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (TerminateProcess(process, 0))
+                {
+                    terminated.Add(processId);
+                }
+                else
+                {
+                    var error = Marshal.GetLastWin32Error();
+                    if (error != ErrorInvalidParameter)
+                    {
+                        failures[processId] = error;
+                    }
+                }
+            }
+            finally
+            {
+                CloseHandle(process);
+            }
+        }
+
+        return new PackageProcessTerminationResult(matched, terminated, failures);
+    }
+
+    private static string? TryGetPackageFamilyName(IntPtr process)
+    {
+        uint length = 0;
+        var result = GetPackageFamilyName(process, ref length, null);
+        if (result == AppModelErrorNoPackage)
+        {
+            return null;
+        }
+
+        if (result != 122)
+        {
+            return null;
+        }
+
+        var builder = new StringBuilder(checked((int)length));
+        result = GetPackageFamilyName(process, ref length, builder);
+        return result == 0 ? builder.ToString() : null;
     }
 
     public static IReadOnlyList<int> FindProcessesByPackageFamily(string packageFamilyName)
@@ -100,6 +166,9 @@ public static class ProcessIdentity
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern IntPtr OpenProcess(uint access, bool inheritHandle, uint processId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(IntPtr process, uint exitCode);
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetPackageFamilyName(IntPtr process, ref uint packageFamilyNameLength, StringBuilder? packageFamilyName);

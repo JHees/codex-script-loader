@@ -1,6 +1,7 @@
 using System.IO.Compression;
 using System.Text.Json;
 using CodexScriptLoader.Core;
+using CodexScriptLoader.Interop;
 
 namespace CodexScriptLoader.Tests;
 
@@ -19,6 +20,7 @@ internal static class Program
             await TestPluginManagementAsync(testRoot);
             await TestArchiveSafetyAsync(testRoot);
             TestPathBoundary(testRoot);
+            TestPackageProcessTerminationBoundary();
             TestLogRedaction(testRoot);
             Console.WriteLine($"PASS {passed} tests");
             return 0;
@@ -46,7 +48,7 @@ internal static class Program
         var plan = await registry.BuildPlanAsync(force: true);
         Equal(1, plan.Scripts.Count, "Bundled script count");
         Equal("co.bennett.ui-improvements", plan.Scripts[0].Id, "Bundled script id");
-        True(plan.Source.Contains("runtime.runtimeVersion = \"0.4.1\"", StringComparison.Ordinal), "Runtime version source");
+        True(plan.Source.Contains("runtime.runtimeVersion = \"0.4.2\"", StringComparison.Ordinal), "Runtime version source");
         True(plan.Source.Contains("__bennettUiImprovementsBigPizza", StringComparison.Ordinal), "Lifecycle source");
         True(plan.Source.Contains("installSettingsHost", StringComparison.Ordinal), "Settings host source");
         True(plan.Source.Contains("sha256-" + plan.Scripts[0].Fingerprint, StringComparison.Ordinal), "Integrity source");
@@ -154,6 +156,15 @@ internal static class Program
         var inside = paths.EnsureWithin(paths.ScriptsRoot, Path.Combine(paths.ScriptsRoot, "script"), "test");
         True(inside.EndsWith("script", StringComparison.Ordinal), "Inside path accepted");
         Throws<InvalidOperationException>(() => paths.EnsureWithin(paths.ScriptsRoot, Path.Combine(paths.ScriptsRoot, "..", "escape"), "test"), "Escaping path rejected");
+    }
+
+    private static void TestPackageProcessTerminationBoundary()
+    {
+        var nonexistentFamily = $"CodexScriptLoader.Tests_{Guid.NewGuid():N}";
+        var result = ProcessIdentity.TerminateProcessesByPackageFamily(nonexistentFamily);
+        Equal(0, result.MatchedProcessIds.Count, "Unknown package family matches no processes");
+        Equal(0, result.TerminatedProcessIds.Count, "Unknown package family terminates no processes");
+        Equal(0, result.FailureCodes.Count, "Unknown package family reports no termination failures");
     }
 
     private static void TestLogRedaction(string testRoot)
