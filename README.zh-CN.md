@@ -6,7 +6,7 @@
 
 **打开 Codex 调试入口，加载用户脚本，并自动管理注入、重载与清理。**
 
-[![Version](https://img.shields.io/badge/version-0.4.2-f97316)](https://github.com/JHees/codex-script-loader)
+[![Version](https://img.shields.io/badge/version-0.5.1-f97316)](https://github.com/JHees/codex-script-loader)
 [![Windows](https://img.shields.io/badge/Windows-11-0078d4?logo=windows11)](#系统要求)
 [![macOS](https://img.shields.io/badge/macOS-未测试-999999?logo=apple)](#平台支持)
 [![.NET](https://img.shields.io/badge/.NET-10-512bd4?logo=dotnet)](global.json)
@@ -31,6 +31,7 @@ Windows 使用无控制台、无托盘图标的原生 .NET 10 后台宿主，是
 | Windows 原生宿主 | 在后台随 Codex 运行，并在受管 Codex 退出后自动结束。 |
 | macOS runtime | 发现 `Codex.app`，通过 Node.js 提供相同的 CDP 与脚本流程；当前未测试。 |
 | 诊断与重载 | Windows 再次启动同一 EXE 可打开诊断；`--reload` 原位替换脚本。 |
+| Loader 在线升级 | 启动后检查稳定版 GitHub Release，并在不重启 Codex 的情况下切换已校验宿主。 |
 | 内置 Bennett UI | 首次运行安装 Bennett UI Improvements 1.4.10。 |
 | Windows 打包 | 为 x64/arm64 生成每用户 NSIS 安装器和 portable ZIP。 |
 
@@ -38,13 +39,17 @@ Windows 使用无控制台、无托盘图标的原生 .NET 10 后台宿主，是
 
 - Windows 11 x64 或 arm64，并已安装 Microsoft Store 版 Codex。
 - macOS 已将 `Codex.app` 安装到 `/Applications` 或 `~/Applications`，并安装 Node.js 22 或更高版本（尚未实机测试）。
-- Windows 源码构建需要 .NET 10 SDK 与 Windows SDK 10.0.26100 或更高版本。
+- Windows 源码构建需要 .NET 10 SDK、Windows SDK 10.0.26100 或更高版本，以及 Visual Studio C++ 桌面生成工具；在 x64 机器上交叉发布 `win-arm64` 还需要 `Microsoft.VisualStudio.Component.VC.Tools.ARM64`。
 
 启动 Loader 前先完全退出已有的 Codex 进程；受管会话统一通过 Loader 打开 Codex。
 
 ## 安装与运行
 
 从 [GitHub Releases](https://github.com/JHees/codex-script-loader/releases) 下载对应架构的 NSIS 安装器即可。标准安装向导会先让用户选择安装目录和开始菜单目录，再创建桌面与开始菜单快捷方式；安装按当前用户进行，并登记到 Windows“已安装的应用”，不需要管理员权限。每个安装器同时提供 portable ZIP。
+
+0.5.0 是从 0.4.x 平铺目录迁移到版本化目录所需的最后一次手工安装。从 0.5.1 起，标准 NSIS 安装可在 **Codex 设置 → Script-Loader → 设置** 中直接升级宿主，Codex、当前任务和页面保持打开；portable 版本仍需手工替换。
+
+0.5.1 还会把更新错误与插件管理反馈彻底分离；当 Windows Schannel 明确返回 `SEC_E_NO_CREDENTIALS` 时，Loader 会改用自己管理的不可见 Chromium 网络 target。该后备通道仍只接受 GitHub 官方 host，并执行相同的大小、SHA-256、压缩包、更新清单和逐文件校验。
 
 ### 从源码构建
 
@@ -59,11 +64,16 @@ Windows on Arm 使用 `win-arm64`。打包前只清理仓库根目录 `build` �
 ```text
 build/
 ├── README.md
-├── app/CodexScriptLoader.exe
-├── CodexScriptLoader-0.4.2-windows-x64-setup.exe
-├── CodexScriptLoader-0.4.2-windows-x64.zip
-├── CodexScriptLoader-0.4.2-x64.spdx.json
-└── SHA256SUMS.txt
+├── app/CodexScriptLoader.exe                 # 稳定 NativeAOT 启动器
+├── app/active.json
+├── app/previous.json
+├── app/update-manifest.json
+├── app/versions/0.5.1/win-x64/               # 完整 Loader 宿主
+├── CodexScriptLoader-0.5.1-windows-x64-setup.exe
+├── CodexScriptLoader-0.5.1-windows-x64-setup.exe.sha256
+├── CodexScriptLoader-0.5.1-windows-x64.zip
+├── CodexScriptLoader-0.5.1-windows-x64.zip.sha256
+└── CodexScriptLoader-0.5.1-x64.spdx.json
 ```
 
 ### macOS live runtime（尚未测试）
@@ -88,14 +98,17 @@ macOS runtime 会发现 `Codex.app`，以随机 loopback CDP 端口启动它，�
 
 ```text
 用户
-  └─ CodexScriptLoader.exe（WinExe，单实例）
-       ├─ Windows 包 API ──> Microsoft Store Codex
-       ├─ 随机 loopback CDP ──> 已验证 Codex renderer
-       ├─ 脚本 registry ──> manifest / 权限 / SHA-256
-       └─ 生命周期 supervisor ──> 注入 / 重载 / 清理 / 退出
+  └─ CodexScriptLoader.exe（稳定 NativeAOT 启动器）
+       └─ versions/<version>/<rid>/CodexScriptLoader.exe
+            ├─ Windows 包 API ──> Microsoft Store Codex
+            ├─ 随机 loopback CDP ──> 已验证 Codex renderer
+            ├─ 脚本 registry ──> manifest / 权限 / SHA-256
+            └─ 生命周期 supervisor ──> 注入 / 重载 / 宿主接管 / 清理
 ```
 
 生产数据位于 `%LOCALAPPDATA%\CodexScriptLoader`，包含 `config.json`、`scripts`、`quarantine`、`logs` 和 `state`。日志使用 UTF-8 JSON Lines，诊断摘要会脱敏用户路径和无关命令行。
+
+在线更新固定使用 `JHees/codex-script-loader` 的稳定版 Release。Loader 会核对仓库、tag、资产名、架构、声明大小、GitHub 官方 HTTPS 下载主机、与压缩包同名的 `.sha256` 校验资产、ZIP 安全结构、协议版本及每个文件的哈希。GitHub Release + SHA-256 信任模型可以发现下载损坏和资产错配，但无法抵御 Release 与哈希文件被同时替换；独立签名与 Authenticode 留作后续安全增强。
 
 Windows 宿主通过官方包 API 启动 Codex，使用随机 loopback CDP 端口，并在注入前核对所属进程和目标 renderer。整个过程保持 Codex 应用文件不变，也不需要访问 `WindowsApps` 或申请管理员权限。
 
@@ -104,6 +117,7 @@ Windows 宿主通过官方包 API 启动 Codex，使用随机 loopback CDP 端�
 已安装插件统一在 **Codex 设置 → Script-Loader → 设置** 中管理。该页面展示实时状态，支持启用/禁用、单个或全部重载、本地文件夹/ZIP 安装、隔离与恢复，以及受控的 Codex 重启。声明了设置页的插件会直接列在“设置”入口下方。
 
 完整的插件编写与生命周期约定见 [`docs/PLUGIN_SPEC.md`](docs/PLUGIN_SPEC.md)。
+版本化目录、Release 校验和无需重启 Codex 的宿主接管流程见 [`docs/UPDATE_PROTOCOL.md`](docs/UPDATE_PROTOCOL.md)。
 
 Renderer 包由 `manifest.json` 与入口脚本组成：
 

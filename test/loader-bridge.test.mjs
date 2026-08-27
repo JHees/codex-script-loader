@@ -49,6 +49,9 @@ test("bridge parser accepts only the Loader management command allowlist", () =>
   assert.deepEqual(parseRequest(JSON.stringify({ version: 1, id: "c", command: "reload_plugins", payload: { ids: ["local.example"] } })), {
     id: "c", command: "reload_plugins", payload: { live: true, ids: ["local.example"] },
   });
+  assert.deepEqual(parseRequest(JSON.stringify({ version: 1, id: "u", command: "get_update_status" })), {
+    id: "u", command: "get_update_status", payload: {},
+  });
   assert.throws(() => parseRequest(JSON.stringify({ version: 1, id: "c", command: "remove_script" })), /not allowed/);
   assert.throws(() => parseRequest("{"), /invalid JSON/);
   assert.throws(() => parseRequest("x".repeat(MAX_REQUEST_BYTES + 1)), /too large/);

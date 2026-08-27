@@ -11,7 +11,7 @@ namespace CodexScriptLoader.Windows;
 
 internal sealed class LiveSupervisor : IAsyncDisposable
 {
-    public const string Version = "0.4.2";
+    public const string Version = "0.5.1";
     private static readonly TimeSpan GracefulRestartShutdownTimeout = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan ForcedRestartShutdownTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan PackageExitPollInterval = TimeSpan.FromMilliseconds(250);
@@ -49,6 +49,19 @@ internal sealed class LiveSupervisor : IAsyncDisposable
     public event Action? ManagedCodexExited;
 
     public Func<bool, CancellationToken, Task<string?>>? PackagePickerAsync { get; set; }
+
+    public OnlineUpdateManager? UpdateManager { get; set; }
+
+    public Task<CdpDownloadResult> DownloadUpdateResourceAsync(
+        Uri uri,
+        string destination,
+        long maximumBytes,
+        Action<long> progress,
+        CancellationToken cancellationToken)
+    {
+        var currentClient = client ?? throw new InvalidOperationException("Managed Codex network transport is unavailable.");
+        return new CdpUpdateTransport(currentClient, logger).DownloadAsync(uri, destination, maximumBytes, progress, cancellationToken);
+    }
 
     public DiagnosticSnapshot Snapshot => new(
         Version,
@@ -119,6 +132,102 @@ internal sealed class LiveSupervisor : IAsyncDisposable
             logger.Error("startup-failed", exception);
             SetState(LoaderState.Faulted, exception.Message);
             throw;
+        }
+        finally
+        {
+            operation.Release();
+        }
+    }
+
+    public async Task AdoptAsync(UpdateTransaction transaction, CancellationToken cancellationToken)
+    {
+        await operation.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            SetState(LoaderState.Starting, null);
+            package = PackageDiscovery.DiscoverCodexForCurrentUser();
+            if (!string.Equals(package.PackageFamilyName, transaction.Endpoint.OwnerPackageFamilyName, StringComparison.OrdinalIgnoreCase) ||
+                transaction.Endpoint.TargetUrl != "app://-/index.html" || !IPAddress.TryParse(transaction.Endpoint.Address, out var endpointAddress) || !IPAddress.IsLoopback(endpointAddress))
+            {
+                throw new InvalidOperationException("Handoff endpoint identity does not match the installed Codex package.");
+            }
+
+            var settingsHost = Path.Combine(AppContext.BaseDirectory, "bundled", "settings-host.mjs");
+            var bundledBennett = Path.Combine(AppContext.BaseDirectory, "bundled", "bennett-ui-improvements");
+            registry = new ScriptRegistry(paths, settingsHost);
+            await registry.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            await registry.EnsureBundledScriptAsync(bundledBennett, cancellationToken).ConfigureAwait(false);
+
+            client = new CdpClient(transaction.Endpoint.Port);
+            var targets = await WaitForTargetsAsync(client, TimeSpan.FromSeconds(10), cancellationToken).ConfigureAwait(false);
+            var listeners = TcpOwnerLookup.GetIPv4LoopbackListeners(transaction.Endpoint.Port);
+            if (listeners.Count != 1 || listeners[0].ProcessId != transaction.Endpoint.OwnerPid ||
+                !string.Equals(ProcessIdentity.TryGetPackageFamilyName(listeners[0].ProcessId), package.PackageFamilyName, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Handoff CDP listener ownership changed before adoption.");
+            }
+
+            endpoint = transaction.Endpoint;
+            activationProcessId = transaction.ActivationProcessId;
+            injector = new CdpInjector(client);
+            bridge = new LoaderHostBridge(client, DispatchBridgeAsync);
+            await bridge.SyncAsync(targets, cancellationToken).ConfigureAwait(false);
+            var forceIds = (await registry.BuildPlanAsync(force: true, cancellationToken).ConfigureAwait(false)).Scripts
+                .Select(script => script.Id).ToHashSet(StringComparer.Ordinal);
+            await InjectAsync(targets, forceIds, cancellationToken).ConfigureAwait(false);
+            logger.Info("managed-codex-adopted", new { transaction.Id, endpoint.Port, endpoint.OwnerPid, targetCount = targets.Count });
+        }
+        catch (Exception exception)
+        {
+            logger.Error("handoff-adoption-failed", exception);
+            SetState(LoaderState.Faulted, exception.Message);
+            throw;
+        }
+        finally
+        {
+            operation.Release();
+        }
+    }
+
+    public async Task SuspendForHandoffAsync()
+    {
+        await StopMonitorAsync().ConfigureAwait(false);
+        await operation.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (client is null || injector is null) throw new InvalidOperationException("Managed runtime is not ready for handoff suspension.");
+            var targets = await client.GetCodexTargetsAsync(CancellationToken.None).ConfigureAwait(false);
+            await injector.RemoveFutureRegistrationsAsync(targets, CancellationToken.None).ConfigureAwait(false);
+        }
+        finally
+        {
+            operation.Release();
+        }
+    }
+
+    public void CommitHandoff() => StartMonitor();
+
+    public async Task RestoreAfterHandoffFailureAsync(CancellationToken cancellationToken)
+    {
+        await operation.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (client is null || registry is null || injector is null || bridge is null)
+            {
+                throw new InvalidOperationException("Managed runtime is not ready for handoff recovery.");
+            }
+
+            var targets = await client.GetCodexTargetsAsync(cancellationToken).ConfigureAwait(false);
+            if (targets.Count == 0) throw new InvalidOperationException("No renderer target is available for handoff recovery.");
+            await bridge.ReconnectAsync(targets, cancellationToken).ConfigureAwait(false);
+            var plan = await registry.BuildPlanAsync(force: true, cancellationToken).ConfigureAwait(false);
+            scripts = await injector.InjectAsync(plan.Source, plan.Scripts, targets, cancellationToken).ConfigureAwait(false);
+            lastTargetCount = targets.Count;
+            lastInjectionAt = DateTimeOffset.UtcNow;
+            var failed = scripts.Count(script => script.LifecycleResult != "running");
+            SetState(failed == 0 ? LoaderState.Healthy : LoaderState.Degraded, failed == 0 ? null : $"{failed} renderer scripts failed to recover.");
+            StartMonitor();
+            logger.Info("handoff-recovered", new { targetCount = targets.Count, failed });
         }
         finally
         {
@@ -424,6 +533,39 @@ internal sealed class LiveSupervisor : IAsyncDisposable
                 catch (Exception exception) { logger.Error("restart-failed", exception); }
             });
             return new { accepted = true };
+        }
+
+        if (command == "get_update_status")
+        {
+            return UpdateManager?.Snapshot ?? throw new InvalidOperationException("Update manager is unavailable.");
+        }
+
+        if (command == "set_auto_update")
+        {
+            return await (UpdateManager ?? throw new InvalidOperationException("Update manager is unavailable."))
+                .SetAutoUpdateAsync(RequiredPayloadBoolean(payload, "enabled"), cancellationToken).ConfigureAwait(false);
+        }
+
+        if (command == "check_for_updates")
+        {
+            return await (UpdateManager ?? throw new InvalidOperationException("Update manager is unavailable."))
+                .CheckForUpdatesAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        if (command == "start_update")
+        {
+            var manager = UpdateManager ?? throw new InvalidOperationException("Update manager is unavailable.");
+            _ = Task.Run(async () =>
+            {
+                try { await manager.StartUpdateAsync(CancellationToken.None).ConfigureAwait(false); }
+                catch (Exception exception) { logger.Error("background-update-failed", exception); }
+            });
+            return new { accepted = true };
+        }
+
+        if (command == "cancel_update")
+        {
+            return (UpdateManager ?? throw new InvalidOperationException("Update manager is unavailable.")).CancelDownload();
         }
 
         var snapshot = Snapshot;

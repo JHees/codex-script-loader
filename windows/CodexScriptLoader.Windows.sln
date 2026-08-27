@@ -8,11 +8,15 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CodexScriptLoader.Core", "s
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CodexScriptLoader.Windows", "src\CodexScriptLoader.Windows\CodexScriptLoader.Windows.csproj", "{C5AFB884-7BAA-40E6-8321-04B0A3AAB174}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CodexScriptLoader.Launcher", "src\CodexScriptLoader.Launcher\CodexScriptLoader.Launcher.csproj", "{6D8B5E54-819A-4BE6-B077-E328E5ACCFB7}"
+EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ActivationProbe", "tools\ActivationProbe\ActivationProbe.csproj", "{16193192-B6E7-42E8-805D-D00F3A73D4A1}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CodexScriptLoader.Tests", "tests\CodexScriptLoader.Tests\CodexScriptLoader.Tests.csproj", "{8399A80F-BC2A-4821-8057-537EAC2A4E7F}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RendererProbe", "tools\RendererProbe\RendererProbe.csproj", "{C5F96C66-3D2C-4D6E-82E9-14ABAD21FF20}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LauncherProbeHost", "tools\LauncherProbeHost\LauncherProbeHost.csproj", "{7B6651A9-6BBE-4A17-BDBB-4D48FA247F11}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -32,6 +36,10 @@ Global
 		{C5AFB884-7BAA-40E6-8321-04B0A3AAB174}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{C5AFB884-7BAA-40E6-8321-04B0A3AAB174}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{C5AFB884-7BAA-40E6-8321-04B0A3AAB174}.Release|Any CPU.Build.0 = Release|Any CPU
+		{6D8B5E54-819A-4BE6-B077-E328E5ACCFB7}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{6D8B5E54-819A-4BE6-B077-E328E5ACCFB7}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{6D8B5E54-819A-4BE6-B077-E328E5ACCFB7}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{6D8B5E54-819A-4BE6-B077-E328E5ACCFB7}.Release|Any CPU.Build.0 = Release|Any CPU
 		{16193192-B6E7-42E8-805D-D00F3A73D4A1}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{16193192-B6E7-42E8-805D-D00F3A73D4A1}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{16193192-B6E7-42E8-805D-D00F3A73D4A1}.Release|Any CPU.ActiveCfg = Release|Any CPU
@@ -44,5 +52,9 @@ Global
 		{C5F96C66-3D2C-4D6E-82E9-14ABAD21FF20}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{C5F96C66-3D2C-4D6E-82E9-14ABAD21FF20}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{C5F96C66-3D2C-4D6E-82E9-14ABAD21FF20}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7B6651A9-6BBE-4A17-BDBB-4D48FA247F11}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7B6651A9-6BBE-4A17-BDBB-4D48FA247F11}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7B6651A9-6BBE-4A17-BDBB-4D48FA247F11}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7B6651A9-6BBE-4A17-BDBB-4D48FA247F11}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

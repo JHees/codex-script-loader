@@ -55,6 +55,10 @@ jobs:
           $applicationVersion = [string]$windowsProject.Project.PropertyGroup.ApplicationVersion
           if ($applicationVersion -ne "$productVersion.0") { throw "ApplicationVersion $applicationVersion does not match $productVersion.0." }
 
+          [xml]$launcherProject = Get-Content -LiteralPath windows/src/CodexScriptLoader.Launcher/CodexScriptLoader.Launcher.csproj -Raw
+          $launcherApplicationVersion = [string]$launcherProject.Project.PropertyGroup.ApplicationVersion
+          if ($launcherApplicationVersion -ne "$productVersion.0") { throw "Launcher ApplicationVersion $launcherApplicationVersion does not match $productVersion.0." }
+
           "PRODUCT_VERSION=$productVersion" >> $env:GITHUB_ENV
       - name: Validate NSIS installer contract
         shell: pwsh
@@ -96,21 +100,34 @@ jobs:
         run: |
           $outputRoot = Join-Path $env:RUNNER_TEMP "package/${{ matrix.runtime }}"
           ./windows/scripts/verify-package.ps1 -ArtifactRoot $outputRoot -Version $env:PRODUCT_VERSION -Architecture $env:PACKAGE_ARCHITECTURE
+      - name: Test stable launcher health fallback
+        if: matrix.runtime == 'win-x64'
+        shell: pwsh
+        run: |
+          $outputRoot = Join-Path $env:RUNNER_TEMP "package/${{ matrix.runtime }}"
+          ./windows/scripts/test-launcher.ps1 -ArtifactRoot $outputRoot -Version $env:PRODUCT_VERSION
       - name: Test standard-user silent install and uninstall
         if: matrix.runtime == 'win-x64'
         shell: pwsh
         run: |
           $outputRoot = Join-Path $env:RUNNER_TEMP "package/${{ matrix.runtime }}"
           ./windows/scripts/test-installer.ps1 -ArtifactRoot $outputRoot -Version $env:PRODUCT_VERSION
-      - name: Upload Windows package
+      - name: Upload public Windows package
         uses: actions/upload-artifact@v4
         with:
           name: codex-script-loader-${{ matrix.runtime }}
           path: |
             ${{ runner.temp }}/package/${{ matrix.runtime }}/CodexScriptLoader-*-setup.exe
             ${{ runner.temp }}/package/${{ matrix.runtime }}/CodexScriptLoader-*.zip
-            ${{ runner.temp }}/package/${{ matrix.runtime }}/CodexScriptLoader-*.spdx.json
+            ${{ runner.temp }}/package/${{ matrix.runtime }}/CodexScriptLoader-*.sha256
           if-no-files-found: error
+      - name: Retain SBOM as CI metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: internal-sbom-${{ matrix.runtime }}
+          path: ${{ runner.temp }}/package/${{ matrix.runtime }}/CodexScriptLoader-*.spdx.json
+          if-no-files-found: error
+          retention-days: 30
 
   release_metadata:
     if: github.ref_type == 'tag'
@@ -140,7 +157,7 @@ jobs:
           pattern: codex-script-loader-win-*
           path: release-payload
           merge-multiple: true
-      - name: Create combined SHA-256 manifest
+      - name: Validate per-package SHA-256 files
         shell: pwsh
         env:
           RELEASE_VERSION: ${{ needs.release_metadata.outputs.product_version }}
@@ -148,21 +165,70 @@ jobs:
           $files = @(Get-ChildItem -LiteralPath release-payload -File | Sort-Object Name)
           $expectedNames = @(
             "CodexScriptLoader-$env:RELEASE_VERSION-windows-x64-setup.exe",
+            "CodexScriptLoader-$env:RELEASE_VERSION-windows-x64-setup.exe.sha256",
             "CodexScriptLoader-$env:RELEASE_VERSION-windows-x64.zip",
-            "CodexScriptLoader-$env:RELEASE_VERSION-x64.spdx.json",
+            "CodexScriptLoader-$env:RELEASE_VERSION-windows-x64.zip.sha256",
             "CodexScriptLoader-$env:RELEASE_VERSION-windows-arm64-setup.exe",
+            "CodexScriptLoader-$env:RELEASE_VERSION-windows-arm64-setup.exe.sha256",
             "CodexScriptLoader-$env:RELEASE_VERSION-windows-arm64.zip",
-            "CodexScriptLoader-$env:RELEASE_VERSION-arm64.spdx.json"
+            "CodexScriptLoader-$env:RELEASE_VERSION-windows-arm64.zip.sha256"
           ) | Sort-Object
           $actualNames = @($files.Name | Sort-Object)
           if (($actualNames -join "`n") -ne ($expectedNames -join "`n")) {
-            throw "Release assets do not match the expected x64/arm64 NSIS, ZIP, and SPDX set. Actual: $($actualNames -join ', ')"
+            throw "Release assets do not match the expected four packages and four checksum files. Actual: $($actualNames -join ', ')"
           }
-          $lines = foreach ($file in $files) {
-            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $file.FullName).Hash.ToLowerInvariant()
-            "$hash  $($file.Name)"
+          foreach ($package in @($files | Where-Object { $_.Name -notlike '*.sha256' })) {
+            $checksumPath = "$($package.FullName).sha256"
+            $lines = @(Get-Content -LiteralPath $checksumPath -Encoding ascii)
+            if ($lines.Count -ne 1 -or $lines[0] -notmatch '^([0-9a-fA-F]{64})  (.+)$' -or $Matches[2] -cne $package.Name) {
+              throw "Malformed checksum file: $($package.Name).sha256"
+            }
+            $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $package.FullName).Hash.ToLowerInvariant()
+            if ($Matches[1].ToLowerInvariant() -ne $actualHash) { throw "SHA-256 mismatch for $($package.Name)" }
           }
-          Set-Content -LiteralPath release-payload/SHA256SUMS.txt -Value $lines -Encoding ascii
+      - name: Create release summary
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.release_metadata.outputs.product_version }}
+        run: |
+          $baseUrl = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/v$env:RELEASE_VERSION"
+          function Get-PackageHash([string]$Name) {
+            $line = (Get-Content -LiteralPath "release-payload/$Name.sha256" -Raw -Encoding ascii).Trim()
+            $match = [regex]::Match($line, '^([0-9a-fA-F]{64})  (.+)$')
+            if (-not $match.Success -or $match.Groups[2].Value -cne $Name) { throw "Invalid checksum for $Name" }
+            return $match.Groups[1].Value.ToLowerInvariant()
+          }
+          $x64Setup = "CodexScriptLoader-$env:RELEASE_VERSION-windows-x64-setup.exe"
+          $x64Zip = "CodexScriptLoader-$env:RELEASE_VERSION-windows-x64.zip"
+          $arm64Setup = "CodexScriptLoader-$env:RELEASE_VERSION-windows-arm64-setup.exe"
+          $arm64Zip = "CodexScriptLoader-$env:RELEASE_VERSION-windows-arm64.zip"
+          $x64SetupHash = Get-PackageHash $x64Setup
+          $x64ZipHash = Get-PackageHash $x64Zip
+          $arm64SetupHash = Get-PackageHash $arm64Setup
+          $arm64ZipHash = Get-PackageHash $arm64Zip
+          @"
+          ## Downloads
+
+          | Windows architecture | Installer | Portable |
+          | --- | --- | --- |
+          | x64 | [Setup EXE]($baseUrl/CodexScriptLoader-$env:RELEASE_VERSION-windows-x64-setup.exe) | [Portable ZIP]($baseUrl/CodexScriptLoader-$env:RELEASE_VERSION-windows-x64.zip) |
+          | Arm64 | [Setup EXE]($baseUrl/CodexScriptLoader-$env:RELEASE_VERSION-windows-arm64-setup.exe) | [Portable ZIP]($baseUrl/CodexScriptLoader-$env:RELEASE_VERSION-windows-arm64.zip) |
+
+          Most Windows PCs use the **x64 installer**. Portable ZIPs are intended for manual use; automatic Loader updates use the matching ZIP internally.
+
+          ## Verification
+
+          Each package has a separate ``.sha256`` verification file. The same digests are listed here for convenience:
+
+          | Package | SHA-256 |
+          | --- | --- |
+          | ``$x64Setup`` | ``$x64SetupHash`` |
+          | ``$x64Zip`` | ``$x64ZipHash`` |
+          | ``$arm64Setup`` | ``$arm64SetupHash`` |
+          | ``$arm64Zip`` | ``$arm64ZipHash`` |
+
+          Release binaries are currently not Authenticode-signed.
+          "@ | Set-Content -LiteralPath release-summary.md -Encoding utf8NoBOM
       - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -170,7 +236,20 @@ jobs:
           RELEASE_VERSION: ${{ needs.release_metadata.outputs.product_version }}
         run: |
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            while IFS= read -r asset; do
+              case "$asset" in
+                "CodexScriptLoader-$RELEASE_VERSION-windows-x64-setup.exe"|\
+                "CodexScriptLoader-$RELEASE_VERSION-windows-x64-setup.exe.sha256"|\
+                "CodexScriptLoader-$RELEASE_VERSION-windows-x64.zip"|\
+                "CodexScriptLoader-$RELEASE_VERSION-windows-x64.zip.sha256"|\
+                "CodexScriptLoader-$RELEASE_VERSION-windows-arm64-setup.exe"|\
+                "CodexScriptLoader-$RELEASE_VERSION-windows-arm64-setup.exe.sha256"|\
+                "CodexScriptLoader-$RELEASE_VERSION-windows-arm64.zip"|\
+                "CodexScriptLoader-$RELEASE_VERSION-windows-arm64.zip.sha256") ;;
+                *) gh release delete-asset "$RELEASE_TAG" "$asset" --yes --repo "$GITHUB_REPOSITORY" ;;
+              esac
+            done < <(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' --repo "$GITHUB_REPOSITORY")
             gh release upload "$RELEASE_TAG" release-payload/* --clobber --repo "$GITHUB_REPOSITORY"
           else
-            gh release create "$RELEASE_TAG" release-payload/* --verify-tag --generate-notes --title "Codex Script Loader v$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY"
+            gh release create "$RELEASE_TAG" release-payload/* --verify-tag --generate-notes --notes-file release-summary.md --title "Codex Script Loader v$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY"
           fi

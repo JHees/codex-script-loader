@@ -1,4 +1,4 @@
-const SETTINGS_HOST_VERSION = "0.4.2";
+const SETTINGS_HOST_VERSION = "0.5.1";
 
 /*
  * Renderer-only settings host inspired by b-nnett/codex-plusplus.
@@ -34,7 +34,8 @@ function installSettingsHost(version) {
   let panelHost = null;
   let panelSurface = null;
   let activeId = null;
-  let pendingActiveId = null;
+  const restoredUiState = runtime.settingsUiState && typeof runtime.settingsUiState === "object" ? runtime.settingsUiState : null;
+  let pendingActiveId = typeof restoredUiState?.activeId === "string" ? restoredUiState.activeId : null;
   let restoreHandler = null;
   let activeTeardown = null;
   let managedPlugins = [];
@@ -289,6 +290,34 @@ function installSettingsHost(version) {
         safeModeDescription: "开启后暂停加载所有插件脚本",
         recentError: "最近错误",
         recentErrorDescription: "本次运行中最近记录的错误",
+        updates: "更新",
+        updateDescription: "从稳定通道检查并后台升级 Script-Loader；Codex、当前任务和页面保持打开。",
+        currentVersion: "当前版本",
+        channel: "更新通道",
+        stable: "稳定版",
+        lastChecked: "上次检查",
+        availableVersion: "可用版本",
+        updateState: "更新状态",
+        autoUpdate: "自动升级",
+        autoUpdateDescription: "启动并进入可用状态后自动检查、校验和切换 Loader 宿主。",
+        checkUpdate: "检查更新",
+        installUpdate: "立即升级",
+        cancelUpdate: "取消下载",
+        installerRequired: "此版本需要安装器升级",
+        updateNotice(version) { return `正在升级 Script-Loader 到 ${version}，Codex 将保持打开。`; },
+        updateSucceeded(version) { return `Script-Loader 已升级到 ${version}。`; },
+        updateRolledBack(version) { return `升级失败，已继续使用 ${version}。`; },
+        updateError(code, fallback) {
+          return ({
+            windowsTlsCredentials: "Windows 安全网络连接不可用；请检查卡巴斯基的加密连接扫描或 GitHub 例外规则。",
+            timeout: "连接 GitHub 超时，请稍后重试。",
+            networkOrPackage: "无法检查或校验更新，请查看 Loader 日志后重试。",
+            handoffRolledBack: "新宿主接管失败，当前版本已恢复运行。",
+          })[code] || fallback || "更新失败。";
+        },
+        updateStatus(status) {
+          return ({ idle: "已是最新", checking: "正在检查", available: "有可用更新", downloading: "正在下载", verifying: "正在校验", staging: "正在准备", switching: "正在切换宿主", succeeded: "升级成功", failed: "升级失败", rolledBack: "已回滚" })[status] || "未知";
+        },
         scripts: "脚本操作",
         plugins: "插件",
         pluginsDescription: "添加、启用、重载和移除本地 renderer 插件。",
@@ -371,6 +400,34 @@ function installSettingsHost(version) {
       safeModeDescription: "Pauses all plugin scripts when enabled",
       recentError: "Recent error",
       recentErrorDescription: "Most recent error recorded during this run",
+      updates: "Updates",
+      updateDescription: "Check the stable channel and upgrade Script-Loader in the background while Codex, this task, and the current page stay open.",
+      currentVersion: "Current version",
+      channel: "Channel",
+      stable: "Stable",
+      lastChecked: "Last checked",
+      availableVersion: "Available version",
+      updateState: "Update status",
+      autoUpdate: "Automatic updates",
+      autoUpdateDescription: "Check, verify, and switch the Loader host after startup reaches a usable state.",
+      checkUpdate: "Check for updates",
+      installUpdate: "Update now",
+      cancelUpdate: "Cancel download",
+      installerRequired: "This version requires an installer upgrade",
+      updateNotice(version) { return `Updating Script-Loader to ${version}. Codex will stay open.`; },
+      updateSucceeded(version) { return `Script-Loader was updated to ${version}.`; },
+      updateRolledBack(version) { return `The update failed. Script-Loader is still using ${version}.`; },
+      updateError(code, fallback) {
+        return ({
+          windowsTlsCredentials: "Windows secure networking is unavailable. Check Kaspersky encrypted-connection scanning or its GitHub exclusions.",
+          timeout: "The GitHub connection timed out. Try again later.",
+          networkOrPackage: "The update could not be checked or verified. Review the Loader log and try again.",
+          handoffRolledBack: "The new host could not take over, so the current version was restored.",
+        })[code] || fallback || "The update failed.";
+      },
+      updateStatus(status) {
+        return ({ idle: "Up to date", checking: "Checking", available: "Update available", downloading: "Downloading", verifying: "Verifying", staging: "Preparing", switching: "Switching host", succeeded: "Updated", failed: "Update failed", rolledBack: "Rolled back" })[status] || "Unknown";
+      },
       scripts: "Script actions",
       plugins: "Plugins",
       pluginsDescription: "Add, enable, reload, and remove local renderer plugins.",
@@ -505,6 +562,9 @@ function installSettingsHost(version) {
     let busy = false;
     let plugins = [];
     let quarantined = [];
+    let updateStatus = null;
+    let updateRefreshTimer = 0;
+    let renderedUpdateSnapshot = "";
     root.className = "flex flex-col gap-10";
     root.style.cssText = "";
 
@@ -515,6 +575,51 @@ function installSettingsHost(version) {
     const lastReload = valueRow(labels.lastReload, labels.lastReloadDescription);
     overviewCard.append(connection.row, pluginCount.row, lastReload.row);
     overviewSection.appendChild(overviewCard);
+
+    const updateSection = settingsSection(labels.updates);
+    const updateHeader = updateSection.querySelector('[data-codex-loader-settings="section-header"]');
+    const updateHeaderStack = updateSection.querySelector('[data-codex-loader-settings="section-title-stack"]');
+    const updateDescription = document.createElement("div");
+    updateDescription.className = "text-sm text-secondary";
+    updateDescription.textContent = labels.updateDescription;
+    updateHeaderStack.appendChild(updateDescription);
+    const updateFeedback = document.createElement("div");
+    updateFeedback.className = "min-h-4 text-xs text-secondary";
+    updateFeedback.setAttribute("aria-live", "polite");
+    updateHeaderStack.appendChild(updateFeedback);
+    const updateActions = document.createElement("div");
+    updateActions.className = "flex items-center gap-2";
+    const checkUpdateButton = actionButton(labels.checkUpdate);
+    const installUpdateButton = actionButton(labels.installUpdate);
+    const cancelUpdateButton = actionButton(labels.cancelUpdate);
+    updateActions.append(checkUpdateButton, installUpdateButton, cancelUpdateButton);
+    updateHeader.appendChild(updateActions);
+    const updateCard = settingsCard();
+    const currentVersion = valueRow(labels.currentVersion);
+    const updateChannel = valueRow(labels.channel);
+    const updateLastChecked = valueRow(labels.lastChecked);
+    const availableVersion = valueRow(labels.availableVersion);
+    const updateState = valueRow(labels.updateState);
+    const autoUpdateRow = document.createElement("div");
+    autoUpdateRow.className = "flex items-center justify-between px-4 gap-6 py-3";
+    const autoUpdateStack = document.createElement("div");
+    autoUpdateStack.className = "flex min-w-0 flex-1 flex-col gap-0.5";
+    const autoUpdateTitle = document.createElement("div");
+    autoUpdateTitle.className = "min-w-0 text-sm text-default font-medium";
+    autoUpdateTitle.textContent = labels.autoUpdate;
+    const autoUpdateDescription = document.createElement("div");
+    autoUpdateDescription.className = "text-sm text-secondary";
+    autoUpdateDescription.textContent = labels.autoUpdateDescription;
+    autoUpdateStack.append(autoUpdateTitle, autoUpdateDescription);
+    const autoUpdateToggle = document.createElement("button");
+    autoUpdateToggle.type = "button";
+    autoUpdateToggle.setAttribute("role", "switch");
+    autoUpdateToggle.setAttribute("aria-label", labels.autoUpdate);
+    const autoUpdateKnob = document.createElement("span");
+    autoUpdateToggle.appendChild(autoUpdateKnob);
+    autoUpdateRow.append(autoUpdateStack, autoUpdateToggle);
+    updateCard.append(currentVersion.row, updateChannel.row, updateLastChecked.row, availableVersion.row, updateState.row, autoUpdateRow);
+    updateSection.appendChild(updateCard);
 
     const pluginsSection = settingsSection(labels.plugins);
     const pluginsHeaderRow = pluginsSection.querySelector('[data-codex-loader-settings="section-header"]');
@@ -568,7 +673,7 @@ function installSettingsHost(version) {
     diagnosticsCard.append(targets.row, safeMode.row, lastError.row);
     diagnosticsSection.appendChild(diagnosticsCard);
 
-    root.append(overviewSection, pluginsSection, removedSection, restartSection, diagnosticsSection);
+    root.append(overviewSection, updateSection, pluginsSection, removedSection, restartSection, diagnosticsSection);
 
     function setBusy(next, message = "") {
       busy = next;
@@ -583,6 +688,65 @@ function installSettingsHost(version) {
       badge.style.cssText = "display:inline-flex;align-items:center;min-height:20px;padding:1px 7px;border:1px solid var(--color-border-default,color-mix(in srgb,currentColor 14%,transparent));border-radius:999px;font-size:11px;line-height:1.35;";
       badge.textContent = labels.statusLabel(plugin.status);
       return badge;
+    }
+
+    function renderUpdateStatus() {
+      const status = updateStatus || {};
+      const state = String(status.state || "idle");
+      const updating = ["checking", "downloading", "verifying", "staging", "switching"].includes(state);
+      const progress = typeof status.progress === "number" ? ` · ${Math.max(0, Math.min(100, Math.round(status.progress * 100)))}%` : "";
+      currentVersion.value.textContent = status.currentVersion || "—";
+      updateChannel.value.textContent = status.channel === "stable" ? labels.stable : (status.channel || labels.stable);
+      updateLastChecked.value.textContent = formatTime(status.lastCheckedAt, labels);
+      availableVersion.value.textContent = status.availableVersion || labels.none;
+      updateState.value.textContent = status.requiresInstaller ? labels.installerRequired : `${labels.updateStatus(state)}${progress}`;
+      updateState.value.title = state === "failed" ? labels.updateError(status.errorCode, status.error) : updateState.value.textContent;
+      updateState.value.className = state === "failed" || state === "rolledBack" ? "min-w-0 max-w-[46%] shrink-0 truncate text-right text-sm text-token-charts-red" : "min-w-0 max-w-[46%] shrink-0 truncate text-right text-sm text-secondary";
+      const enabled = status.autoUpdate !== false;
+      autoUpdateToggle.setAttribute("aria-checked", enabled ? "true" : "false");
+      autoUpdateToggle.disabled = updating || status.requiresInstaller || !connected;
+      autoUpdateToggle.style.cssText = `box-sizing:border-box;position:relative;width:34px;height:20px;padding:2px;border:0;border-radius:999px;background:${enabled ? "var(--color-accent-blue,#2f9bf4)" : "var(--color-background-tertiary,#d8d8dc)"};cursor:pointer;`;
+      autoUpdateKnob.style.cssText = `display:block;width:16px;height:16px;border-radius:50%;background:white;box-shadow:0 1px 2px color-mix(in srgb,black 28%,transparent);transform:translateX(${enabled ? "14px" : "0"});transition:transform .15s ease;`;
+      checkUpdateButton.disabled = updating || !connected;
+      installUpdateButton.disabled = state !== "available" || status.requiresInstaller || !connected;
+      cancelUpdateButton.disabled = state !== "downloading" || !connected;
+      cancelUpdateButton.style.display = state === "downloading" ? "inline-flex" : "none";
+      updateFeedback.className = state === "failed" || state === "rolledBack" ? "min-h-4 text-xs text-token-charts-red" : "min-h-4 text-xs text-secondary";
+      if (state === "switching") updateFeedback.textContent = labels.updateNotice(status.availableVersion || "");
+      else if (state === "succeeded") updateFeedback.textContent = labels.updateSucceeded(status.currentVersion || "");
+      else if (state === "rolledBack") updateFeedback.textContent = labels.updateRolledBack(status.currentVersion || "");
+      else if (state === "failed") updateFeedback.textContent = labels.updateError(status.errorCode, status.error);
+      else updateFeedback.textContent = "";
+    }
+
+    async function refreshUpdateStatus(force = false) {
+      try {
+        const nextStatus = await requestBridge("get_update_status", {});
+        const serialized = JSON.stringify(nextStatus || {});
+        updateStatus = nextStatus;
+        if (!disposed && (force || serialized !== renderedUpdateSnapshot)) {
+          renderedUpdateSnapshot = serialized;
+          renderUpdateStatus();
+        }
+      } catch (error) {
+        if (!disposed && updateStatus?.state !== "switching") {
+          updateState.value.textContent = labels.updateStatus("failed");
+          updateState.value.className = "min-w-0 max-w-[46%] shrink-0 truncate text-right text-sm text-token-charts-red";
+          updateFeedback.className = "min-h-4 text-xs text-token-charts-red";
+          updateFeedback.textContent = labels.updateError("networkOrPackage", String(error?.message || error));
+        }
+      }
+    }
+
+    function scheduleUpdateRefresh(delay) {
+      if (updateRefreshTimer) clearTimeout(updateRefreshTimer);
+      updateRefreshTimer = setTimeout(async () => {
+        updateRefreshTimer = 0;
+        await refreshUpdateStatus();
+        if (disposed) return;
+        const active = ["checking", "downloading", "verifying", "staging", "switching"].includes(String(updateStatus?.state || "idle"));
+        scheduleUpdateRefresh(active ? 750 : 15000);
+      }, delay);
     }
 
     function switchControl(plugin) {
@@ -776,16 +940,18 @@ function installSettingsHost(version) {
 
     async function refresh({ preserveFeedback = false } = {}) {
       try {
-        const [status, nextPlugins, nextQuarantined] = await Promise.all([
+        const [status, nextPlugins, nextQuarantined, nextUpdateStatus] = await Promise.all([
           requestBridge("get_app_status", {}),
           requestBridge("list_plugins", {}),
           requestBridge("list_quarantined", {}),
+          requestBridge("get_update_status", {}),
         ]);
         if (disposed) return;
         connected = Boolean(status && status.loader === "healthy" && status.targetCount > 0 && status.cdp !== "stopped");
         plugins = Array.isArray(nextPlugins) ? nextPlugins : [];
         managedPlugins = plugins;
         quarantined = Array.isArray(nextQuarantined) ? nextQuarantined : [];
+        updateStatus = nextUpdateStatus || updateStatus;
         connection.value.textContent = connected ? labels.connected : labels.unavailable;
         connection.value.className = connected ? "min-w-0 shrink-0 truncate text-right text-token-text-primary" : "min-w-0 shrink-0 truncate text-right text-token-charts-red";
         pluginCount.value.textContent = String(plugins.filter((plugin) => plugin.status === "running").length);
@@ -798,6 +964,7 @@ function installSettingsHost(version) {
         feedback.className = "text-token-description-foreground";
         renderPlugins();
         renderQuarantined();
+        renderUpdateStatus();
         scheduleSync();
       } catch (error) {
         if (disposed) return;
@@ -836,10 +1003,51 @@ function installSettingsHost(version) {
       try { await requestBridge("restart_codex", {}); }
       catch (error) { feedback.textContent = String(error?.message || error); restartButton.disabled = false; }
     });
+    autoUpdateToggle.addEventListener("click", async () => {
+      if (!connected || autoUpdateToggle.disabled) return;
+      autoUpdateToggle.disabled = true;
+      try {
+        updateStatus = await requestBridge("set_auto_update", { enabled: updateStatus?.autoUpdate === false });
+        renderedUpdateSnapshot = JSON.stringify(updateStatus || {});
+        renderUpdateStatus();
+      } catch (error) {
+        updateFeedback.textContent = labels.updateError("networkOrPackage", String(error?.message || error));
+      }
+    });
+    checkUpdateButton.addEventListener("click", async () => {
+      checkUpdateButton.disabled = true;
+      try {
+        updateStatus = await requestBridge("check_for_updates", {});
+        renderedUpdateSnapshot = JSON.stringify(updateStatus || {});
+        renderUpdateStatus();
+      } catch (error) {
+        updateFeedback.className = "min-h-4 text-xs text-token-charts-red";
+        updateFeedback.textContent = labels.updateError(updateStatus?.errorCode || "networkOrPackage", String(error?.message || error));
+      }
+    });
+    installUpdateButton.addEventListener("click", async () => {
+      installUpdateButton.disabled = true;
+      updateFeedback.textContent = labels.updateNotice(updateStatus?.availableVersion || "");
+      try {
+        await requestBridge("start_update", {});
+        await refreshUpdateStatus();
+      } catch (error) {
+        updateFeedback.textContent = labels.updateError(updateStatus?.errorCode || "networkOrPackage", String(error?.message || error));
+      }
+    });
+    cancelUpdateButton.addEventListener("click", async () => {
+      cancelUpdateButton.disabled = true;
+      try { await requestBridge("cancel_update", {}); }
+      catch (error) { updateFeedback.textContent = labels.updateError("networkOrPackage", String(error?.message || error)); }
+      await refreshUpdateStatus();
+    });
 
     void refresh();
+    scheduleUpdateRefresh(1000);
     return () => {
       disposed = true;
+      if (updateRefreshTimer) clearTimeout(updateRefreshTimer);
+      updateRefreshTimer = 0;
       document.querySelectorAll('[data-codex-loader-settings="dialog"]').forEach((node) => node.remove());
     };
   }
@@ -987,6 +1195,9 @@ function installSettingsHost(version) {
     const cleanup = entry.render(root);
     if (typeof cleanup === "function") activeTeardown = cleanup;
     applyActive();
+    if (restoredUiState?.activeId === id && Number.isFinite(restoredUiState.scrollTop)) {
+      requestAnimationFrame(() => { if (panelSurface?.isConnected) panelSurface.scrollTop = restoredUiState.scrollTop; });
+    }
     if (restoreHandler) sidebarRoot.removeEventListener("click", restoreHandler, true);
     restoreHandler = (event) => {
       const target = event.target instanceof Element ? event.target : null;
@@ -1015,6 +1226,7 @@ function installSettingsHost(version) {
       scheduleSync();
       void refreshManagedPlugins();
       if (!managementRefreshTimer) managementRefreshTimer = setInterval(() => { void refreshManagedPlugins(); }, 4000);
+      if (pendingActiveId === loaderEntry.id) setTimeout(() => activate(loaderEntry.id), 140);
     },
     registerPage(ownerId, manifest, page) {
       if (!page || typeof page.id !== "string" || !page.id || typeof page.title !== "string" || !page.title || typeof page.render !== "function") {
@@ -1039,6 +1251,7 @@ function installSettingsHost(version) {
       return { version, builtinPageCount: 1, pageCount: pages.size, sectionCount: sections.size, activeId, mounted: Boolean(pagesGroup?.isConnected) };
     },
     stop() {
+      runtime.settingsUiState = { activeId: activeId || pendingActiveId, scrollTop: panelSurface?.scrollTop || 0 };
       observer?.disconnect();
       observer = null;
       if (scanTimer) clearTimeout(scanTimer);

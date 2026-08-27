@@ -5,7 +5,8 @@ const BRIDGE_GLOBAL = "__codexScriptLoaderHostBridge";
 const ALLOWED_COMMANDS = new Set([
   "get_app_status", "list_plugins", "set_plugin_enabled", "reload_scripts", "reload_plugins",
   "pick_plugin_folder", "pick_plugin_archive", "install_plugin", "cancel_plugin_install",
-  "remove_plugin", "list_quarantined", "restore_plugin", "restart_codex"
+  "remove_plugin", "list_quarantined", "restore_plugin", "restart_codex",
+  "get_update_status", "set_auto_update", "check_for_updates", "start_update", "cancel_update"
 ]);
 const MAX_REQUEST_BYTES = 16 * 1024;
 
@@ -41,6 +42,7 @@ function installBridgeClient(bindingName, globalName, requestTimeoutMs) {
   let nextId = 1;
   let disposed = false;
   const client = {
+    bindingName,
     connected: true,
     request(command, payload = {}) {
       if (disposed) return Promise.reject(new Error("Loader sidecar is not connected"));
@@ -217,7 +219,7 @@ export class LoaderHostBridge {
     try { state.unsubscribe?.(); } catch {}
     try {
       await state.session.sendCommand("Runtime.evaluate", {
-        expression: `globalThis[${JSON.stringify(BRIDGE_GLOBAL)}]?.dispose("Loader sidecar disconnected");`,
+        expression: `globalThis[${JSON.stringify(BRIDGE_GLOBAL)}]?.bindingName === ${JSON.stringify(this.bindingName)} && globalThis[${JSON.stringify(BRIDGE_GLOBAL)}].dispose("Loader sidecar disconnected");`,
       });
     } catch {}
     if (state.registrationId) {

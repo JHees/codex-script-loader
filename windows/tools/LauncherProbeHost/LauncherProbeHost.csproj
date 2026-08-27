@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <AssemblyName>LauncherProbeHost</AssemblyName>
+    <RootNamespace>CodexScriptLoader.LauncherProbeHost</RootNamespace>
+    <SelfContained>false</SelfContained>
+  </PropertyGroup>
+</Project>

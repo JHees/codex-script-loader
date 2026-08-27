@@ -1,12 +1,13 @@
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace CodexScriptLoader.Windows;
 
 internal sealed class LoaderHostBridge : IAsyncDisposable
 {
     private const string BridgeGlobal = "__codexScriptLoaderHostBridge";
-    private static readonly JsonSerializerOptions BridgeJsonOptions = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+    private static readonly JsonSerializerOptions BridgeJsonOptions = CreateBridgeJsonOptions();
     private readonly CdpClient client;
     private readonly Func<string, JsonElement, CancellationToken, Task<object>> dispatch;
     private readonly string bindingName = $"__codex_loader_{Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(12))}";
@@ -36,6 +37,27 @@ internal sealed class LoaderHostBridge : IAsyncDisposable
                 {
                     await AttachAsync(target, cancellationToken).ConfigureAwait(false);
                 }
+            }
+        }
+        finally
+        {
+            sync.Release();
+        }
+    }
+
+    public async Task ReconnectAsync(IReadOnlyList<CdpTarget> targets, CancellationToken cancellationToken)
+    {
+        await sync.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            foreach (var targetId in sessions.Keys.ToArray())
+            {
+                await DropAsync(targetId, cancellationToken).ConfigureAwait(false);
+            }
+
+            foreach (var target in targets)
+            {
+                await AttachAsync(target, cancellationToken).ConfigureAwait(false);
             }
         }
         finally
@@ -139,7 +161,12 @@ internal sealed class LoaderHostBridge : IAsyncDisposable
                 "remove_plugin" or
                 "list_quarantined" or
                 "restore_plugin" or
-                "restart_codex"))
+                "restart_codex" or
+                "get_update_status" or
+                "set_auto_update" or
+                "check_for_updates" or
+                "start_update" or
+                "cancel_update"))
             {
                 throw new InvalidDataException("Bridge command is not allowed.");
             }
@@ -196,7 +223,7 @@ internal sealed class LoaderHostBridge : IAsyncDisposable
         {
             await state.Session.SendAsync("Runtime.evaluate", new
             {
-                expression = $"globalThis[{JsonSerializer.Serialize(BridgeGlobal)}]?.dispose('Loader sidecar disconnected');",
+                expression = $"globalThis[{JsonSerializer.Serialize(BridgeGlobal)}]?.bindingName === {JsonSerializer.Serialize(bindingName)} && globalThis[{JsonSerializer.Serialize(BridgeGlobal)}].dispose('Loader sidecar disconnected');",
             }, cancellationToken).ConfigureAwait(false);
         }
         catch (InvalidOperationException)
@@ -238,6 +265,7 @@ internal sealed class LoaderHostBridge : IAsyncDisposable
       let nextId = 1;
       let disposed = false;
       globalThis[globalName] = {
+        bindingName,
         connected: true,
         request(command, payload = {}) {
           if (disposed) return Promise.reject(new Error("Loader sidecar is not connected"));
@@ -245,7 +273,7 @@ internal sealed class LoaderHostBridge : IAsyncDisposable
           return new Promise((resolve, reject) => {
             const timeoutMs = command === "pick_plugin_folder" || command === "pick_plugin_archive"
               ? pickerTimeoutMs
-              : command === "get_app_status" || command === "list_plugins" || command === "list_quarantined"
+              : command === "get_app_status" || command === "list_plugins" || command === "list_quarantined" || command === "get_update_status"
                 ? requestTimeoutMs
                 : mutationTimeoutMs;
             const timer = setTimeout(() => { pending.delete(id); reject(new Error("Loader request timed out")); }, timeoutMs);
@@ -290,4 +318,11 @@ internal sealed class LoaderHostBridge : IAsyncDisposable
     }
 
     private sealed record BridgeSession(CdpSession Session, string? RegistrationId);
+
+    private static JsonSerializerOptions CreateBridgeJsonOptions()
+    {
+        var options = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+        options.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase));
+        return options;
+    }
 }

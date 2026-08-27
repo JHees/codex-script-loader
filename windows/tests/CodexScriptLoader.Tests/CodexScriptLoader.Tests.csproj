@@ -7,6 +7,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\CodexScriptLoader.Core\CodexScriptLoader.Core.csproj" />
     <ProjectReference Include="..\..\src\CodexScriptLoader.Interop\CodexScriptLoader.Interop.csproj" />
+    <ProjectReference Include="..\..\src\CodexScriptLoader.Windows\CodexScriptLoader.Windows.csproj" />
   </ItemGroup>
   <ItemGroup>
     <Content Include="..\..\..\packages\bennett-ui-improvements\index.js" Link="fixtures\bennett-ui-improvements\index.js" CopyToOutputDirectory="PreserveNewest" />

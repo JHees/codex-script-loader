@@ -78,7 +78,7 @@ test("settings API is permission-gated and owned by the loader host", () => {
   assert.equal(typeof context.__settingsApi.registerPage, "function");
   assert.equal(typeof context.__settingsApi.register, "function");
   assert.equal(context.__processKind, "renderer");
-  assert.equal(context.__codexScriptLoader.settingsHost.snapshot().version, "0.4.2");
+  assert.equal(context.__codexScriptLoader.settingsHost.snapshot().version, "0.5.1");
 
   const withoutPermission = { ...descriptor({ id: "test.no-settings", source: "globalThis.__settingsWithoutPermission = api.settings;" }), permissions: [] };
   vm.runInContext(buildInjectionSource([withoutPermission]), context);
@@ -101,5 +101,8 @@ test("settings host groups management and plugin pages under Script-Loader witho
   assert.match(source, /px-4 gap-6 py-3/);
   assert.match(source, /mountedGroups/);
   assert.match(source, /get_app_status/);
+  assert.match(source, /updateHeaderStack\.appendChild\(updateFeedback\)/);
+  assert.match(source, /scheduleUpdateRefresh\(active \? 750 : 15000\)/);
+  assert.doesNotMatch(source, /setInterval\([^\n]*refreshUpdateStatus/);
   assert.doesNotMatch(source, /location\.reload\s*\(/);
 });

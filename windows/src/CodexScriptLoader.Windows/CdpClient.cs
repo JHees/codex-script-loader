@@ -32,12 +32,19 @@ internal sealed class CdpClient : IDisposable
 
     public async Task<IReadOnlyList<CdpTarget>> GetCodexTargetsAsync(CancellationToken cancellationToken)
     {
-        var targets = await httpClient.GetFromJsonAsync<CdpTarget[]>("json", cancellationToken).ConfigureAwait(false)
-            ?? throw new InvalidDataException("CDP target response is empty.");
+        var targets = await GetTargetsAsync(cancellationToken).ConfigureAwait(false);
         return targets.Where(target =>
             string.Equals(target.Type, "page", StringComparison.Ordinal) &&
             string.Equals(target.Url, "app://-/index.html", StringComparison.Ordinal) &&
             IsManagedEndpoint(target.WebSocketDebuggerUrl)).ToArray();
+    }
+
+    public async Task<CdpTarget?> GetTargetByIdAsync(string targetId, CancellationToken cancellationToken)
+    {
+        var targets = await GetTargetsAsync(cancellationToken).ConfigureAwait(false);
+        return targets.SingleOrDefault(target =>
+            string.Equals(target.Id, targetId, StringComparison.Ordinal) &&
+            IsManagedEndpoint(target.WebSocketDebuggerUrl));
     }
 
     public async Task<Uri> GetBrowserEndpointAsync(CancellationToken cancellationToken)
@@ -61,6 +68,10 @@ internal sealed class CdpClient : IDisposable
             uri.Port == port &&
             IPAddress.TryParse(uri.Host, out var address) && IPAddress.IsLoopback(address);
     }
+
+    private async Task<IReadOnlyList<CdpTarget>> GetTargetsAsync(CancellationToken cancellationToken) =>
+        await httpClient.GetFromJsonAsync<CdpTarget[]>("json", cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidDataException("CDP target response is empty.");
 
     public void Dispose() => httpClient.Dispose();
 }

@@ -89,7 +89,7 @@ Function ValidateInstallDirectory
   StrCmp $INSTDIR "" invalid
   IfFileExists "$INSTDIR\.codex-script-loader-install" valid
 
-  ; v0.4.1 and earlier always installed to this fixed per-user directory and did
+  ; v0.4.2 and earlier always installed to this fixed per-user directory and did
   ; not write the safety marker. Accept that exact legacy layout once so the new
   ; installer can add the marker without treating arbitrary non-empty folders as
   ; Loader installations.
@@ -127,7 +127,48 @@ Section "Codex Script Loader" SEC_INSTALL
   SetRegView 64
   SetOutPath "$INSTDIR"
   SetOverwrite on
+
+  ; 0.4.x used a flat self-contained host. Migrate only that recognized Loader
+  ; layout; user data remains under $LOCALAPPDATA\CodexScriptLoader.
+  IfFileExists "$INSTDIR\CodexScriptLoader.dll" 0 versioned_layout
+  ClearErrors
+  Delete "$INSTDIR\CodexScriptLoader.exe"
+  IfErrors legacy_in_use
+  Delete "$INSTDIR\CodexScriptLoader.dll"
+  Delete "$INSTDIR\CodexScriptLoader.Core.dll"
+  Delete "$INSTDIR\CodexScriptLoader.Interop.dll"
+  Delete "$INSTDIR\CodexScriptLoader.deps.json"
+  Delete "$INSTDIR\CodexScriptLoader.runtimeconfig.json"
+  Delete "$INSTDIR\*.dll"
+  Delete "$INSTDIR\createdump.exe"
+  RMDir /r "$INSTDIR\bundled"
+  RMDir /r "$INSTDIR\cs"
+  RMDir /r "$INSTDIR\de"
+  RMDir /r "$INSTDIR\es"
+  RMDir /r "$INSTDIR\fr"
+  RMDir /r "$INSTDIR\it"
+  RMDir /r "$INSTDIR\ja"
+  RMDir /r "$INSTDIR\ko"
+  RMDir /r "$INSTDIR\pl"
+  RMDir /r "$INSTDIR\pt-BR"
+  RMDir /r "$INSTDIR\ru"
+  RMDir /r "$INSTDIR\tr"
+  RMDir /r "$INSTDIR\zh-Hans"
+  RMDir /r "$INSTDIR\zh-Hant"
+  Goto versioned_layout
+legacy_in_use:
+  MessageBox MB_OK|MB_ICONEXCLAMATION "Codex Script Loader is still running. Exit Loader and Codex completely, then run the installer again."
+  Abort
+versioned_layout:
+  Delete "$INSTDIR\previous.install-backup.json"
+  IfFileExists "$INSTDIR\active.json" 0 copy_payload
+  CopyFiles /SILENT "$INSTDIR\active.json" "$INSTDIR\previous.install-backup.json"
+copy_payload:
   File /r "${APP_DIR}\*"
+  IfFileExists "$INSTDIR\previous.install-backup.json" 0 pointers_ready
+  Delete "$INSTDIR\previous.json"
+  Rename "$INSTDIR\previous.install-backup.json" "$INSTDIR\previous.json"
+pointers_ready:
 
   FileOpen $0 "$INSTDIR\.codex-script-loader-install" w
   FileWrite $0 "CodexScriptLoader${VERSION}"

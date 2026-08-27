@@ -7,21 +7,32 @@ internal sealed class LoaderApplicationContext : ApplicationContext
     private readonly SingleInstanceCoordinator instance;
     private readonly LiveSupervisor supervisor;
     private readonly JsonlLogger logger;
+    private readonly string? launcherReadyPipeName;
+    private readonly HandoffCandidateOptions? candidate;
+    private readonly OnlineUpdateManager updateManager;
     private readonly Control dispatcher = new();
     private DiagnosticsForm? diagnostics;
 
-    public LoaderApplicationContext(SingleInstanceCoordinator instance, LiveSupervisor supervisor, JsonlLogger logger)
+    public LoaderApplicationContext(SingleInstanceCoordinator instance, LiveSupervisor supervisor, JsonlLogger logger, string? launcherReadyPipeName, HandoffCandidateOptions? candidate)
     {
         this.instance = instance;
         this.supervisor = supervisor;
         this.logger = logger;
+        this.launcherReadyPipeName = launcherReadyPipeName;
+        this.candidate = candidate;
+        updateManager = new OnlineUpdateManager(
+            paths: LoaderPaths.ForProduction(),
+            logger,
+            SwitchHostAsync,
+            fallbackDownload: supervisor.DownloadUpdateResourceAsync);
+        supervisor.UpdateManager = updateManager;
         dispatcher.CreateControl();
 
         supervisor.StateChanged += snapshot => Post(() => ApplySnapshot(snapshot));
         supervisor.ManagedCodexExited += () => Post(ExitAfterManagedCodex);
         supervisor.PackagePickerAsync = PickPluginPackageAsync;
         instance.CommandReceived += command => Post(() => HandleInstanceCommand(command));
-        instance.StartServer();
+        if (candidate is null) instance.StartServer();
         dispatcher.BeginInvoke(async () => await StartAsync());
     }
 
@@ -29,7 +40,20 @@ internal sealed class LoaderApplicationContext : ApplicationContext
     {
         try
         {
-            await supervisor.StartAsync(CancellationToken.None);
+            if (candidate is null)
+            {
+                await supervisor.StartAsync(CancellationToken.None);
+                await updateManager.InitializeAsync(CancellationToken.None);
+            }
+            else
+            {
+                await updateManager.InitializeAsync(CancellationToken.None);
+                await HostHandoffCoordinator.RunCandidateAsync(candidate, LoaderPaths.ForProduction(), supervisor, instance, logger, CancellationToken.None);
+                try { await updateManager.RefreshTransactionStateAsync(CancellationToken.None, preserveTerminalState: true); }
+                catch (Exception exception) when (exception is IOException or System.Text.Json.JsonException) { logger.Warn("update-status-restore-failed", new { message = JsonlLogger.Redact(exception.Message) }); }
+            }
+            await LauncherHealthSignal.SendAsync(launcherReadyPipeName, CancellationToken.None);
+            _ = updateManager.StartAfterHealthyAsync(CancellationToken.None);
         }
         catch (Exception exception)
         {
@@ -42,6 +66,9 @@ internal sealed class LoaderApplicationContext : ApplicationContext
             ExitThread();
         }
     }
+
+    private Task SwitchHostAsync(StagedUpdate staged, CancellationToken cancellationToken) =>
+        HostHandoffCoordinator.SwitchAsync(staged, LoaderPaths.ForProduction(), supervisor, instance, logger, () => Post(ExitThread), cancellationToken);
 
     private void ApplySnapshot(DiagnosticSnapshot snapshot)
     {

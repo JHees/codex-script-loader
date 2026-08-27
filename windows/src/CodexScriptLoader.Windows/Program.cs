@@ -8,8 +8,12 @@ internal static class Program
     private static void Main(string[] args)
     {
         ApplicationConfiguration.Initialize();
-        var instance = SingleInstanceCoordinator.Create();
-        if (!instance.IsPrimary)
+        var paths = LoaderPaths.ForProduction();
+        paths.EnsureDirectories();
+        var readyPipeName = ReadOption(args, "--launcher-ready-pipe");
+        var candidate = HandoffCandidateOptions.Parse(args, paths);
+        var instance = SingleInstanceCoordinator.Create(paths);
+        if (!instance.IsPrimary && candidate is null)
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
             try
@@ -17,6 +21,7 @@ internal static class Program
                 instance.SendCommandAsync(
                     args.Contains("--reload", StringComparer.OrdinalIgnoreCase) ? "ReloadScripts" : "ShowStatus",
                     timeout.Token).GetAwaiter().GetResult();
+                LauncherHealthSignal.SendAsync(readyPipeName, CancellationToken.None).GetAwaiter().GetResult();
             }
             catch (Exception exception) when (exception is IOException or TimeoutException or OperationCanceledException)
             {
@@ -31,13 +36,11 @@ internal static class Program
             return;
         }
 
-        var paths = LoaderPaths.ForProduction();
-        paths.EnsureDirectories();
         using var logger = new JsonlLogger(paths.LogsRoot);
         var supervisor = new LiveSupervisor(paths, logger);
         try
         {
-            using var context = new LoaderApplicationContext(instance, supervisor, logger);
+            using var context = new LoaderApplicationContext(instance, supervisor, logger, readyPipeName, candidate);
             Application.Run(context);
         }
         finally
@@ -45,5 +48,13 @@ internal static class Program
             supervisor.DisposeAsync().AsTask().GetAwaiter().GetResult();
             instance.DisposeAsync().AsTask().GetAwaiter().GetResult();
         }
+    }
+
+    private static string? ReadOption(string[] args, string name)
+    {
+        var index = Array.FindIndex(args, argument => string.Equals(argument, name, StringComparison.OrdinalIgnoreCase));
+        if (index < 0) return null;
+        if (index + 1 >= args.Length || string.IsNullOrWhiteSpace(args[index + 1])) throw new ArgumentException($"Missing value for {name}.");
+        return args[index + 1];
     }
 }

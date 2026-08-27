@@ -1,7 +1,9 @@
 using System.IO.Compression;
+using System.Text;
 using System.Text.Json;
 using CodexScriptLoader.Core;
 using CodexScriptLoader.Interop;
+using CodexScriptLoader.Windows;
 
 namespace CodexScriptLoader.Tests;
 
@@ -22,6 +24,11 @@ internal static class Program
             TestPathBoundary(testRoot);
             TestPackageProcessTerminationBoundary();
             TestLogRedaction(testRoot);
+            await TestAtomicUpdateStateAsync(testRoot);
+            await TestUpdatePackageVerificationAsync(testRoot);
+            await TestOnlineUpdatePipelineAsync(testRoot);
+            TestUpdateTrustBoundaries();
+            await TestSingleInstanceLockTransferAsync(testRoot);
             Console.WriteLine($"PASS {passed} tests");
             return 0;
         }
@@ -48,7 +55,7 @@ internal static class Program
         var plan = await registry.BuildPlanAsync(force: true);
         Equal(1, plan.Scripts.Count, "Bundled script count");
         Equal("co.bennett.ui-improvements", plan.Scripts[0].Id, "Bundled script id");
-        True(plan.Source.Contains("runtime.runtimeVersion = \"0.4.2\"", StringComparison.Ordinal), "Runtime version source");
+        True(plan.Source.Contains("runtime.runtimeVersion = \"0.5.1\"", StringComparison.Ordinal), "Runtime version source");
         True(plan.Source.Contains("__bennettUiImprovementsBigPizza", StringComparison.Ordinal), "Lifecycle source");
         True(plan.Source.Contains("installSettingsHost", StringComparison.Ordinal), "Settings host source");
         True(plan.Source.Contains("sha256-" + plan.Scripts[0].Fingerprint, StringComparison.Ordinal), "Integrity source");
@@ -178,6 +185,178 @@ internal static class Program
         using var reader = new StreamReader(stream);
         using var document = JsonDocument.Parse(reader.ReadLine() ?? throw new InvalidDataException("JSONL log is empty."));
         Equal("test", document.RootElement.GetProperty("event").GetString(), "JSONL event");
+    }
+
+    private static async Task TestAtomicUpdateStateAsync(string testRoot)
+    {
+        var path = Path.Combine(testRoot, "atomic", "preferences.json");
+        await AtomicJsonFile.WriteAsync(path, new UpdatePreferences());
+        var preferences = await AtomicJsonFile.ReadAsync<UpdatePreferences>(path);
+        True(preferences is { SchemaVersion: 1, AutoUpdate: true, Channel: "stable" }, "Default update preferences round trip");
+        await AtomicJsonFile.WriteAsync(path, new UpdatePreferences(AutoUpdate: false));
+        Equal(false, (await AtomicJsonFile.ReadAsync<UpdatePreferences>(path))!.AutoUpdate, "Atomic update preference replacement");
+    }
+
+    private static async Task TestUpdatePackageVerificationAsync(string testRoot)
+    {
+        var source = Path.Combine(testRoot, "update-source");
+        var host = Path.Combine(source, "versions", "0.5.1", "win-x64");
+        Directory.CreateDirectory(host);
+        await File.WriteAllTextAsync(Path.Combine(source, "CodexScriptLoader.exe"), "launcher");
+        await File.WriteAllTextAsync(Path.Combine(source, "active.json"), "{}");
+        await File.WriteAllTextAsync(Path.Combine(host, "CodexScriptLoader.exe"), "candidate-host");
+        var prefix = Path.GetFullPath(source).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        var files = new List<UpdateManifestFile>();
+        foreach (var file in Directory.GetFiles(source, "*", SearchOption.AllDirectories).Order(StringComparer.Ordinal))
+        {
+            files.Add(new UpdateManifestFile(
+                Path.GetFullPath(file)[prefix.Length..].Replace(Path.DirectorySeparatorChar, '/'),
+                new FileInfo(file).Length,
+                await UpdatePackageVerifier.ComputeSha256Async(file)));
+        }
+        var manifest = new UpdateManifest(1, "0.5.1", "win-x64", "versions/0.5.1/win-x64/CodexScriptLoader.exe", 1, 1, files);
+        await AtomicJsonFile.WriteAsync(Path.Combine(source, "update-manifest.json"), manifest);
+        var archivePath = Path.Combine(testRoot, "update.zip");
+        ZipFile.CreateFromDirectory(source, archivePath);
+        var archiveHash = await UpdatePackageVerifier.ComputeSha256Async(archivePath);
+        var extracted = Path.Combine(testRoot, "update-extracted");
+        var verified = await UpdatePackageVerifier.VerifyAndExtractAsync(archivePath, extracted, "0.5.1", "win-x64", archiveHash);
+        Equal("0.5.1", verified.Version, "Update package version verified");
+        True(File.Exists(Path.Combine(extracted, "versions", "0.5.1", "win-x64", "CodexScriptLoader.exe")), "Update package extracted safely");
+        Throws<InvalidDataException>(() => UpdatePackageVerifier.ValidateManifest(manifest with { EntryPoint = "CodexScriptLoader.exe" }, "0.5.1", "win-x64"), "Update manifest alternate entry point rejected");
+        Throws<InvalidDataException>(() => UpdatePackageVerifier.VerifyAndExtractAsync(archivePath, Path.Combine(testRoot, "bad-hash"), "0.5.1", "win-x64", new string('0', 64)).GetAwaiter().GetResult(), "Update archive bad hash rejected");
+        Throws<InvalidDataException>(() => UpdatePackageVerifier.VerifyAndExtractAsync(archivePath, Path.Combine(testRoot, "bad-rid"), "0.5.1", "win-arm64", archiveHash).GetAwaiter().GetResult(), "Update archive wrong architecture rejected");
+
+        var traversalArchive = Path.Combine(testRoot, "update-traversal.zip");
+        using (var archive = ZipFile.Open(traversalArchive, ZipArchiveMode.Create))
+        {
+            archive.CreateEntry("../escape.exe");
+        }
+        var traversalHash = await UpdatePackageVerifier.ComputeSha256Async(traversalArchive);
+        Throws<InvalidDataException>(() => UpdatePackageVerifier.VerifyAndExtractAsync(traversalArchive, Path.Combine(testRoot, "update-traversal"), "0.5.1", "win-x64", traversalHash).GetAwaiter().GetResult(), "Update ZIP traversal rejected");
+    }
+
+    private static void TestUpdateTrustBoundaries()
+    {
+        UpdatePackageVerifier.ValidateDownloadUri(new Uri("https://github.com/JHees/codex-script-loader/releases/download/v0.5.1/test.zip"));
+        Throws<InvalidDataException>(() => UpdatePackageVerifier.ValidateDownloadUri(new Uri("http://github.com/JHees/codex-script-loader/test.zip")), "Non-HTTPS update rejected");
+        Throws<InvalidDataException>(() => UpdatePackageVerifier.ValidateDownloadUri(new Uri("https://example.com/test.zip")), "Unofficial update host rejected");
+        var checksum = new string('a', 64);
+        Equal(checksum, UpdatePackageVerifier.ReadUniqueSha256($"{checksum}  package.zip\n", "package.zip"), "Unique release checksum parsed");
+        Throws<InvalidDataException>(() => UpdatePackageVerifier.ReadUniqueSha256($"{checksum}  package.zip\n{checksum}  package.zip\n", "package.zip"), "Duplicate release checksum rejected");
+        True(VersionedInstallLayout.CompareVersions("0.5.1", "0.5.0") > 0, "Upgrade version accepted");
+        True(VersionedInstallLayout.CompareVersions("0.5.0", "0.5.0") == 0, "Same version identified");
+        True(VersionedInstallLayout.CompareVersions("0.4.9", "0.5.0") < 0, "Downgrade identified");
+        var asset = new GitHubReleaseAsset("CodexScriptLoader-0.5.1-windows-x64.zip", 12, "https://github.com/JHees/codex-script-loader/releases/download/v0.5.1/test.zip");
+        OnlineUpdateManager.ValidateRelease(new GitHubReleaseInfo("v0.5.1", "https://github.com/JHees/codex-script-loader/releases/tag/v0.5.1", false, false, [asset]));
+        Throws<InvalidDataException>(() => OnlineUpdateManager.ValidateRelease(new GitHubReleaseInfo("v0.5.1", "https://github.com/JHees/codex-script-loader/releases/tag/v0.5.1", false, true, [asset])), "Prerelease update rejected");
+        Throws<InvalidDataException>(() => OnlineUpdateManager.ValidateRelease(new GitHubReleaseInfo("v0.5.1", "https://github.com/other/repository/releases/tag/v0.5.1", false, false, [asset])), "Wrong release repository rejected");
+        Throws<InvalidDataException>(() => OnlineUpdateManager.ValidateRelease(new GitHubReleaseInfo("v0.5.1", "https://github.com/JHees/codex-script-loader/releases/tag/v0.5.1", false, false, [asset, asset])), "Duplicate release asset rejected");
+    }
+
+    private static async Task TestOnlineUpdatePipelineAsync(string testRoot)
+    {
+        const string nextVersion = "0.5.2";
+        var fixtureRoot = Path.Combine(testRoot, "online-update");
+        var installRoot = Path.Combine(fixtureRoot, "install");
+        var currentHostRoot = Path.Combine(installRoot, "versions", LiveSupervisor.Version, "win-x64");
+        Directory.CreateDirectory(currentHostRoot);
+        await File.WriteAllTextAsync(Path.Combine(installRoot, ".codex-script-loader-install"), "fixture");
+        var source = Path.Combine(fixtureRoot, "source");
+        var nextHost = Path.Combine(source, "versions", nextVersion, "win-x64");
+        Directory.CreateDirectory(nextHost);
+        await File.WriteAllTextAsync(Path.Combine(source, "CodexScriptLoader.exe"), "launcher");
+        await File.WriteAllTextAsync(Path.Combine(source, "active.json"), "{}");
+        await File.WriteAllTextAsync(Path.Combine(source, "previous.json"), "{}");
+        await File.WriteAllTextAsync(Path.Combine(nextHost, "CodexScriptLoader.exe"), "candidate-host");
+        var prefix = Path.GetFullPath(source).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        var files = new List<UpdateManifestFile>();
+        foreach (var file in Directory.GetFiles(source, "*", SearchOption.AllDirectories).Order(StringComparer.Ordinal))
+        {
+            files.Add(new UpdateManifestFile(
+                Path.GetFullPath(file)[prefix.Length..].Replace(Path.DirectorySeparatorChar, '/'),
+                new FileInfo(file).Length,
+                await UpdatePackageVerifier.ComputeSha256Async(file)));
+        }
+        var manifest = new UpdateManifest(1, nextVersion, "win-x64", $"versions/{nextVersion}/win-x64/CodexScriptLoader.exe", 1, 1, files);
+        await AtomicJsonFile.WriteAsync(Path.Combine(source, "update-manifest.json"), manifest);
+        var archiveName = $"CodexScriptLoader-{nextVersion}-windows-x64.zip";
+        var archive = Path.Combine(fixtureRoot, archiveName);
+        ZipFile.CreateFromDirectory(source, archive);
+        var archiveBytes = await File.ReadAllBytesAsync(archive);
+        var archiveHash = await UpdatePackageVerifier.ComputeSha256Async(archive);
+        var checksumName = archiveName + ".sha256";
+        var checksumBytes = Encoding.UTF8.GetBytes($"{archiveHash}  {archiveName}\n");
+        var releaseJson = JsonSerializer.Serialize(new
+        {
+            tag_name = $"v{nextVersion}",
+            html_url = $"https://github.com/JHees/codex-script-loader/releases/tag/v{nextVersion}",
+            draft = false,
+            prerelease = false,
+            assets = new object[]
+            {
+                new { name = archiveName, size = archiveBytes.LongLength, browser_download_url = $"https://github.com/JHees/codex-script-loader/releases/download/v{nextVersion}/{archiveName}" },
+                new { name = checksumName, size = checksumBytes.LongLength, browser_download_url = $"https://github.com/JHees/codex-script-loader/releases/download/v{nextVersion}/{checksumName}" },
+            },
+        });
+        var responses = new Dictionary<string, byte[]>(StringComparer.Ordinal)
+        {
+            ["https://api.github.com/repos/JHees/codex-script-loader/releases/latest"] = Encoding.UTF8.GetBytes(releaseJson),
+            [$"https://github.com/JHees/codex-script-loader/releases/download/v{nextVersion}/{archiveName}"] = archiveBytes,
+            [$"https://github.com/JHees/codex-script-loader/releases/download/v{nextVersion}/{checksumName}"] = checksumBytes,
+        };
+        using var handler = new SchannelFailureHttpMessageHandler();
+        var paths = LoaderPaths.FromRoot(Path.Combine(fixtureRoot, "data"));
+        paths.EnsureDirectories();
+        using var logger = new JsonlLogger(paths.LogsRoot);
+        StagedUpdate? staged = null;
+        var fallbackCalls = 0;
+        await using var manager = new OnlineUpdateManager(paths, logger, (candidate, _) =>
+        {
+            staged = candidate;
+            return Task.CompletedTask;
+        }, handler, currentHostRoot, async (uri, destination, maximumBytes, progress, cancellationToken) =>
+        {
+            fallbackCalls++;
+            var bytes = responses[uri.AbsoluteUri];
+            if (bytes.LongLength > maximumBytes) throw new InvalidDataException("Fixture response exceeded limit.");
+            await File.WriteAllBytesAsync(destination, bytes, cancellationToken);
+            progress(bytes.LongLength);
+            return new CdpDownloadResult(uri, 200, bytes.LongLength);
+        });
+        await manager.InitializeAsync(CancellationToken.None);
+        var available = await manager.CheckForUpdatesAsync(CancellationToken.None);
+        Equal(UpdateStage.Available, available.State, "Online update fixture discovers newer stable release");
+        var completed = await manager.StartUpdateAsync(CancellationToken.None);
+        Equal(UpdateStage.Succeeded, completed.State, "Online update fixture completes download and staging");
+        Equal(nextVersion, staged?.Manifest.Version, "Online update switch receives verified version");
+        True(File.Exists(Path.Combine(installRoot, "versions", nextVersion, "win-x64", "CodexScriptLoader.exe")), "Online update stages candidate in version directory");
+        Equal(3, fallbackCalls, "Schannel credential failure uses Chromium fallback for release, archive and checksum");
+        True(OnlineUpdateManager.IsSchannelCredentialFailure(SchannelFailureHttpMessageHandler.CreateException()), "Schannel credential error classified by native code");
+    }
+
+    private static async Task TestSingleInstanceLockTransferAsync(string testRoot)
+    {
+        var paths = LoaderPaths.FromRoot(Path.Combine(testRoot, "instance-lock"));
+        await using var first = SingleInstanceCoordinator.Create(paths);
+        True(first.IsPrimary, "First host acquires releasable instance lock");
+        await using var candidate = SingleInstanceCoordinator.Create(paths);
+        True(!candidate.IsPrimary, "Candidate waits without owning instance lock");
+        await first.ReleaseOwnershipAsync();
+        True(await candidate.TryAcquireAsync(TimeSpan.FromSeconds(2), CancellationToken.None), "Candidate acquires released instance lock");
+        True(candidate.IsPrimary, "Candidate becomes primary after lock transfer");
+    }
+
+    private sealed class SchannelFailureHttpMessageHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            => Task.FromException<HttpResponseMessage>(CreateException());
+
+        public static HttpRequestException CreateException() => new(
+            "The SSL connection could not be established, see inner exception.",
+            new System.Security.Authentication.AuthenticationException(
+                "Authentication failed, see inner exception.",
+                new System.ComponentModel.Win32Exception(unchecked((int)0x8009030E))));
     }
 
     private static void True(bool condition, string name)

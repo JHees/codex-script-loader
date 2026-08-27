@@ -6,7 +6,10 @@ public sealed record LoaderPaths(
     string ScriptsRoot,
     string QuarantineRoot,
     string LogsRoot,
-    string StateRoot)
+    string StateRoot,
+    string UpdatePreferencesPath,
+    string UpdateTransactionPath,
+    string InstanceLockPath)
 {
     public static LoaderPaths ForProduction()
     {
@@ -29,7 +32,10 @@ public sealed record LoaderPaths(
             Path.Combine(dataRoot, "scripts"),
             Path.Combine(dataRoot, "quarantine"),
             Path.Combine(dataRoot, "logs"),
-            Path.Combine(dataRoot, "state"));
+            Path.Combine(dataRoot, "state"),
+            Path.Combine(dataRoot, "update-preferences.json"),
+            Path.Combine(dataRoot, "state", "update-transaction.json"),
+            Path.Combine(dataRoot, "state", "instance.v0.3.lock"));
     }
 
     public void EnsureDirectories()

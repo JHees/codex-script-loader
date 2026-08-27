@@ -20,6 +20,8 @@ $startMenuRoot = Join-Path ([Environment]::GetFolderPath("Programs")) "Codex Scr
 $startMenuShortcut = Join-Path $startMenuRoot "Codex Script Loader.lnk"
 $defaultInstallRoot = Join-Path $env:LOCALAPPDATA "Programs\CodexScriptLoader"
 $testRoot = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA "CodexScriptLoaderInstallerTest")).TrimEnd([IO.Path]::DirectorySeparatorChar)
+$userDataRoot = Join-Path $env:LOCALAPPDATA "CodexScriptLoader"
+$userDataSentinel = Join-Path $userDataRoot "installer-migration-sentinel.txt"
 
 $preexisting = @($uninstallKey, $productKey, $desktopShortcut, $startMenuRoot, $defaultInstallRoot, $testRoot) | Where-Object { Test-Path -LiteralPath $_ }
 if ($preexisting) { throw "Refusing installer test because Codex Script Loader is already installed: $($preexisting -join ', ')" }
@@ -58,7 +60,48 @@ try {
     if (Test-Path -LiteralPath $path) { throw "Silent uninstall left package state behind: $path" }
   }
 
-  Write-Output "NSIS_INSTALLER_TEST_PASS version=$Version"
+  New-Item -ItemType Directory -Path $defaultInstallRoot -Force | Out-Null
+  Set-Content -LiteralPath (Join-Path $defaultInstallRoot "CodexScriptLoader.exe") -Value "legacy" -Encoding ascii
+  Set-Content -LiteralPath (Join-Path $defaultInstallRoot "CodexScriptLoader.dll") -Value "legacy" -Encoding ascii
+  Set-Content -LiteralPath (Join-Path $defaultInstallRoot "uninstall.exe") -Value "legacy" -Encoding ascii
+  New-Item -ItemType Directory -Path (Join-Path $defaultInstallRoot "bundled") -Force | Out-Null
+  Set-Content -LiteralPath (Join-Path $defaultInstallRoot "bundled\legacy.txt") -Value "legacy" -Encoding ascii
+  New-Item -ItemType Directory -Path (Join-Path $defaultInstallRoot "zh-Hans") -Force | Out-Null
+  Set-Content -LiteralPath (Join-Path $defaultInstallRoot "zh-Hans\legacy.resources.dll") -Value "legacy" -Encoding ascii
+  New-Item -ItemType Directory -Path $userDataRoot -Force | Out-Null
+  Set-Content -LiteralPath $userDataSentinel -Value "preserve" -Encoding ascii
+
+  $migration = Start-Process -FilePath $setupPath -ArgumentList "/S" -Wait -PassThru -WindowStyle Hidden
+  if ($migration.ExitCode -ne 0) { throw "0.4.x layout migration failed with exit code $($migration.ExitCode)." }
+  $migratedHost = Join-Path $defaultInstallRoot "versions\$Version\win-x64\CodexScriptLoader.exe"
+  if (-not (Test-Path -LiteralPath $migratedHost -PathType Leaf)) { throw "Migrated versioned Loader host is missing." }
+  if (-not (Test-Path -LiteralPath (Join-Path $defaultInstallRoot "active.json") -PathType Leaf)) { throw "Migrated active pointer is missing." }
+  if (Test-Path -LiteralPath (Join-Path $defaultInstallRoot "CodexScriptLoader.dll")) { throw "Legacy flat Loader host files remain after migration." }
+  if (Test-Path -LiteralPath (Join-Path $defaultInstallRoot "bundled")) { throw "Legacy flat bundled directory remains after migration." }
+  if (Test-Path -LiteralPath (Join-Path $defaultInstallRoot "zh-Hans")) { throw "Legacy flat localization directories remain after migration." }
+
+  $migratedUninstaller = Join-Path $defaultInstallRoot "uninstall.exe"
+  $migrationUninstall = Start-Process -FilePath $migratedUninstaller -ArgumentList "/S" -Wait -PassThru -WindowStyle Hidden
+  if ($migrationUninstall.ExitCode -ne 0) { throw "Migrated installation uninstall failed with exit code $($migrationUninstall.ExitCode)." }
+  Wait-Until { -not (Test-Path -LiteralPath $defaultInstallRoot) } 15 "Migrated installation was not removed."
+  if (-not (Test-Path -LiteralPath $userDataSentinel -PathType Leaf)) { throw "Upgrade or uninstall removed Loader user data." }
+
+  $oldVersionRoot = Join-Path $defaultInstallRoot "versions\0.4.9\win-x64"
+  New-Item -ItemType Directory -Path $oldVersionRoot -Force | Out-Null
+  Set-Content -LiteralPath (Join-Path $defaultInstallRoot ".codex-script-loader-install") -Value "CodexScriptLoader0.4.9" -Encoding ascii
+  [ordered]@{ schemaVersion = 1; version = "0.4.9"; rid = "win-x64"; entryPoint = "CodexScriptLoader.exe"; launcherProtocol = 1; handoffProtocol = 1 } |
+    ConvertTo-Json | Set-Content -LiteralPath (Join-Path $defaultInstallRoot "active.json") -Encoding utf8NoBOM
+  Set-Content -LiteralPath (Join-Path $oldVersionRoot "CodexScriptLoader.exe") -Value "old-version" -Encoding ascii
+  $versionedUpgrade = Start-Process -FilePath $setupPath -ArgumentList "/S" -Wait -PassThru -WindowStyle Hidden
+  if ($versionedUpgrade.ExitCode -ne 0) { throw "Versioned installer upgrade failed with exit code $($versionedUpgrade.ExitCode)." }
+  $preservedPrevious = Get-Content -LiteralPath (Join-Path $defaultInstallRoot "previous.json") -Raw -Encoding utf8 | ConvertFrom-Json
+  if ($preservedPrevious.version -ne "0.4.9" -or -not (Test-Path -LiteralPath $oldVersionRoot -PathType Container)) { throw "Versioned installer upgrade did not preserve the previous host." }
+  $versionedUninstall = Start-Process -FilePath (Join-Path $defaultInstallRoot "uninstall.exe") -ArgumentList "/S" -Wait -PassThru -WindowStyle Hidden
+  if ($versionedUninstall.ExitCode -ne 0) { throw "Versioned upgrade uninstall failed with exit code $($versionedUninstall.ExitCode)." }
+  Wait-Until { -not (Test-Path -LiteralPath $defaultInstallRoot) } 15 "Versioned upgrade installation was not removed."
+  if (-not (Test-Path -LiteralPath $userDataSentinel -PathType Leaf)) { throw "Versioned upgrade or uninstall removed Loader user data." }
+
+  Write-Output "NSIS_INSTALLER_TEST_PASS version=$Version migration=0.4.x-to-versioned previous=preserved userData=preserved"
 }
 finally {
   $uninstaller = Join-Path $testRoot "uninstall.exe"
@@ -66,6 +109,12 @@ finally {
     Start-Process -FilePath $uninstaller -ArgumentList "/S" -Wait -WindowStyle Hidden -ErrorAction SilentlyContinue
   }
   if (Test-Path -LiteralPath $testRoot) { Remove-Item -LiteralPath $testRoot -Recurse -Force }
+  if (Test-Path -LiteralPath (Join-Path $defaultInstallRoot ".codex-script-loader-install")) {
+    $defaultUninstaller = Join-Path $defaultInstallRoot "uninstall.exe"
+    if (Test-Path -LiteralPath $defaultUninstaller -PathType Leaf) { Start-Process -FilePath $defaultUninstaller -ArgumentList "/S" -Wait -WindowStyle Hidden -ErrorAction SilentlyContinue }
+  }
+  if (Test-Path -LiteralPath $defaultInstallRoot) { Remove-Item -LiteralPath $defaultInstallRoot -Recurse -Force }
+  if (Test-Path -LiteralPath $userDataSentinel -PathType Leaf) { Remove-Item -LiteralPath $userDataSentinel -Force }
   foreach ($path in @($desktopShortcut, $startMenuRoot, $uninstallKey, $productKey)) {
     if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
   }

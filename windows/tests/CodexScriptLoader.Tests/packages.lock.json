@@ -2,6 +2,13 @@
   "version": 1,
   "dependencies": {
     "net10.0-windows7.0": {
+      "CodexScriptLoader": {
+        "type": "Project",
+        "dependencies": {
+          "CodexScriptLoader.Core": "[0.5.1, )",
+          "CodexScriptLoader.Interop": "[0.5.1, )"
+        }
+      },
       "codexscriptloader.core": {
         "type": "Project"
       },

@@ -6,7 +6,7 @@
 
 **Open Codex for user scripts, with automatic injection, reload, and cleanup.**
 
-[![Version](https://img.shields.io/badge/version-0.4.2-f97316)](https://github.com/JHees/codex-script-loader)
+[![Version](https://img.shields.io/badge/version-0.5.1-f97316)](https://github.com/JHees/codex-script-loader)
 [![Windows](https://img.shields.io/badge/Windows-11-0078d4?logo=windows11)](#requirements)
 [![macOS](https://img.shields.io/badge/macOS-untested-999999?logo=apple)](#platform-support)
 [![.NET](https://img.shields.io/badge/.NET-10-512bd4?logo=dotnet)](global.json)
@@ -31,6 +31,7 @@ Windows uses the native .NET 10 background host with no console or tray icon and
 | Native Windows host | Runs quietly with Codex and exits when the Codex instance it launched closes. |
 | macOS runtime | Discovers `Codex.app` and provides the same managed CDP/script flow through Node.js; currently untested. |
 | Diagnostics and reload | Starting a second Windows instance opens diagnostics; `--reload` replaces scripts in place. |
+| Online host updates | Checks the stable GitHub Release after startup and switches verified Loader hosts without restarting Codex. |
 | Bennett UI included | Installs the bundled Bennett UI Improvements 1.4.10 package on first run. |
 | Windows packaging | Produces per-user NSIS setup executables and portable ZIP archives for x64 and arm64. |
 
@@ -38,13 +39,17 @@ Windows uses the native .NET 10 background host with no console or tray icon and
 
 - Windows 11 x64 or arm64 with the Microsoft Store Codex app.
 - macOS with `Codex.app` in `/Applications` or `~/Applications` and Node.js 22 or newer (untested).
-- Windows source builds require .NET 10 SDK and Windows SDK 10.0.26100 or newer.
+- Windows source builds require .NET 10 SDK, Windows SDK 10.0.26100 or newer, and the Visual Studio C++ desktop build tools. Cross-publishing `win-arm64` also requires `Microsoft.VisualStudio.Component.VC.Tools.ARM64`.
 
 Close any running Codex instance before starting the Loader. For a managed session, launch Codex through the Loader.
 
 ## Install and run
 
 Download the matching NSIS installer from [GitHub Releases](https://github.com/JHees/codex-script-loader/releases). Its standard setup wizard lets you choose the installation folder and Start menu folder before installation begins. It creates desktop and Start menu shortcuts, installs for the current user, appears in Windows Installed apps, and requires no administrator access. A portable ZIP is published beside each installer.
+
+Version 0.5.0 is the one-time installer migration from the older flat 0.4.x layout. Starting with 0.5.1, standard NSIS installations can update the versioned host from **Codex Settings → Script-Loader → Settings** while Codex and the current task stay open. Portable copies remain manual-update only.
+
+Version 0.5.1 also isolates update errors from plugin-management feedback and falls back to a hidden, Loader-managed Chromium network target when Windows Schannel specifically fails with `SEC_E_NO_CREDENTIALS`. The fallback remains limited to the official GitHub hosts and is subject to the same size, SHA-256, archive, manifest, and per-file verification.
 
 ### Build from source
 
@@ -59,11 +64,16 @@ Use `win-arm64` instead on Windows on Arm. Packaging clears only generated files
 ```text
 build/
 ├── README.md
-├── app/CodexScriptLoader.exe
-├── CodexScriptLoader-0.4.2-windows-x64-setup.exe
-├── CodexScriptLoader-0.4.2-windows-x64.zip
-├── CodexScriptLoader-0.4.2-x64.spdx.json
-└── SHA256SUMS.txt
+├── app/CodexScriptLoader.exe                 # stable NativeAOT launcher
+├── app/active.json
+├── app/previous.json
+├── app/update-manifest.json
+├── app/versions/0.5.1/win-x64/               # complete Loader host
+├── CodexScriptLoader-0.5.1-windows-x64-setup.exe
+├── CodexScriptLoader-0.5.1-windows-x64-setup.exe.sha256
+├── CodexScriptLoader-0.5.1-windows-x64.zip
+├── CodexScriptLoader-0.5.1-windows-x64.zip.sha256
+└── CodexScriptLoader-0.5.1-x64.spdx.json
 ```
 
 The setup executable at the top of `build` is the normal local installation entry. The `build\app` directory is packaging payload, not the recommended launch path. The installer keeps scripts and settings under `%LOCALAPPDATA%\CodexScriptLoader` when upgrading or uninstalling.
@@ -97,11 +107,12 @@ Start the Loader executable a second time to open diagnostics. To reload install
 
 ```text
 User
-  └─ CodexScriptLoader.exe (WinExe, single instance)
-       ├─ Windows package APIs ──> Microsoft Store Codex
-       ├─ random loopback CDP ───> verified Codex renderer
-       ├─ script registry ───────> manifest / permissions / SHA-256
-       └─ lifecycle supervisor ──> inject / reload / cleanup / exit
+  └─ CodexScriptLoader.exe (stable NativeAOT launcher)
+       └─ versions/<version>/<rid>/CodexScriptLoader.exe
+            ├─ Windows package APIs ──> Microsoft Store Codex
+            ├─ random loopback CDP ───> verified Codex renderer
+            ├─ script registry ───────> manifest / permissions / SHA-256
+            └─ lifecycle supervisor ──> inject / reload / host handoff / cleanup
 ```
 
 Production data lives under:
@@ -109,6 +120,7 @@ Production data lives under:
 ```text
 %LOCALAPPDATA%\CodexScriptLoader\
 ├── config.json
+├── update-preferences.json
 ├── scripts\
 ├── quarantine\
 ├── logs\
@@ -119,11 +131,14 @@ Logs use UTF-8 JSON Lines. Diagnostic exports redact user-specific paths and unr
 
 The Windows host uses official package APIs to start Codex, keeps CDP on a random loopback port, and verifies the owning process and exact renderer target before injection. Codex application files remain untouched, and the launch path needs neither `WindowsApps` access nor administrator privileges.
 
+Online updates are fixed to the stable releases of `JHees/codex-script-loader`. The Loader verifies the GitHub repository, tag, asset name, architecture, declared size, official HTTPS download host, the archive's matching `.sha256` asset, safe ZIP structure, update protocol, and every payload file hash before staging. This GitHub Release + SHA-256 model detects corruption and mismatched assets, but it cannot protect against a release and its checksum file being replaced together; independent signing and Authenticode remain future hardening work.
+
 ## Script packages
 
 Installed plugins are managed under **Codex Settings → Script-Loader → Settings**. The page shows live status, supports enable/disable, targeted or full reload, local folder/ZIP installation, quarantine and restore, and a controlled Codex restart. Plugins that declare a settings page appear directly below the Settings entry.
 
 The complete authoring and lifecycle contract is documented in [`docs/PLUGIN_SPEC.md`](docs/PLUGIN_SPEC.md).
+The versioned layout, release verification, and no-Codex-restart handoff are documented in [`docs/UPDATE_PROTOCOL.md`](docs/UPDATE_PROTOCOL.md).
 
 A renderer package contains `manifest.json` and an entry script:
 
@@ -192,6 +207,7 @@ See [`windows/README.md`](windows/README.md) for NSIS, portable ZIP, optional si
 | --- | --- |
 | `windows/src/CodexScriptLoader.Core` | Configuration, manifests, permissions, hashes, quarantine, and injection plans. |
 | `windows/src/CodexScriptLoader.Interop` | Windows package, activation, process identity, and TCP owner APIs. |
+| `windows/src/CodexScriptLoader.Launcher` | Stable NativeAOT launcher, health check, active-version selection, and fallback. |
 | `windows/src/CodexScriptLoader.Windows` | WinForms background host, CDP, lifecycle supervision, diagnostics, and single instance. |
 | `windows/packaging` | NSIS installer definition and Windows image assets. |
 | `windows/scripts` | Build-time packaging, icon generation, validation, and reproducibility tools. |

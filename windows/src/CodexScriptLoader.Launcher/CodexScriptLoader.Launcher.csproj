@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <AssemblyName>CodexScriptLoader</AssemblyName>
+    <RootNamespace>CodexScriptLoader.Launcher</RootNamespace>
+    <ApplicationIcon>..\..\branding\CodexScriptLoader.ico</ApplicationIcon>
+    <ApplicationVersion>0.5.1.0</ApplicationVersion>
+    <PublishAot>true</PublishAot>
+    <SelfContained>true</SelfContained>
+    <StripSymbols>true</StripSymbols>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+</Project>

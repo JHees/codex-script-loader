@@ -3,7 +3,7 @@ param(
   [ValidateSet("win-x64", "win-arm64")]
   [string]$RuntimeIdentifier = "win-x64",
   [ValidatePattern("^\d+\.\d+\.\d+$")]
-  [string]$Version = "0.4.2",
+  [string]$Version = "0.5.1",
   [string]$NsisPath,
   [string]$CertificatePath,
   [string]$CertificatePassword,
@@ -20,6 +20,8 @@ if ($Version -ne $productVersion) { throw "Requested package version $Version do
 if ([string]$buildProps.Project.PropertyGroup.Version -ne $Version) { throw "Directory.Build.props version does not match $Version." }
 [xml]$windowsProject = Get-Content -LiteralPath (Join-Path $repositoryRoot "windows\src\CodexScriptLoader.Windows\CodexScriptLoader.Windows.csproj") -Raw -Encoding utf8
 if ([string]$windowsProject.Project.PropertyGroup.ApplicationVersion -ne "$Version.0") { throw "Windows ApplicationVersion does not match $Version.0." }
+[xml]$launcherProject = Get-Content -LiteralPath (Join-Path $repositoryRoot "windows\src\CodexScriptLoader.Launcher\CodexScriptLoader.Launcher.csproj") -Raw -Encoding utf8
+if ([string]$launcherProject.Project.PropertyGroup.ApplicationVersion -ne "$Version.0") { throw "Launcher ApplicationVersion does not match $Version.0." }
 $env:DOTNET_CLI_TELEMETRY_OPTOUT = "1"
 $env:DOTNET_CLI_USE_MSBUILD_SERVER = "0"
 $env:NUGET_PACKAGES = Join-Path $repositoryRoot ".tools\nuget"
@@ -33,6 +35,8 @@ $fileVersion = "$Version.0"
 $defaultArtifactRoot = [IO.Path]::GetFullPath((Join-Path $repositoryRoot "build"))
 $artifactRoot = if ($OutputRoot) { [IO.Path]::GetFullPath($OutputRoot) } else { $defaultArtifactRoot }
 $publishRoot = Join-Path $artifactRoot "app"
+$hostPublishRoot = Join-Path $publishRoot "versions\$Version\$RuntimeIdentifier"
+$launcherPublishRoot = Join-Path $artifactRoot ".launcher"
 $installerName = "CodexScriptLoader-$Version-windows-$architecture-setup.exe"
 $archiveName = "CodexScriptLoader-$Version-windows-$architecture.zip"
 $sbomName = "CodexScriptLoader-$Version-$architecture.spdx.json"
@@ -110,22 +114,66 @@ function Invoke-Sign([string]$Path, [string]$SignTool) {
 }
 
 Reset-ArtifactRoot
-New-Item -ItemType Directory -Path $publishRoot -Force | Out-Null
+New-Item -ItemType Directory -Path $hostPublishRoot -Force | Out-Null
+New-Item -ItemType Directory -Path $launcherPublishRoot -Force | Out-Null
 
 & $dotnet publish (Join-Path $repositoryRoot "windows\src\CodexScriptLoader.Windows\CodexScriptLoader.Windows.csproj") `
   -c Release -r $RuntimeIdentifier --self-contained true --configfile (Join-Path $repositoryRoot "NuGet.Config") `
   -m:1 -p:BuildInParallel=false -p:UseSharedCompilation=false `
-  -p:PublishSingleFile=false -p:PublishReadyToRun=false -p:DebugType=embedded -o $publishRoot
-if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed" }
+  -p:PublishSingleFile=false -p:PublishReadyToRun=false -p:DebugType=embedded -o $hostPublishRoot
+if ($LASTEXITCODE -ne 0) { throw "Loader host publish failed" }
+
+& $dotnet publish (Join-Path $repositoryRoot "windows\src\CodexScriptLoader.Launcher\CodexScriptLoader.Launcher.csproj") `
+  -c Release -r $RuntimeIdentifier --self-contained true --configfile (Join-Path $repositoryRoot "NuGet.Config") `
+  -m:1 -p:BuildInParallel=false -p:UseSharedCompilation=false -p:PublishAot=true -p:StripSymbols=true -o $launcherPublishRoot
+if ($LASTEXITCODE -ne 0) { throw "NativeAOT launcher publish failed" }
+Copy-Item -LiteralPath (Join-Path $launcherPublishRoot "CodexScriptLoader.exe") -Destination (Join-Path $publishRoot "CodexScriptLoader.exe") -Force
+Remove-Item -LiteralPath $launcherPublishRoot -Recurse -Force
+
+$pointer = [ordered]@{
+  schemaVersion = 1
+  version = $Version
+  rid = $RuntimeIdentifier
+  entryPoint = "CodexScriptLoader.exe"
+  launcherProtocol = 1
+  handoffProtocol = 1
+}
+$pointer | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $publishRoot "active.json") -Encoding utf8NoBOM
+$pointer | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $publishRoot "previous.json") -Encoding utf8NoBOM
 
 $signTool = $null
 if ($CertificatePath) {
   if (-not (Test-Path -LiteralPath $CertificatePath -PathType Leaf)) { throw "Signing certificate does not exist: $CertificatePath" }
   $signTool = Resolve-SignTool
-  foreach ($relativePath in @("CodexScriptLoader.exe", "CodexScriptLoader.dll", "CodexScriptLoader.Core.dll", "CodexScriptLoader.Interop.dll")) {
+  foreach ($relativePath in @(
+    "CodexScriptLoader.exe",
+    "versions\$Version\$RuntimeIdentifier\CodexScriptLoader.exe",
+    "versions\$Version\$RuntimeIdentifier\CodexScriptLoader.dll",
+    "versions\$Version\$RuntimeIdentifier\CodexScriptLoader.Core.dll",
+    "versions\$Version\$RuntimeIdentifier\CodexScriptLoader.Interop.dll")) {
     Invoke-Sign (Join-Path $publishRoot $relativePath) $signTool
   }
 }
+
+$manifestPrefix = [IO.Path]::GetFullPath($publishRoot).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+$manifestFiles = foreach ($file in Get-ChildItem -LiteralPath $publishRoot -File -Recurse | Sort-Object FullName) {
+  $relative = $file.FullName.Substring($manifestPrefix.Length).Replace([IO.Path]::DirectorySeparatorChar, '/')
+  [ordered]@{
+    path = $relative
+    size = $file.Length
+    sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $file.FullName).Hash.ToLowerInvariant()
+  }
+}
+$updateManifest = [ordered]@{
+  schemaVersion = 1
+  version = $Version
+  rid = $RuntimeIdentifier
+  entryPoint = "versions/$Version/$RuntimeIdentifier/CodexScriptLoader.exe"
+  launcherProtocol = 1
+  handoffProtocol = 1
+  files = @($manifestFiles)
+}
+$updateManifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $publishRoot "update-manifest.json") -Encoding utf8NoBOM
 
 $payloadFiles = @(Get-ChildItem -LiteralPath $publishRoot -File -Recurse | Sort-Object FullName)
 $estimatedSizeKb = [Math]::Ceiling(($payloadFiles | Measure-Object -Property Length -Sum).Sum / 1KB)
@@ -172,11 +220,9 @@ $sbom = [ordered]@{
 }
 $sbom | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $sbomPath -Encoding utf8NoBOM
 
-$sumPaths = @($installerPath, $archivePath, $sbomPath)
-$sumLines = foreach ($path in $sumPaths) {
+foreach ($path in @($installerPath, $archivePath)) {
   $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant()
-  "$hash  $([IO.Path]::GetFileName($path))"
+  Set-Content -LiteralPath "$path.sha256" -Value "$hash  $([IO.Path]::GetFileName($path))" -Encoding ascii
 }
-Set-Content -LiteralPath (Join-Path $artifactRoot "SHA256SUMS.txt") -Value $sumLines -Encoding ascii
 
 Write-Output "PACKAGE_PASS version=$Version runtime=$RuntimeIdentifier installer=$installerName archive=$archiveName payloadFiles=$($payloadFiles.Count)"

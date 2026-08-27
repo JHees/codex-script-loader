@@ -25,6 +25,11 @@ const COMMANDS = new Set([
   "remove_plugin",
   "restore_plugin",
   "run_doctor",
+  "get_update_status",
+  "set_auto_update",
+  "check_for_updates",
+  "start_update",
+  "cancel_update",
 ]);
 
 export class UiController {
@@ -62,6 +67,11 @@ export class UiController {
       case "remove_plugin": return this.registry.quarantineScript(payload.id, { mode: "quarantine" });
       case "restore_plugin": return this.registry.restoreQuarantined(payload.key);
       case "run_doctor": return this.getDoctorReport();
+      case "get_update_status":
+      case "set_auto_update":
+      case "check_for_updates": return this.getUpdateStatus();
+      case "start_update": throw new Error("online host updates require the standard Windows NSIS installation");
+      case "cancel_update": throw new Error("no update download is active");
       default: throw new Error(`unreachable command: ${command}`);
     }
   }
@@ -84,6 +94,21 @@ export class UiController {
       lastInjectionAt: runtime?.lastInjectionAt || null,
       lastError: runtime?.lastError || null,
       scope: "renderer-plugins-only",
+    };
+  }
+
+  getUpdateStatus() {
+    return {
+      currentVersion: "0.5.1",
+      availableVersion: null,
+      state: "idle",
+      lastCheckedAt: null,
+      progress: null,
+      releaseUrl: null,
+      error: null,
+      requiresInstaller: true,
+      autoUpdate: false,
+      channel: "stable",
     };
   }
 

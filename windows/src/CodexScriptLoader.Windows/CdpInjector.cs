@@ -133,4 +133,20 @@ internal sealed class CdpInjector
             }
         }
     }
+
+    public async Task RemoveFutureRegistrationsAsync(IReadOnlyList<CdpTarget> targets, CancellationToken cancellationToken)
+    {
+        foreach (var target in targets)
+        {
+            if (!registrationIds.Remove(target.Id, out var registrationId)) continue;
+            await using var session = await CdpSession.ConnectAsync(new Uri(target.WebSocketDebuggerUrl), cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await session.SendAsync("Page.removeScriptToEvaluateOnNewDocument", new { identifier = registrationId }, cancellationToken).ConfigureAwait(false);
+            }
+            catch (InvalidOperationException)
+            {
+            }
+        }
+    }
 }
