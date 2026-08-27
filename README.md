@@ -32,7 +32,7 @@ Windows uses the native .NET 10 background host with no console or tray icon and
 | macOS runtime | Discovers `Codex.app` and provides the same managed CDP/script flow through Node.js; currently untested. |
 | Diagnostics and reload | Starting a second Windows instance opens diagnostics; `--reload` replaces scripts in place. |
 | Bennett UI included | Installs the bundled Bennett UI Improvements 1.4.10 package on first run. |
-| Windows packaging | Produces x64 or arm64 self-contained builds and MSIX packages. |
+| Windows packaging | Produces per-user NSIS setup executables and portable ZIP archives for x64 and arm64. |
 
 ## Requirements
 
@@ -44,7 +44,7 @@ Close any running Codex instance before starting the Loader. For a managed sessi
 
 ## Install and run
 
-The repository currently ships source builds. Signed per-user MSIX and `.appinstaller` packages will be published on [GitHub Releases](https://github.com/JHees/codex-script-loader/releases).
+Download the matching NSIS installer from [GitHub Releases](https://github.com/JHees/codex-script-loader/releases). Its standard setup wizard lets you choose the installation folder and Start menu folder before installation begins. It creates desktop and Start menu shortcuts, installs for the current user, appears in Windows Installed apps, and requires no administrator access. A portable ZIP is published beside each installer.
 
 ### Build from source
 
@@ -54,19 +54,19 @@ Set-Location .\codex-script-loader
 .\windows\scripts\package.ps1 -RuntimeIdentifier win-x64
 ```
 
-Use `win-arm64` instead on Windows on Arm. Packaging clears the repository-level `bin` directory first and leaves only the latest architecture and version:
+Use `win-arm64` instead on Windows on Arm. Packaging clears only generated files in the repository-level `build` directory and leaves the latest architecture and version there. It does not touch `bin`:
 
 ```text
-bin/
+build/
+├── README.md
 ├── app/CodexScriptLoader.exe
-├── layout/
-├── CodexScriptLoader-0.4.1.0-x64.msix
-├── CodexScriptLoader-x64.appinstaller
-├── CodexScriptLoader-0.4.1.0-x64.spdx.json
+├── CodexScriptLoader-0.4.1-windows-x64-setup.exe
+├── CodexScriptLoader-0.4.1-windows-x64.zip
+├── CodexScriptLoader-0.4.1-x64.spdx.json
 └── SHA256SUMS.txt
 ```
 
-Run `bin\app\CodexScriptLoader.exe` to use the unpackaged self-contained build. Installing a locally generated MSIX requires a trusted development certificate.
+The setup executable at the top of `build` is the normal local installation entry. The `build\app` directory is packaging payload, not the recommended launch path. The installer keeps scripts and settings under `%LOCALAPPDATA%\CodexScriptLoader` when upgrading or uninstalling.
 
 ### macOS live runtime (untested)
 
@@ -90,7 +90,7 @@ The macOS runtime discovers `Codex.app`, starts it with a random loopback CDP po
 Start the Loader executable a second time to open diagnostics. To reload installed scripts without focusing or refreshing Codex, run the same compatible executable as a second instance:
 
 ```powershell
-& .\bin\app\CodexScriptLoader.exe --reload
+& "$env:LOCALAPPDATA\Programs\CodexScriptLoader\CodexScriptLoader.exe" --reload
 ```
 
 ## Windows architecture
@@ -184,7 +184,7 @@ npm test
 
 Run the development-only [`ActivationProbe`](windows/tools/ActivationProbe) with Codex completely closed. A passing probe discovers the real application ID, activates Codex with CDP arguments, verifies listener ownership, and reports `ACTIVATION_PASS`.
 
-See [`windows/README.md`](windows/README.md) for signing, MSIX, App Installer, and release-gate details.
+See [`windows/README.md`](windows/README.md) for NSIS, portable ZIP, optional signing, and release-gate details.
 
 ## Repository layout
 
@@ -193,7 +193,7 @@ See [`windows/README.md`](windows/README.md) for signing, MSIX, App Installer, a
 | `windows/src/CodexScriptLoader.Core` | Configuration, manifests, permissions, hashes, quarantine, and injection plans. |
 | `windows/src/CodexScriptLoader.Interop` | Windows package, activation, process identity, and TCP owner APIs. |
 | `windows/src/CodexScriptLoader.Windows` | WinForms background host, CDP, lifecycle supervision, diagnostics, and single instance. |
-| `windows/packaging` | MSIX and App Installer templates and image assets. |
+| `windows/packaging` | NSIS installer definition and Windows image assets. |
 | `windows/scripts` | Build-time packaging, icon generation, validation, and reproducibility tools. |
 | `packages/bennett-ui-improvements` | Bundled, attributed Bennett UI package. |
 | `src` | Legacy Node development/parity implementation; not the Windows production entry point. |
@@ -203,7 +203,7 @@ See [`windows/README.md`](windows/README.md) for signing, MSIX, App Installer, a
 - **“Codex is already running”** — close all Codex windows, wait for its process to exit, and start the Loader again.
 - **Loader starts but no window appears** — this is expected. Start it a second time to open diagnostics.
 - **A script is degraded** — inspect diagnostics and `%LOCALAPPDATA%\CodexScriptLoader\logs`, then correct the manifest, permission, or lifecycle error.
-- **A local MSIX will not install** — install the development certificate or run the unpackaged build from `bin\app`.
+- **Setup cannot replace a running Loader** — exit the managed Codex session and Loader, then run setup again. The installer never force-terminates either process.
 - **A Codex update breaks activation** — close Codex and run Activation Probe to capture the package and CDP diagnostics.
 
 ## Platform support

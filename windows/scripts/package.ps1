@@ -2,12 +2,9 @@
 param(
   [ValidateSet("win-x64", "win-arm64")]
   [string]$RuntimeIdentifier = "win-x64",
-  [ValidatePattern("^\d+\.\d+\.\d+\.\d+$")]
-  [string]$Version = "0.4.1.0",
-  [string]$PackageName = "CodexScriptLoader.Windows",
-  [string]$Publisher = "CN=Codex Script Loader Development",
-  [ValidatePattern("^https://")]
-  [string]$ReleaseBaseUri = "https://example.invalid/codex-script-loader",
+  [ValidatePattern("^\d+\.\d+\.\d+$")]
+  [string]$Version = "0.4.1",
+  [string]$NsisPath,
   [string]$CertificatePath,
   [string]$CertificatePassword,
   [string]$TimestampUri = "http://timestamp.digicert.com",
@@ -17,106 +14,147 @@ param(
 $ErrorActionPreference = "Stop"
 $OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new()
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
+$productVersion = (Get-Content -LiteralPath (Join-Path $repositoryRoot "package.json") -Raw -Encoding utf8 | ConvertFrom-Json).version
+if ($Version -ne $productVersion) { throw "Requested package version $Version does not match package.json version $productVersion." }
+[xml]$buildProps = Get-Content -LiteralPath (Join-Path $repositoryRoot "Directory.Build.props") -Raw -Encoding utf8
+if ([string]$buildProps.Project.PropertyGroup.Version -ne $Version) { throw "Directory.Build.props version does not match $Version." }
+[xml]$windowsProject = Get-Content -LiteralPath (Join-Path $repositoryRoot "windows\src\CodexScriptLoader.Windows\CodexScriptLoader.Windows.csproj") -Raw -Encoding utf8
+if ([string]$windowsProject.Project.PropertyGroup.ApplicationVersion -ne "$Version.0") { throw "Windows ApplicationVersion does not match $Version.0." }
 $env:DOTNET_CLI_TELEMETRY_OPTOUT = "1"
+$env:DOTNET_CLI_USE_MSBUILD_SERVER = "0"
 $env:NUGET_PACKAGES = Join-Path $repositoryRoot ".tools\nuget"
 $dotnet = Join-Path $repositoryRoot ".tools\dotnet\dotnet.exe"
 if (-not (Test-Path -LiteralPath $dotnet)) {
-  $dotnetCommand = Get-Command dotnet -ErrorAction Stop
-  $dotnet = $dotnetCommand.Source
+  $dotnet = (Get-Command dotnet -ErrorAction Stop).Source
 }
 
 $architecture = if ($RuntimeIdentifier -eq "win-arm64") { "arm64" } else { "x64" }
-$artifactRoot = if ($OutputRoot) {
-  [IO.Path]::GetFullPath($OutputRoot)
-} else {
-  Join-Path $repositoryRoot "bin"
-}
+$fileVersion = "$Version.0"
+$defaultArtifactRoot = [IO.Path]::GetFullPath((Join-Path $repositoryRoot "build"))
+$artifactRoot = if ($OutputRoot) { [IO.Path]::GetFullPath($OutputRoot) } else { $defaultArtifactRoot }
 $publishRoot = Join-Path $artifactRoot "app"
-$layoutRoot = Join-Path $artifactRoot "layout"
+$installerName = "CodexScriptLoader-$Version-windows-$architecture-setup.exe"
+$archiveName = "CodexScriptLoader-$Version-windows-$architecture.zip"
+$sbomName = "CodexScriptLoader-$Version-$architecture.spdx.json"
+$installerPath = Join-Path $artifactRoot $installerName
+$archivePath = Join-Path $artifactRoot $archiveName
+$sbomPath = Join-Path $artifactRoot $sbomName
+
+function Test-PathWithin([string]$Candidate, [string]$Parent) {
+  $resolvedCandidate = [IO.Path]::GetFullPath($Candidate).TrimEnd([IO.Path]::DirectorySeparatorChar)
+  $resolvedParent = [IO.Path]::GetFullPath($Parent).TrimEnd([IO.Path]::DirectorySeparatorChar)
+  return $resolvedCandidate.StartsWith($resolvedParent + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)
+}
 
 function Reset-ArtifactRoot {
-  $resolvedRepository = [IO.Path]::GetFullPath($repositoryRoot).TrimEnd([IO.Path]::DirectorySeparatorChar)
-  $repositoryPrefix = $resolvedRepository + [IO.Path]::DirectorySeparatorChar
   $resolvedArtifact = [IO.Path]::GetFullPath($artifactRoot).TrimEnd([IO.Path]::DirectorySeparatorChar)
-  if (-not $resolvedArtifact.StartsWith($repositoryPrefix, [StringComparison]::OrdinalIgnoreCase)) {
-    throw "Refusing to reset an output directory outside the repository: $resolvedArtifact"
+  $allowedRoots = @($repositoryRoot, [IO.Path]::GetTempPath())
+  if ($env:RUNNER_TEMP) { $allowedRoots += [IO.Path]::GetFullPath($env:RUNNER_TEMP) }
+  $allowed = $false
+  foreach ($root in $allowedRoots | Select-Object -Unique) {
+    if (Test-PathWithin $resolvedArtifact $root) { $allowed = $true; break }
   }
-  if ($resolvedArtifact -eq $resolvedRepository) {
-    throw "Refusing to reset the repository root."
+  if (-not $allowed) { throw "Refusing to reset an output directory outside the repository or temporary directory: $resolvedArtifact" }
+  foreach ($root in $allowedRoots | Select-Object -Unique) {
+    if ($resolvedArtifact -eq [IO.Path]::GetFullPath($root).TrimEnd([IO.Path]::DirectorySeparatorChar)) {
+      throw "Refusing to reset an allowed root directory: $resolvedArtifact"
+    }
   }
-  if (Test-Path -LiteralPath $resolvedArtifact) {
-    Remove-Item -LiteralPath $resolvedArtifact -Recurse -Force
+  if (-not (Test-Path -LiteralPath $resolvedArtifact)) {
+    New-Item -ItemType Directory -Path $resolvedArtifact -Force | Out-Null
+    return
   }
-  New-Item -ItemType Directory -Path $resolvedArtifact -Force | Out-Null
+
+  foreach ($entry in Get-ChildItem -LiteralPath $resolvedArtifact -Force) {
+    if ($resolvedArtifact -eq $defaultArtifactRoot -and $entry.Name -eq "README.md") { continue }
+    Remove-Item -LiteralPath $entry.FullName -Recurse -Force
+  }
+}
+
+function Resolve-MakeNsis {
+  $candidates = @()
+  if ($NsisPath) { $candidates += $NsisPath }
+  $candidates += @(
+    (Join-Path $repositoryRoot ".tools\nsis\makensis.exe"),
+    (Join-Path $repositoryRoot ".tools\nsis\nsis-3.12\makensis.exe"),
+    "C:\Program Files (x86)\NSIS\makensis.exe",
+    "C:\Program Files\NSIS\makensis.exe"
+  )
+  $command = Get-Command makensis.exe -ErrorAction SilentlyContinue
+  if ($command) { $candidates += $command.Source }
+  foreach ($candidate in $candidates) {
+    if ($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)) { return [IO.Path]::GetFullPath($candidate) }
+  }
+  throw "NSIS makensis.exe was not found. Install NSIS 3.12 or place its portable files under .tools\nsis."
+}
+
+function Resolve-SignTool {
+  $windowsSdkRoot = "C:\Program Files (x86)\Windows Kits\10\bin"
+  $toolArchitecture = if ([Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture -eq [Runtime.InteropServices.Architecture]::Arm64) { "arm64" } else { "x64" }
+  $sdkVersion = Get-ChildItem -LiteralPath $windowsSdkRoot -Directory |
+    Where-Object { $_.Name -match '^\d+\.\d+\.\d+\.\d+$' -and (Test-Path -LiteralPath (Join-Path $_.FullName "$toolArchitecture\signtool.exe")) } |
+    Sort-Object { [Version]$_.Name } -Descending |
+    Select-Object -First 1
+  if (-not $sdkVersion) { throw "A Windows SDK containing signtool.exe was not found under $windowsSdkRoot" }
+  return Join-Path $sdkVersion.FullName "$toolArchitecture\signtool.exe"
+}
+
+function Invoke-Sign([string]$Path, [string]$SignTool) {
+  $arguments = @("sign", "/fd", "SHA256", "/f", [IO.Path]::GetFullPath($CertificatePath))
+  if ($CertificatePassword) { $arguments += @("/p", $CertificatePassword) }
+  $arguments += @("/tr", $TimestampUri, "/td", "SHA256", $Path)
+  & $SignTool @arguments
+  if ($LASTEXITCODE -ne 0) { throw "Authenticode signing failed for $Path" }
+  & $SignTool verify /pa /all /v $Path
+  if ($LASTEXITCODE -ne 0) { throw "Authenticode verification failed for $Path" }
 }
 
 Reset-ArtifactRoot
 New-Item -ItemType Directory -Path $publishRoot -Force | Out-Null
-New-Item -ItemType Directory -Path $layoutRoot -Force | Out-Null
 
 & $dotnet publish (Join-Path $repositoryRoot "windows\src\CodexScriptLoader.Windows\CodexScriptLoader.Windows.csproj") `
   -c Release -r $RuntimeIdentifier --self-contained true --configfile (Join-Path $repositoryRoot "NuGet.Config") `
+  -m:1 -p:BuildInParallel=false -p:UseSharedCompilation=false `
   -p:PublishSingleFile=false -p:PublishReadyToRun=false -p:DebugType=embedded -o $publishRoot
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed" }
 
-Copy-Item -Path (Join-Path $publishRoot "*") -Destination $layoutRoot -Recurse -Force
-$assetTarget = Join-Path $layoutRoot "Assets"
-New-Item -ItemType Directory -Path $assetTarget -Force | Out-Null
-Copy-Item -Path (Join-Path $repositoryRoot "windows\packaging\Assets\*") -Destination $assetTarget -Force
-
-$manifestTemplate = Get-Content -LiteralPath (Join-Path $repositoryRoot "windows\packaging\Package.appxmanifest.template") -Raw
-$manifest = $manifestTemplate.Replace("__PACKAGE_NAME__", $PackageName).Replace("__PUBLISHER__", $Publisher).Replace("__VERSION__", $Version).Replace("__ARCHITECTURE__", $architecture)
-Set-Content -LiteralPath (Join-Path $layoutRoot "AppxManifest.xml") -Value $manifest -Encoding utf8NoBOM
-
-$windowsSdkRoot = "C:\Program Files (x86)\Windows Kits\10\bin"
-$toolArchitecture = if ([Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture -eq [Runtime.InteropServices.Architecture]::Arm64) { "arm64" } else { "x64" }
-$windowsSdkVersion = Get-ChildItem -LiteralPath $windowsSdkRoot -Directory |
-  Where-Object { $_.Name -match '^\d+\.\d+\.\d+\.\d+$' -and (Test-Path -LiteralPath (Join-Path $_.FullName "$toolArchitecture\makeappx.exe")) } |
-  Sort-Object { [Version]$_.Name } -Descending |
-  Select-Object -First 1
-if (-not $windowsSdkVersion) { throw "A Windows SDK containing makeappx.exe was not found under $windowsSdkRoot" }
-$windowsSdkBin = Join-Path $windowsSdkVersion.FullName $toolArchitecture
-$makeAppx = Join-Path $windowsSdkBin "makeappx.exe"
-$signTool = Join-Path $windowsSdkBin "signtool.exe"
-if (-not (Test-Path -LiteralPath $makeAppx)) { throw "MakeAppx was not found at $makeAppx" }
-
-function Invoke-Sign([string]$Path) {
-  $arguments = @("sign", "/fd", "SHA256", "/f", [IO.Path]::GetFullPath($CertificatePath))
-  if ($CertificatePassword) { $arguments += @("/p", $CertificatePassword) }
-  $arguments += @("/tr", $TimestampUri, "/td", "SHA256", $Path)
-  & $signTool @arguments
-  if ($LASTEXITCODE -ne 0) { throw "Authenticode signing failed for $Path" }
-  & $signTool verify /pa /all /v $Path
-  if ($LASTEXITCODE -ne 0) { throw "Authenticode verification failed for $Path" }
-}
-
+$signTool = $null
 if ($CertificatePath) {
-  if (-not (Test-Path -LiteralPath $signTool)) { throw "SignTool was not found at $signTool" }
+  if (-not (Test-Path -LiteralPath $CertificatePath -PathType Leaf)) { throw "Signing certificate does not exist: $CertificatePath" }
+  $signTool = Resolve-SignTool
   foreach ($relativePath in @("CodexScriptLoader.exe", "CodexScriptLoader.dll", "CodexScriptLoader.Core.dll", "CodexScriptLoader.Interop.dll")) {
-    Invoke-Sign (Join-Path $layoutRoot $relativePath)
+    Invoke-Sign (Join-Path $publishRoot $relativePath) $signTool
   }
 }
 
-$packageFileName = "CodexScriptLoader-$Version-$architecture.msix"
-$packagePath = Join-Path $artifactRoot $packageFileName
-& $makeAppx pack /o /d $layoutRoot /p $packagePath
-if ($LASTEXITCODE -ne 0) { throw "MakeAppx failed" }
+$payloadFiles = @(Get-ChildItem -LiteralPath $publishRoot -File -Recurse | Sort-Object FullName)
+$estimatedSizeKb = [Math]::Ceiling(($payloadFiles | Measure-Object -Property Length -Sum).Sum / 1KB)
+$makeNsis = Resolve-MakeNsis
+$nsisScript = Join-Path $repositoryRoot "windows\packaging\CodexScriptLoader.nsi"
+$iconPath = Join-Path $repositoryRoot "windows\branding\CodexScriptLoader.ico"
+$nsisArguments = @(
+  "/V3",
+  "/INPUTCHARSET",
+  "UTF8",
+  "/DVERSION=$Version",
+  "/DFILE_VERSION=$fileVersion",
+  "/DARCHITECTURE=$architecture",
+  "/DAPP_DIR=$publishRoot",
+  "/DOUTPUT_FILE=$installerPath",
+  "/DICON_FILE=$iconPath",
+  "/DESTIMATED_SIZE_KB=$estimatedSizeKb",
+  $nsisScript
+)
+& $makeNsis @nsisArguments
+if ($LASTEXITCODE -ne 0) { throw "NSIS packaging failed" }
 
-$baseUri = $ReleaseBaseUri.TrimEnd('/')
-$appInstallerName = "CodexScriptLoader-$architecture.appinstaller"
-$appInstallerPath = Join-Path $artifactRoot $appInstallerName
-$appInstallerTemplate = Get-Content -LiteralPath (Join-Path $repositoryRoot "windows\packaging\CodexScriptLoader.appinstaller.template") -Raw
-$appInstaller = $appInstallerTemplate.Replace("__APPINSTALLER_URI__", "$baseUri/$appInstallerName").Replace("__PACKAGE_URI__", "$baseUri/$packageFileName").Replace("__PACKAGE_NAME__", $PackageName).Replace("__PUBLISHER__", $Publisher).Replace("__VERSION__", $Version).Replace("__ARCHITECTURE__", $architecture)
-Set-Content -LiteralPath $appInstallerPath -Value $appInstaller -Encoding utf8NoBOM
+if ($CertificatePath) { Invoke-Sign $installerPath $signTool }
 
-if ($CertificatePath) {
-  Invoke-Sign $packagePath
-  Invoke-Sign $appInstallerPath
-}
+Compress-Archive -Path (Join-Path $publishRoot "*") -DestinationPath $archivePath -CompressionLevel Optimal
 
-$sbomFiles = foreach ($file in Get-ChildItem -LiteralPath $layoutRoot -File -Recurse | Sort-Object FullName) {
-  $layoutPrefix = [IO.Path]::GetFullPath($layoutRoot).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
-  $relative = $file.FullName.Substring($layoutPrefix.Length).Replace([IO.Path]::DirectorySeparatorChar, '/')
+$payloadPrefix = [IO.Path]::GetFullPath($publishRoot).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+$sbomFiles = foreach ($file in $payloadFiles) {
+  $relative = $file.FullName.Substring($payloadPrefix.Length).Replace([IO.Path]::DirectorySeparatorChar, '/')
   [ordered]@{
     SPDXID = "SPDXRef-File-$([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($relative))).Substring(0, 16))"
     fileName = "./$relative"
@@ -132,14 +170,13 @@ $sbom = [ordered]@{
   creationInfo = [ordered]@{ created = "2000-01-01T00:00:00Z"; creators = @("Tool: windows/scripts/package.ps1") }
   files = @($sbomFiles)
 }
-$sbomPath = Join-Path $artifactRoot "CodexScriptLoader-$Version-$architecture.spdx.json"
 $sbom | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $sbomPath -Encoding utf8NoBOM
 
-$sumPaths = @($packagePath, $appInstallerPath, $sbomPath)
+$sumPaths = @($installerPath, $archivePath, $sbomPath)
 $sumLines = foreach ($path in $sumPaths) {
   $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant()
   "$hash  $([IO.Path]::GetFileName($path))"
 }
 Set-Content -LiteralPath (Join-Path $artifactRoot "SHA256SUMS.txt") -Value $sumLines -Encoding ascii
 
-Get-FileHash -Algorithm SHA256 -LiteralPath $packagePath | Format-List
+Write-Output "PACKAGE_PASS version=$Version runtime=$RuntimeIdentifier installer=$installerName archive=$archiveName payloadFiles=$($payloadFiles.Count)"

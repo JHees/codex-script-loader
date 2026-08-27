@@ -46,7 +46,6 @@ def main() -> None:
     repository = args.repository.resolve()
     branding = repository / "windows" / "branding"
     png_root = branding / "png"
-    packaging = repository / "windows" / "packaging" / "Assets"
 
     with Image.open(args.source) as source:
         master = restore_transparency(source)
@@ -57,15 +56,6 @@ def main() -> None:
 
     ico_path = branding / "CodexScriptLoader.ico"
     resized(master, 1024).save(ico_path, format="ICO", sizes=[(size, size) for size in ICO_SIZES], bitmap_format="png")
-
-    save_png(resized(master, 50), packaging / "StoreLogo.png")
-    save_png(resized(master, 44), packaging / "Square44x44Logo.png")
-    save_png(resized(master, 150), packaging / "Square150x150Logo.png")
-
-    wide = Image.new("RGBA", (310, 150), (0, 0, 0, 0))
-    wide_icon = resized(master, 138)
-    wide.alpha_composite(wide_icon, ((wide.width - wide_icon.width) // 2, (wide.height - wide_icon.height) // 2))
-    save_png(wide, packaging / "Wide310x150Logo.png")
 
     print(f"ICON_ASSETS_PASS master={master.size[0]}x{master.size[1]} png={len(PNG_SIZES)} ico={len(ICO_SIZES)}")
 

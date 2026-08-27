@@ -2,11 +2,9 @@
 param(
   [ValidateSet("win-x64", "win-arm64")]
   [string]$RuntimeIdentifier = "win-x64",
-  [ValidatePattern("^\d+\.\d+\.\d+\.\d+$")]
-  [string]$Version = "0.4.1.0",
-  [string]$Publisher = "CN=Codex Script Loader Development",
-  [ValidatePattern("^https://")]
-  [string]$ReleaseBaseUri = "https://example.invalid/codex-script-loader"
+  [ValidatePattern("^\d+\.\d+\.\d+$")]
+  [string]$Version = "0.4.1",
+  [string]$NsisPath
 )
 
 $ErrorActionPreference = "Stop"
@@ -17,10 +15,10 @@ $firstRoot = Join-Path $verificationRoot "first"
 $secondRoot = Join-Path $verificationRoot "second"
 
 function Get-PayloadHashes([string]$Root) {
-  $layout = Join-Path $Root "layout"
-  $prefix = [IO.Path]::GetFullPath($layout).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+  $app = Join-Path $Root "app"
+  $prefix = [IO.Path]::GetFullPath($app).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
   $hashes = [ordered]@{}
-  foreach ($file in Get-ChildItem -LiteralPath $layout -File -Recurse | Sort-Object FullName) {
+  foreach ($file in Get-ChildItem -LiteralPath $app -File -Recurse | Sort-Object FullName) {
     $relative = $file.FullName.Substring($prefix.Length).Replace([IO.Path]::DirectorySeparatorChar, '/')
     $hashes[$relative] = (Get-FileHash -Algorithm SHA256 -LiteralPath $file.FullName).Hash
   }
@@ -29,11 +27,11 @@ function Get-PayloadHashes([string]$Root) {
 
 try {
   & (Join-Path $PSScriptRoot "package.ps1") -RuntimeIdentifier $RuntimeIdentifier -Version $Version `
-    -Publisher $Publisher -ReleaseBaseUri $ReleaseBaseUri -OutputRoot $firstRoot | Out-Null
+    -NsisPath $NsisPath -OutputRoot $firstRoot | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "First packaging pass failed." }
 
   & (Join-Path $PSScriptRoot "package.ps1") -RuntimeIdentifier $RuntimeIdentifier -Version $Version `
-    -Publisher $Publisher -ReleaseBaseUri $ReleaseBaseUri -OutputRoot $secondRoot | Out-Null
+    -NsisPath $NsisPath -OutputRoot $secondRoot | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "Second packaging pass failed." }
 
   $first = Get-PayloadHashes $firstRoot

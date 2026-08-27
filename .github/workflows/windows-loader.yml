@@ -38,35 +38,78 @@ jobs:
           global-json-file: global.json
           cache: true
           cache-dependency-path: "windows/**/packages.lock.json"
+      - name: Install pinned NSIS
+        shell: pwsh
+        run: choco install nsis --version=3.12.0 -y --no-progress
+      - name: Validate synchronized versions
+        shell: pwsh
+        run: |
+          $productVersion = (Get-Content -LiteralPath package.json -Raw | ConvertFrom-Json).version
+          if ($productVersion -notmatch '^\d+\.\d+\.\d+$') { throw "package.json version is not semantic: $productVersion" }
+
+          [xml]$buildProps = Get-Content -LiteralPath Directory.Build.props -Raw
+          $propsVersion = [string]$buildProps.Project.PropertyGroup.Version
+          if ($propsVersion -ne $productVersion) { throw "Directory.Build.props version $propsVersion does not match $productVersion." }
+
+          [xml]$windowsProject = Get-Content -LiteralPath windows/src/CodexScriptLoader.Windows/CodexScriptLoader.Windows.csproj -Raw
+          $applicationVersion = [string]$windowsProject.Project.PropertyGroup.ApplicationVersion
+          if ($applicationVersion -ne "$productVersion.0") { throw "ApplicationVersion $applicationVersion does not match $productVersion.0." }
+
+          "PRODUCT_VERSION=$productVersion" >> $env:GITHUB_ENV
+      - name: Validate NSIS installer contract
+        shell: pwsh
+        run: |
+          $script = Get-Content -LiteralPath windows/packaging/CodexScriptLoader.nsi -Raw
+          $requiredPages = @(
+            'MUI_PAGE_WELCOME',
+            'MUI_PAGE_DIRECTORY',
+            'MUI_PAGE_STARTMENU',
+            'MUI_PAGE_INSTFILES',
+            'MUI_PAGE_FINISH'
+          )
+          foreach ($page in $requiredPages) {
+            if ($script -notmatch [regex]::Escape($page)) { throw "Required NSIS page is missing: $page" }
+          }
+          if ($script -match 'MUI_PAGE_COMPONENTS') { throw "The installer must not contain an empty components page." }
+          if ($script -notmatch 'RequestExecutionLevel user') { throw "The installer must remain per-user and non-elevated." }
       - name: Restore locked dependencies
         shell: pwsh
         run: dotnet restore windows/CodexScriptLoader.Windows.sln --configfile NuGet.Config --locked-mode
       - name: Build
         shell: pwsh
-        run: dotnet build windows/CodexScriptLoader.Windows.sln -c Release --no-restore
+        run: dotnet build windows/CodexScriptLoader.Windows.sln -c Release --no-restore -m:1 -p:BuildInParallel=false -p:UseSharedCompilation=false
       - name: Run native self-tests
         shell: pwsh
         run: dotnet run --project windows/tests/CodexScriptLoader.Tests/CodexScriptLoader.Tests.csproj -c Release --no-build
-      - name: Verify reproducible pre-sign payload
+      - name: Verify reproducible application payload
         shell: pwsh
-        run: ./windows/scripts/verify-reproducible.ps1 -RuntimeIdentifier ${{ matrix.runtime }}
-      - name: Package development build
+        run: ./windows/scripts/verify-reproducible.ps1 -RuntimeIdentifier ${{ matrix.runtime }} -Version $env:PRODUCT_VERSION
+      - name: Build NSIS installer and portable archive
         shell: pwsh
-        run: ./windows/scripts/package.ps1 -RuntimeIdentifier ${{ matrix.runtime }}
-      - name: Verify package structure and GUI subsystem
+        run: |
+          $outputRoot = Join-Path $env:RUNNER_TEMP "package/${{ matrix.runtime }}"
+          ./windows/scripts/package.ps1 -RuntimeIdentifier "${{ matrix.runtime }}" -Version $env:PRODUCT_VERSION -OutputRoot $outputRoot
+      - name: Verify installer, portable archive, SBOM, and checksums
         shell: pwsh
         env:
           PACKAGE_ARCHITECTURE: ${{ matrix.runtime == 'win-x64' && 'x64' || 'arm64' }}
         run: |
-          $packages = @(Get-ChildItem -LiteralPath bin -Filter *.msix -File)
-          if ($packages.Count -ne 1) { throw "Expected one MSIX package, found $($packages.Count)." }
-          ./windows/scripts/verify-package.ps1 -PackagePath $packages[0].FullName -Architecture $env:PACKAGE_ARCHITECTURE
-      - name: Upload unsigned development package
-        if: github.ref_type != 'tag'
+          $outputRoot = Join-Path $env:RUNNER_TEMP "package/${{ matrix.runtime }}"
+          ./windows/scripts/verify-package.ps1 -ArtifactRoot $outputRoot -Version $env:PRODUCT_VERSION -Architecture $env:PACKAGE_ARCHITECTURE
+      - name: Test standard-user silent install and uninstall
+        if: matrix.runtime == 'win-x64'
+        shell: pwsh
+        run: |
+          $outputRoot = Join-Path $env:RUNNER_TEMP "package/${{ matrix.runtime }}"
+          ./windows/scripts/test-installer.ps1 -ArtifactRoot $outputRoot -Version $env:PRODUCT_VERSION
+      - name: Upload Windows package
         uses: actions/upload-artifact@v4
         with:
-          name: codex-script-loader-${{ matrix.runtime }}-unsigned
-          path: bin/*.msix
+          name: codex-script-loader-${{ matrix.runtime }}
+          path: |
+            ${{ runner.temp }}/package/${{ matrix.runtime }}/CodexScriptLoader-*-setup.exe
+            ${{ runner.temp }}/package/${{ matrix.runtime }}/CodexScriptLoader-*.zip
+            ${{ runner.temp }}/package/${{ matrix.runtime }}/CodexScriptLoader-*.spdx.json
           if-no-files-found: error
 
   release_metadata:
@@ -74,110 +117,47 @@ jobs:
     runs-on: windows-2025
     outputs:
       product_version: ${{ steps.version.outputs.product_version }}
-      package_version: ${{ steps.version.outputs.package_version }}
     steps:
       - uses: actions/checkout@v4
-      - name: Validate release tag and synchronized versions
+      - name: Validate release tag
         id: version
         shell: pwsh
         run: |
           $productVersion = (Get-Content -LiteralPath package.json -Raw | ConvertFrom-Json).version
-          if ($productVersion -notmatch '^\d+\.\d+\.\d+$') { throw "package.json version is not semantic: $productVersion" }
           if ($env:GITHUB_REF_NAME -ne "v$productVersion") { throw "Tag $env:GITHUB_REF_NAME does not match package.json version $productVersion." }
-
-          [xml]$buildProps = Get-Content -LiteralPath Directory.Build.props -Raw
-          $propsVersion = [string]$buildProps.Project.PropertyGroup.Version
-          if ($propsVersion -ne $productVersion) { throw "Directory.Build.props version $propsVersion does not match $productVersion." }
-
-          [xml]$windowsProject = Get-Content -LiteralPath windows/src/CodexScriptLoader.Windows/CodexScriptLoader.Windows.csproj -Raw
-          $packageVersion = [string]$windowsProject.Project.PropertyGroup.ApplicationVersion
-          if ($packageVersion -ne "$productVersion.0") { throw "ApplicationVersion $packageVersion does not match $productVersion.0." }
-
           "product_version=$productVersion" >> $env:GITHUB_OUTPUT
-          "package_version=$packageVersion" >> $env:GITHUB_OUTPUT
-
-  release_package:
-    if: github.ref_type == 'tag'
-    needs: [build-test-package, release_metadata]
-    runs-on: windows-2025
-    strategy:
-      fail-fast: false
-      matrix:
-        runtime: [win-x64, win-arm64]
-    env:
-      SIGNING_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_BASE64 }}
-      SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_PASSWORD }}
-      SIGNING_PUBLISHER: ${{ secrets.WINDOWS_SIGNING_PUBLISHER }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
-        with:
-          global-json-file: global.json
-          cache: true
-          cache-dependency-path: "windows/**/packages.lock.json"
-      - name: Restore signing certificate
-        id: certificate
-        shell: pwsh
-        run: |
-          if ([string]::IsNullOrWhiteSpace($env:SIGNING_CERTIFICATE_BASE64)) { throw "WINDOWS_SIGNING_CERTIFICATE_BASE64 is not configured." }
-          if ([string]::IsNullOrWhiteSpace($env:SIGNING_CERTIFICATE_PASSWORD)) { throw "WINDOWS_SIGNING_CERTIFICATE_PASSWORD is not configured." }
-          if ([string]::IsNullOrWhiteSpace($env:SIGNING_PUBLISHER)) { throw "WINDOWS_SIGNING_PUBLISHER is not configured." }
-          $certificatePath = Join-Path $env:RUNNER_TEMP "codex-script-loader-release.pfx"
-          [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:SIGNING_CERTIFICATE_BASE64))
-          "path=$certificatePath" >> $env:GITHUB_OUTPUT
-      - name: Build and sign release package
-        shell: pwsh
-        run: |
-          $outputRoot = Join-Path $env:RUNNER_TEMP "release/${{ matrix.runtime }}"
-          ./windows/scripts/package.ps1 `
-            -RuntimeIdentifier "${{ matrix.runtime }}" `
-            -Version "${{ needs.release_metadata.outputs.package_version }}" `
-            -Publisher $env:SIGNING_PUBLISHER `
-            -ReleaseBaseUri "https://github.com/${{ github.repository }}/releases/latest/download" `
-            -CertificatePath "${{ steps.certificate.outputs.path }}" `
-            -CertificatePassword $env:SIGNING_CERTIFICATE_PASSWORD `
-            -OutputRoot $outputRoot
-      - name: Verify signed release package
-        shell: pwsh
-        env:
-          PACKAGE_ARCHITECTURE: ${{ matrix.runtime == 'win-x64' && 'x64' || 'arm64' }}
-        run: |
-          $outputRoot = Join-Path $env:RUNNER_TEMP "release/${{ matrix.runtime }}"
-          $packages = @(Get-ChildItem -LiteralPath $outputRoot -Filter *.msix -File)
-          if ($packages.Count -ne 1) { throw "Expected one signed MSIX package, found $($packages.Count)." }
-          ./windows/scripts/verify-package.ps1 -PackagePath $packages[0].FullName -Architecture $env:PACKAGE_ARCHITECTURE -RequireSignature
-      - name: Remove signing certificate
-        if: always() && steps.certificate.outputs.path != ''
-        shell: pwsh
-        run: Remove-Item -LiteralPath "${{ steps.certificate.outputs.path }}" -Force -ErrorAction SilentlyContinue
-      - name: Upload signed release payload
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-${{ matrix.runtime }}
-          path: |
-            ${{ runner.temp }}/release/${{ matrix.runtime }}/*.msix
-            ${{ runner.temp }}/release/${{ matrix.runtime }}/*.appinstaller
-            ${{ runner.temp }}/release/${{ matrix.runtime }}/*.spdx.json
-          if-no-files-found: error
 
   publish_release:
     if: github.ref_type == 'tag'
-    needs: [release_metadata, release_package]
+    needs: [build-test-package, release_metadata]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
-      - name: Download signed payloads
+      - name: Download Windows packages
         uses: actions/download-artifact@v4
         with:
-          pattern: release-win-*
+          pattern: codex-script-loader-win-*
           path: release-payload
           merge-multiple: true
       - name: Create combined SHA-256 manifest
         shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.release_metadata.outputs.product_version }}
         run: |
           $files = @(Get-ChildItem -LiteralPath release-payload -File | Sort-Object Name)
-          if ($files.Count -ne 6) { throw "Expected six release files before checksums, found $($files.Count)." }
+          $expectedNames = @(
+            "CodexScriptLoader-$env:RELEASE_VERSION-windows-x64-setup.exe",
+            "CodexScriptLoader-$env:RELEASE_VERSION-windows-x64.zip",
+            "CodexScriptLoader-$env:RELEASE_VERSION-x64.spdx.json",
+            "CodexScriptLoader-$env:RELEASE_VERSION-windows-arm64-setup.exe",
+            "CodexScriptLoader-$env:RELEASE_VERSION-windows-arm64.zip",
+            "CodexScriptLoader-$env:RELEASE_VERSION-arm64.spdx.json"
+          ) | Sort-Object
+          $actualNames = @($files.Name | Sort-Object)
+          if (($actualNames -join "`n") -ne ($expectedNames -join "`n")) {
+            throw "Release assets do not match the expected x64/arm64 NSIS, ZIP, and SPDX set. Actual: $($actualNames -join ', ')"
+          }
           $lines = foreach ($file in $files) {
             $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $file.FullName).Hash.ToLowerInvariant()
             "$hash  $($file.Name)"

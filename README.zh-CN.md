@@ -32,7 +32,7 @@ Windows 使用无控制台、无托盘图标的原生 .NET 10 后台宿主，是
 | macOS runtime | 发现 `Codex.app`，通过 Node.js 提供相同的 CDP 与脚本流程；当前未测试。 |
 | 诊断与重载 | Windows 再次启动同一 EXE 可打开诊断；`--reload` 原位替换脚本。 |
 | 内置 Bennett UI | 首次运行安装 Bennett UI Improvements 1.4.10。 |
-| Windows 打包 | 生成 x64/arm64 自包含程序和 MSIX 安装包。 |
+| Windows 打包 | 为 x64/arm64 生成每用户 NSIS 安装器和 portable ZIP。 |
 
 ## 系统要求
 
@@ -44,7 +44,7 @@ Windows 使用无控制台、无托盘图标的原生 .NET 10 后台宿主，是
 
 ## 安装与运行
 
-仓库目前提供源码构建。签名后的每用户 MSIX 和 `.appinstaller` 将发布在 [GitHub Releases](https://github.com/JHees/codex-script-loader/releases)。
+从 [GitHub Releases](https://github.com/JHees/codex-script-loader/releases) 下载对应架构的 NSIS 安装器即可。标准安装向导会先让用户选择安装目录和开始菜单目录，再创建桌面与开始菜单快捷方式；安装按当前用户进行，并登记到 Windows“已安装的应用”，不需要管理员权限。每个安装器同时提供 portable ZIP。
 
 ### 从源码构建
 
@@ -54,15 +54,15 @@ Set-Location .\codex-script-loader
 .\windows\scripts\package.ps1 -RuntimeIdentifier win-x64
 ```
 
-Windows on Arm 使用 `win-arm64`。打包前会清理仓库根目录的 `bin`，然后只保留当次最新架构和版本。可直接运行 `bin\app\CodexScriptLoader.exe` 使用自包含构建；安装本地生成的 MSIX 需要受信任的开发证书。
+Windows on Arm 使用 `win-arm64`。打包前只清理仓库根目录 `build` 中上次生成的文件，然后在其中保留当次最新架构和版本；不会再清理或覆盖 `bin`。`build` 根部的 setup EXE 是本地安装入口，`build\app` 只用于打包，不是推荐启动路径。升级或卸载不会删除 `%LOCALAPPDATA%\CodexScriptLoader` 中的脚本和设置。
 
 ```text
-bin/
+build/
+├── README.md
 ├── app/CodexScriptLoader.exe
-├── layout/
-├── CodexScriptLoader-0.4.1.0-x64.msix
-├── CodexScriptLoader-x64.appinstaller
-├── CodexScriptLoader-0.4.1.0-x64.spdx.json
+├── CodexScriptLoader-0.4.1-windows-x64-setup.exe
+├── CodexScriptLoader-0.4.1-windows-x64.zip
+├── CodexScriptLoader-0.4.1-x64.spdx.json
 └── SHA256SUMS.txt
 ```
 
@@ -81,7 +81,7 @@ macOS runtime 会发现 `Codex.app`，以随机 loopback CDP 端口启动它，�
 再次启动 Loader EXE 会打开诊断窗口。如需在不刷新、不聚焦 Codex 的情况下重载脚本，执行：
 
 ```powershell
-& .\bin\app\CodexScriptLoader.exe --reload
+& "$env:LOCALAPPDATA\Programs\CodexScriptLoader\CodexScriptLoader.exe" --reload
 ```
 
 ## Windows 架构与数据
@@ -144,14 +144,14 @@ npm test
 .\windows\scripts\verify-reproducible.ps1 -RuntimeIdentifier win-arm64
 ```
 
-在 Codex 完全关闭时运行 [`ActivationProbe`](windows/tools/ActivationProbe)。它会发现真实 application ID、带 CDP 参数激活 Codex、校验 listener 所有权，并在通过后输出 `ACTIVATION_PASS`。签名、MSIX、App Installer 和发布说明见 [`windows/README.md`](windows/README.md)。
+在 Codex 完全关闭时运行 [`ActivationProbe`](windows/tools/ActivationProbe)。它会发现真实 application ID、带 CDP 参数激活 Codex、校验 listener 所有权，并在通过后输出 `ACTIVATION_PASS`。NSIS、portable ZIP、可选签名和发布说明见 [`windows/README.md`](windows/README.md)。
 
 ## 故障排查
 
 - **Codex 已运行**：关闭所有 Codex 窗口并等待进程退出，再启动 Loader。
 - **Loader 启动后没有窗口**：这是预期行为；再启动一次可打开诊断。
 - **脚本状态为 Degraded**：查看诊断窗口和 `%LOCALAPPDATA%\CodexScriptLoader\logs`。
-- **本地 MSIX 无法安装**：安装开发证书，或直接运行 `bin\app` 下的免安装构建。
+- **安装器无法替换正在运行的 Loader**：完整退出受管 Codex 与 Loader 后重新安装；安装器不会强制结束进程。
 - **Codex 更新后无法激活**：关闭 Codex 并运行 Activation Probe，获取包身份与 CDP 诊断。
 
 ## 平台支持
