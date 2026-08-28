@@ -2,7 +2,7 @@
 
 Script-Loader 0.5.0 introduces the versioned Windows installation used by online host updates. Version 0.5.0 itself must be installed once with the NSIS installer; standard installations can switch to later compatible hosts without restarting Codex.
 
-Version 0.5.1 adds a Chromium-backed HTTPS fallback for the specific Windows Schannel `SEC_E_NO_CREDENTIALS` failure. It creates a hidden target through the already verified managed CDP endpoint, closes it after transfer, and retains all official-host, size, SHA-256, archive, manifest, and per-file checks. General TLS or certificate failures do not activate this fallback.
+The Windows updater uses the Windows system `curl.exe` from the verified system directory. It follows the repository's stable `releases/latest` redirect and downloads the expected versioned assets directly, without calling the GitHub API or reading GitHub CLI credentials. Curl configuration files are disabled, redirects are HTTPS-only and bounded, and both the requested and final hosts must pass the official GitHub host allowlist.
 
 ## Installation layout
 
@@ -23,7 +23,7 @@ The root executable is a small NativeAOT launcher. It accepts only semantic vers
 
 The production client checks only the latest stable release from `JHees/codex-script-loader`. Drafts, prereleases, equal versions, downgrades, custom repositories, custom download URLs, non-HTTPS URLs, and non-GitHub download hosts are rejected.
 
-The client downloads the architecture-specific portable ZIP and that package's matching `.sha256` asset from the same release. It verifies the GitHub asset size and unique SHA-256 record before extraction. It then rejects absolute paths, traversal, duplicate paths, symbolic links, excessive file counts, excessive expanded size, wrong versions or RIDs, incompatible protocols, missing entry points, unlisted files, and per-file size or hash mismatches from `update-manifest.json`.
+The client downloads the architecture-specific portable ZIP and that package's matching `.sha256` asset from the same release. It verifies the final GitHub download host, response-declared size, actual size, and unique SHA-256 record before extraction. It then rejects absolute paths, traversal, duplicate paths, symbolic links, excessive file counts, excessive expanded size, wrong versions or RIDs, incompatible protocols, missing entry points, unlisted files, and per-file size or hash mismatches from `update-manifest.json`.
 
 This is a GitHub Release + SHA-256 trust model. It detects corruption and mismatched assets, but it does not protect against an attacker who can replace both a release asset and its checksum file. Independent manifest signing and Authenticode are future hardening layers.
 

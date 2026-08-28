@@ -55,7 +55,7 @@ internal static class Program
         var plan = await registry.BuildPlanAsync(force: true);
         Equal(1, plan.Scripts.Count, "Bundled script count");
         Equal("co.bennett.ui-improvements", plan.Scripts[0].Id, "Bundled script id");
-        True(plan.Source.Contains("runtime.runtimeVersion = \"0.5.1\"", StringComparison.Ordinal), "Runtime version source");
+        True(plan.Source.Contains("runtime.runtimeVersion = \"0.5.2\"", StringComparison.Ordinal), "Runtime version source");
         True(plan.Source.Contains("__bennettUiImprovementsBigPizza", StringComparison.Ordinal), "Lifecycle source");
         True(plan.Source.Contains("installSettingsHost", StringComparison.Ordinal), "Settings host source");
         True(plan.Source.Contains("sha256-" + plan.Scripts[0].Fingerprint, StringComparison.Ordinal), "Integrity source");
@@ -247,16 +247,14 @@ internal static class Program
         True(VersionedInstallLayout.CompareVersions("0.5.1", "0.5.0") > 0, "Upgrade version accepted");
         True(VersionedInstallLayout.CompareVersions("0.5.0", "0.5.0") == 0, "Same version identified");
         True(VersionedInstallLayout.CompareVersions("0.4.9", "0.5.0") < 0, "Downgrade identified");
-        var asset = new GitHubReleaseAsset("CodexScriptLoader-0.5.1-windows-x64.zip", 12, "https://github.com/JHees/codex-script-loader/releases/download/v0.5.1/test.zip");
-        OnlineUpdateManager.ValidateRelease(new GitHubReleaseInfo("v0.5.1", "https://github.com/JHees/codex-script-loader/releases/tag/v0.5.1", false, false, [asset]));
-        Throws<InvalidDataException>(() => OnlineUpdateManager.ValidateRelease(new GitHubReleaseInfo("v0.5.1", "https://github.com/JHees/codex-script-loader/releases/tag/v0.5.1", false, true, [asset])), "Prerelease update rejected");
-        Throws<InvalidDataException>(() => OnlineUpdateManager.ValidateRelease(new GitHubReleaseInfo("v0.5.1", "https://github.com/other/repository/releases/tag/v0.5.1", false, false, [asset])), "Wrong release repository rejected");
-        Throws<InvalidDataException>(() => OnlineUpdateManager.ValidateRelease(new GitHubReleaseInfo("v0.5.1", "https://github.com/JHees/codex-script-loader/releases/tag/v0.5.1", false, false, [asset, asset])), "Duplicate release asset rejected");
+        OnlineUpdateManager.ValidateRelease(new GitHubReleaseInfo("v0.5.1", "https://github.com/JHees/codex-script-loader/releases/tag/v0.5.1"));
+        Throws<InvalidDataException>(() => OnlineUpdateManager.ValidateRelease(new GitHubReleaseInfo("v0.5.1", "https://github.com/other/repository/releases/tag/v0.5.1")), "Wrong release repository rejected");
+        Throws<InvalidDataException>(() => OnlineUpdateManager.ValidateRelease(new GitHubReleaseInfo("v0.5.1-beta", "https://github.com/JHees/codex-script-loader/releases/tag/v0.5.1-beta")), "Prerelease-style tag rejected");
     }
 
     private static async Task TestOnlineUpdatePipelineAsync(string testRoot)
     {
-        const string nextVersion = "0.5.2";
+        const string nextVersion = "0.5.3";
         var fixtureRoot = Path.Combine(testRoot, "online-update");
         var installRoot = Path.Combine(fixtureRoot, "install");
         var currentHostRoot = Path.Combine(installRoot, "versions", LiveSupervisor.Version, "win-x64");
@@ -287,43 +285,23 @@ internal static class Program
         var archiveHash = await UpdatePackageVerifier.ComputeSha256Async(archive);
         var checksumName = archiveName + ".sha256";
         var checksumBytes = Encoding.UTF8.GetBytes($"{archiveHash}  {archiveName}\n");
-        var releaseJson = JsonSerializer.Serialize(new
-        {
-            tag_name = $"v{nextVersion}",
-            html_url = $"https://github.com/JHees/codex-script-loader/releases/tag/v{nextVersion}",
-            draft = false,
-            prerelease = false,
-            assets = new object[]
-            {
-                new { name = archiveName, size = archiveBytes.LongLength, browser_download_url = $"https://github.com/JHees/codex-script-loader/releases/download/v{nextVersion}/{archiveName}" },
-                new { name = checksumName, size = checksumBytes.LongLength, browser_download_url = $"https://github.com/JHees/codex-script-loader/releases/download/v{nextVersion}/{checksumName}" },
-            },
-        });
         var responses = new Dictionary<string, byte[]>(StringComparer.Ordinal)
         {
-            ["https://api.github.com/repos/JHees/codex-script-loader/releases/latest"] = Encoding.UTF8.GetBytes(releaseJson),
             [$"https://github.com/JHees/codex-script-loader/releases/download/v{nextVersion}/{archiveName}"] = archiveBytes,
             [$"https://github.com/JHees/codex-script-loader/releases/download/v{nextVersion}/{checksumName}"] = checksumBytes,
         };
-        using var handler = new SchannelFailureHttpMessageHandler();
+        var transport = new FixtureUpdateTransport(
+            new GitHubReleaseInfo($"v{nextVersion}", $"https://github.com/JHees/codex-script-loader/releases/tag/v{nextVersion}"),
+            responses);
         var paths = LoaderPaths.FromRoot(Path.Combine(fixtureRoot, "data"));
         paths.EnsureDirectories();
         using var logger = new JsonlLogger(paths.LogsRoot);
         StagedUpdate? staged = null;
-        var fallbackCalls = 0;
         await using var manager = new OnlineUpdateManager(paths, logger, (candidate, _) =>
         {
             staged = candidate;
             return Task.CompletedTask;
-        }, handler, currentHostRoot, async (uri, destination, maximumBytes, progress, cancellationToken) =>
-        {
-            fallbackCalls++;
-            var bytes = responses[uri.AbsoluteUri];
-            if (bytes.LongLength > maximumBytes) throw new InvalidDataException("Fixture response exceeded limit.");
-            await File.WriteAllBytesAsync(destination, bytes, cancellationToken);
-            progress(bytes.LongLength);
-            return new CdpDownloadResult(uri, 200, bytes.LongLength);
-        });
+        }, currentHostRoot, transport);
         await manager.InitializeAsync(CancellationToken.None);
         var available = await manager.CheckForUpdatesAsync(CancellationToken.None);
         Equal(UpdateStage.Available, available.State, "Online update fixture discovers newer stable release");
@@ -331,8 +309,8 @@ internal static class Program
         Equal(UpdateStage.Succeeded, completed.State, "Online update fixture completes download and staging");
         Equal(nextVersion, staged?.Manifest.Version, "Online update switch receives verified version");
         True(File.Exists(Path.Combine(installRoot, "versions", nextVersion, "win-x64", "CodexScriptLoader.exe")), "Online update stages candidate in version directory");
-        Equal(3, fallbackCalls, "Schannel credential failure uses Chromium fallback for release, archive and checksum");
-        True(OnlineUpdateManager.IsSchannelCredentialFailure(SchannelFailureHttpMessageHandler.CreateException()), "Schannel credential error classified by native code");
+        Equal(1, transport.ResolveCalls, "Online update resolves the stable GitHub Release once");
+        Equal(2, transport.DownloadCalls, "Online update downloads the checksum and archive directly");
     }
 
     private static async Task TestSingleInstanceLockTransferAsync(string testRoot)
@@ -347,16 +325,33 @@ internal static class Program
         True(candidate.IsPrimary, "Candidate becomes primary after lock transfer");
     }
 
-    private sealed class SchannelFailureHttpMessageHandler : HttpMessageHandler
+    private sealed class FixtureUpdateTransport(GitHubReleaseInfo release, IReadOnlyDictionary<string, byte[]> responses) : IUpdateTransport
     {
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-            => Task.FromException<HttpResponseMessage>(CreateException());
+        public int ResolveCalls { get; private set; }
+        public int DownloadCalls { get; private set; }
 
-        public static HttpRequestException CreateException() => new(
-            "The SSL connection could not be established, see inner exception.",
-            new System.Security.Authentication.AuthenticationException(
-                "Authentication failed, see inner exception.",
-                new System.ComponentModel.Win32Exception(unchecked((int)0x8009030E))));
+        public Task<GitHubReleaseInfo> ResolveLatestReleaseAsync(CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            ResolveCalls++;
+            return Task.FromResult(release);
+        }
+
+        public async Task<UpdateDownloadResult> DownloadAsync(
+            Uri uri,
+            string destination,
+            long maximumBytes,
+            Action<long, long> progress,
+            CancellationToken cancellationToken)
+        {
+            DownloadCalls++;
+            UpdatePackageVerifier.ValidateDownloadUri(uri);
+            var bytes = responses[uri.AbsoluteUri];
+            if (bytes.LongLength <= 0 || bytes.LongLength > maximumBytes) throw new InvalidDataException("Fixture response exceeded limit.");
+            await File.WriteAllBytesAsync(destination, bytes, cancellationToken);
+            progress(bytes.LongLength, bytes.LongLength);
+            return new UpdateDownloadResult(uri, bytes.LongLength, bytes.LongLength);
+        }
     }
 
     private static void True(bool condition, string name)

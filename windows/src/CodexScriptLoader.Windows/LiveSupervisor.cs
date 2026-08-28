@@ -11,7 +11,7 @@ namespace CodexScriptLoader.Windows;
 
 internal sealed class LiveSupervisor : IAsyncDisposable
 {
-    public const string Version = "0.5.1";
+    public const string Version = "0.5.2";
     private static readonly TimeSpan GracefulRestartShutdownTimeout = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan ForcedRestartShutdownTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan PackageExitPollInterval = TimeSpan.FromMilliseconds(250);
@@ -51,17 +51,6 @@ internal sealed class LiveSupervisor : IAsyncDisposable
     public Func<bool, CancellationToken, Task<string?>>? PackagePickerAsync { get; set; }
 
     public OnlineUpdateManager? UpdateManager { get; set; }
-
-    public Task<CdpDownloadResult> DownloadUpdateResourceAsync(
-        Uri uri,
-        string destination,
-        long maximumBytes,
-        Action<long> progress,
-        CancellationToken cancellationToken)
-    {
-        var currentClient = client ?? throw new InvalidOperationException("Managed Codex network transport is unavailable.");
-        return new CdpUpdateTransport(currentClient, logger).DownloadAsync(uri, destination, maximumBytes, progress, cancellationToken);
-    }
 
     public DiagnosticSnapshot Snapshot => new(
         Version,

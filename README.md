@@ -6,7 +6,7 @@
 
 **Open Codex for user scripts, with automatic injection, reload, and cleanup.**
 
-[![Version](https://img.shields.io/badge/version-0.5.1-f97316)](https://github.com/JHees/codex-script-loader)
+[![Version](https://img.shields.io/badge/version-0.5.2-f97316)](https://github.com/JHees/codex-script-loader)
 [![Windows](https://img.shields.io/badge/Windows-11-0078d4?logo=windows11)](#requirements)
 [![macOS](https://img.shields.io/badge/macOS-untested-999999?logo=apple)](#platform-support)
 [![.NET](https://img.shields.io/badge/.NET-10-512bd4?logo=dotnet)](global.json)
@@ -32,7 +32,7 @@ Windows uses the native .NET 10 background host with no console or tray icon and
 | macOS runtime | Discovers `Codex.app` and provides the same managed CDP/script flow through Node.js; currently untested. |
 | Diagnostics and reload | Starting a second Windows instance opens diagnostics; `--reload` replaces scripts in place. |
 | Online host updates | Checks the stable GitHub Release after startup and switches verified Loader hosts without restarting Codex. |
-| Bennett UI included | Installs the bundled Bennett UI Improvements 1.4.10 package on first run. |
+| Bennett UI included | Installs the bundled Bennett UI Improvements 1.4.11 package on first run. |
 | Windows packaging | Produces per-user NSIS setup executables and portable ZIP archives for x64 and arm64. |
 
 ## Requirements
@@ -49,7 +49,7 @@ Download the matching NSIS installer from [GitHub Releases](https://github.com/J
 
 Version 0.5.0 is the one-time installer migration from the older flat 0.4.x layout. Starting with 0.5.1, standard NSIS installations can update the versioned host from **Codex Settings → Script-Loader → Settings** while Codex and the current task stay open. Portable copies remain manual-update only.
 
-Version 0.5.1 also isolates update errors from plugin-management feedback and falls back to a hidden, Loader-managed Chromium network target when Windows Schannel specifically fails with `SEC_E_NO_CREDENTIALS`. The fallback remains limited to the official GitHub hosts and is subject to the same size, SHA-256, archive, manifest, and per-file verification.
+Version 0.5.2 isolates update errors inside the update card and uses the Windows system `curl.exe` to resolve the latest stable GitHub Release and download its assets directly. It does not use the GitHub API or CLI credentials. The transport is restricted to HTTPS and official GitHub download hosts and remains subject to size, SHA-256, archive, manifest, and per-file verification.
 
 ### Build from source
 
@@ -68,12 +68,12 @@ build/
 ├── app/active.json
 ├── app/previous.json
 ├── app/update-manifest.json
-├── app/versions/0.5.1/win-x64/               # complete Loader host
-├── CodexScriptLoader-0.5.1-windows-x64-setup.exe
-├── CodexScriptLoader-0.5.1-windows-x64-setup.exe.sha256
-├── CodexScriptLoader-0.5.1-windows-x64.zip
-├── CodexScriptLoader-0.5.1-windows-x64.zip.sha256
-└── CodexScriptLoader-0.5.1-x64.spdx.json
+├── app/versions/0.5.2/win-x64/               # complete Loader host
+├── CodexScriptLoader-0.5.2-windows-x64-setup.exe
+├── CodexScriptLoader-0.5.2-windows-x64-setup.exe.sha256
+├── CodexScriptLoader-0.5.2-windows-x64.zip
+├── CodexScriptLoader-0.5.2-windows-x64.zip.sha256
+└── CodexScriptLoader-0.5.2-x64.spdx.json
 ```
 
 The setup executable at the top of `build` is the normal local installation entry. The `build\app` directory is packaging payload, not the recommended launch path. The installer keeps scripts and settings under `%LOCALAPPDATA%\CodexScriptLoader` when upgrading or uninstalling.
@@ -131,7 +131,7 @@ Logs use UTF-8 JSON Lines. Diagnostic exports redact user-specific paths and unr
 
 The Windows host uses official package APIs to start Codex, keeps CDP on a random loopback port, and verifies the owning process and exact renderer target before injection. Codex application files remain untouched, and the launch path needs neither `WindowsApps` access nor administrator privileges.
 
-Online updates are fixed to the stable releases of `JHees/codex-script-loader`. The Loader verifies the GitHub repository, tag, asset name, architecture, declared size, official HTTPS download host, the archive's matching `.sha256` asset, safe ZIP structure, update protocol, and every payload file hash before staging. This GitHub Release + SHA-256 model detects corruption and mismatched assets, but it cannot protect against a release and its checksum file being replaced together; independent signing and Authenticode remain future hardening work.
+Online updates are fixed to the stable releases of `JHees/codex-script-loader`. The Loader follows the repository's `releases/latest` redirect with the Windows system `curl.exe`, constructs only the expected versioned asset names, and never calls the GitHub API. It verifies the tag, asset name, architecture, declared response size, official HTTPS download host, the archive's matching `.sha256` asset, safe ZIP structure, update protocol, and every payload file hash before staging. This GitHub Release + SHA-256 model detects corruption and mismatched assets, but it cannot protect against a release and its checksum file being replaced together; independent signing and Authenticode remain future hardening work.
 
 ## Script packages
 

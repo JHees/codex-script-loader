@@ -1,4 +1,4 @@
-const SETTINGS_HOST_VERSION = "0.5.1";
+const SETTINGS_HOST_VERSION = "0.5.2";
 
 /*
  * Renderer-only settings host inspired by b-nnett/codex-plusplus.
@@ -600,6 +600,7 @@ function installSettingsHost(version) {
     const updateLastChecked = valueRow(labels.lastChecked);
     const availableVersion = valueRow(labels.availableVersion);
     const updateState = valueRow(labels.updateState);
+    const updateError = valueRow(labels.recentError);
     const autoUpdateRow = document.createElement("div");
     autoUpdateRow.className = "flex items-center justify-between px-4 gap-6 py-3";
     const autoUpdateStack = document.createElement("div");
@@ -618,7 +619,7 @@ function installSettingsHost(version) {
     const autoUpdateKnob = document.createElement("span");
     autoUpdateToggle.appendChild(autoUpdateKnob);
     autoUpdateRow.append(autoUpdateStack, autoUpdateToggle);
-    updateCard.append(currentVersion.row, updateChannel.row, updateLastChecked.row, availableVersion.row, updateState.row, autoUpdateRow);
+    updateCard.append(currentVersion.row, updateChannel.row, updateLastChecked.row, availableVersion.row, updateState.row, updateError.row, autoUpdateRow);
     updateSection.appendChild(updateCard);
 
     const pluginsSection = settingsSection(labels.plugins);
@@ -702,6 +703,10 @@ function installSettingsHost(version) {
       updateState.value.textContent = status.requiresInstaller ? labels.installerRequired : `${labels.updateStatus(state)}${progress}`;
       updateState.value.title = state === "failed" ? labels.updateError(status.errorCode, status.error) : updateState.value.textContent;
       updateState.value.className = state === "failed" || state === "rolledBack" ? "min-w-0 max-w-[46%] shrink-0 truncate text-right text-sm text-token-charts-red" : "min-w-0 max-w-[46%] shrink-0 truncate text-right text-sm text-secondary";
+      const errorText = state === "failed" || state === "rolledBack" ? labels.updateError(status.errorCode, status.error) : labels.none;
+      updateError.value.textContent = errorText;
+      updateError.value.title = errorText;
+      updateError.value.className = state === "failed" || state === "rolledBack" ? "min-w-0 max-w-[62%] shrink-0 truncate text-right text-sm text-token-charts-red" : "min-w-0 max-w-[46%] shrink-0 truncate text-right text-sm text-secondary";
       const enabled = status.autoUpdate !== false;
       autoUpdateToggle.setAttribute("aria-checked", enabled ? "true" : "false");
       autoUpdateToggle.disabled = updating || status.requiresInstaller || !connected;
@@ -715,8 +720,15 @@ function installSettingsHost(version) {
       if (state === "switching") updateFeedback.textContent = labels.updateNotice(status.availableVersion || "");
       else if (state === "succeeded") updateFeedback.textContent = labels.updateSucceeded(status.currentVersion || "");
       else if (state === "rolledBack") updateFeedback.textContent = labels.updateRolledBack(status.currentVersion || "");
-      else if (state === "failed") updateFeedback.textContent = labels.updateError(status.errorCode, status.error);
       else updateFeedback.textContent = "";
+    }
+
+    function showUpdateError(error, code = "networkOrPackage") {
+      const errorText = labels.updateError(code, String(error?.message || error || ""));
+      updateError.value.textContent = errorText;
+      updateError.value.title = errorText;
+      updateError.value.className = "min-w-0 max-w-[62%] shrink-0 truncate text-right text-sm text-token-charts-red";
+      updateFeedback.textContent = "";
     }
 
     async function refreshUpdateStatus(force = false) {
@@ -732,8 +744,10 @@ function installSettingsHost(version) {
         if (!disposed && updateStatus?.state !== "switching") {
           updateState.value.textContent = labels.updateStatus("failed");
           updateState.value.className = "min-w-0 max-w-[46%] shrink-0 truncate text-right text-sm text-token-charts-red";
-          updateFeedback.className = "min-h-4 text-xs text-token-charts-red";
-          updateFeedback.textContent = labels.updateError("networkOrPackage", String(error?.message || error));
+          const errorText = labels.updateError("networkOrPackage", String(error?.message || error));
+          updateError.value.textContent = errorText;
+          updateError.value.title = errorText;
+          updateError.value.className = "min-w-0 max-w-[62%] shrink-0 truncate text-right text-sm text-token-charts-red";
         }
       }
     }
@@ -940,12 +954,15 @@ function installSettingsHost(version) {
 
     async function refresh({ preserveFeedback = false } = {}) {
       try {
-        const [status, nextPlugins, nextQuarantined, nextUpdateStatus] = await Promise.all([
+        const [status, nextPlugins, nextQuarantined] = await Promise.all([
           requestBridge("get_app_status", {}),
           requestBridge("list_plugins", {}),
           requestBridge("list_quarantined", {}),
-          requestBridge("get_update_status", {}),
         ]);
+        let nextUpdateStatus = null;
+        let updateStatusError = null;
+        try { nextUpdateStatus = await requestBridge("get_update_status", {}); }
+        catch (error) { updateStatusError = error; }
         if (disposed) return;
         connected = Boolean(status && status.loader === "healthy" && status.targetCount > 0 && status.cdp !== "stopped");
         plugins = Array.isArray(nextPlugins) ? nextPlugins : [];
@@ -964,7 +981,16 @@ function installSettingsHost(version) {
         feedback.className = "text-token-description-foreground";
         renderPlugins();
         renderQuarantined();
-        renderUpdateStatus();
+        if (updateStatusError) {
+          updateState.value.textContent = labels.updateStatus("failed");
+          updateState.value.className = "min-w-0 max-w-[46%] shrink-0 truncate text-right text-sm text-token-charts-red";
+          const errorText = labels.updateError("networkOrPackage", String(updateStatusError?.message || updateStatusError));
+          updateError.value.textContent = errorText;
+          updateError.value.title = errorText;
+          updateError.value.className = "min-w-0 max-w-[62%] shrink-0 truncate text-right text-sm text-token-charts-red";
+        } else {
+          renderUpdateStatus();
+        }
         scheduleSync();
       } catch (error) {
         if (disposed) return;
@@ -1011,7 +1037,7 @@ function installSettingsHost(version) {
         renderedUpdateSnapshot = JSON.stringify(updateStatus || {});
         renderUpdateStatus();
       } catch (error) {
-        updateFeedback.textContent = labels.updateError("networkOrPackage", String(error?.message || error));
+        showUpdateError(error);
       }
     });
     checkUpdateButton.addEventListener("click", async () => {
@@ -1021,8 +1047,7 @@ function installSettingsHost(version) {
         renderedUpdateSnapshot = JSON.stringify(updateStatus || {});
         renderUpdateStatus();
       } catch (error) {
-        updateFeedback.className = "min-h-4 text-xs text-token-charts-red";
-        updateFeedback.textContent = labels.updateError(updateStatus?.errorCode || "networkOrPackage", String(error?.message || error));
+        showUpdateError(error, updateStatus?.errorCode || "networkOrPackage");
       }
     });
     installUpdateButton.addEventListener("click", async () => {
@@ -1032,13 +1057,13 @@ function installSettingsHost(version) {
         await requestBridge("start_update", {});
         await refreshUpdateStatus();
       } catch (error) {
-        updateFeedback.textContent = labels.updateError(updateStatus?.errorCode || "networkOrPackage", String(error?.message || error));
+        showUpdateError(error, updateStatus?.errorCode || "networkOrPackage");
       }
     });
     cancelUpdateButton.addEventListener("click", async () => {
       cancelUpdateButton.disabled = true;
       try { await requestBridge("cancel_update", {}); }
-      catch (error) { updateFeedback.textContent = labels.updateError("networkOrPackage", String(error?.message || error)); }
+      catch (error) { showUpdateError(error); }
       await refreshUpdateStatus();
     });
 

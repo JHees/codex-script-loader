@@ -1,12 +1,7 @@
 using System.Diagnostics;
-using System.ComponentModel;
 using System.IO.Pipes;
-using System.Net.Http.Headers;
-using System.Net.Http.Json;
 using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using System.Runtime.InteropServices;
 using CodexScriptLoader.Core;
 
@@ -26,11 +21,10 @@ internal sealed class OnlineUpdateManager : IAsyncDisposable
     private const string Repository = "JHees/codex-script-loader";
     private readonly LoaderPaths paths;
     private readonly JsonlLogger logger;
-    private readonly HttpClient http;
     private readonly SemaphoreSlim operation = new(1, 1);
     private readonly Func<StagedUpdate, CancellationToken, Task> switchHost;
     private readonly string hostBaseDirectory;
-    private readonly Func<Uri, string, long, Action<long>, CancellationToken, Task<CdpDownloadResult>>? fallbackDownload;
+    private readonly IUpdateTransport updateTransport;
     private UpdatePreferences preferences = new();
     private UpdateSnapshot snapshot = new(LiveSupervisor.Version, null, UpdateStage.Idle, null, null, null, null, false, true, "stable");
     private GitHubReleaseInfo? availableRelease;
@@ -41,20 +35,14 @@ internal sealed class OnlineUpdateManager : IAsyncDisposable
         LoaderPaths paths,
         JsonlLogger logger,
         Func<StagedUpdate, CancellationToken, Task> switchHost,
-        HttpMessageHandler? handler = null,
         string? hostBaseDirectory = null,
-        Func<Uri, string, long, Action<long>, CancellationToken, Task<CdpDownloadResult>>? fallbackDownload = null)
+        IUpdateTransport? updateTransport = null)
     {
         this.paths = paths;
         this.logger = logger;
         this.switchHost = switchHost;
         this.hostBaseDirectory = hostBaseDirectory ?? AppContext.BaseDirectory;
-        this.fallbackDownload = fallbackDownload;
-        http = handler is null ? new HttpClient() : new HttpClient(handler);
-        http.Timeout = TimeSpan.FromMinutes(5);
-        http.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("CodexScriptLoader", LiveSupervisor.Version));
-        http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
-        http.DefaultRequestHeaders.Add("X-GitHub-Api-Version", "2022-11-28");
+        this.updateTransport = updateTransport ?? new CurlUpdateTransport();
     }
 
     public UpdateSnapshot Snapshot => snapshot;
@@ -146,8 +134,7 @@ internal sealed class OnlineUpdateManager : IAsyncDisposable
         try
         {
             SetSnapshot(snapshot with { State = UpdateStage.Checking, Progress = null, Error = null, ErrorCode = null });
-            var uri = new Uri($"https://api.github.com/repos/{Repository}/releases/latest");
-            var release = await GetReleaseAsync(uri, cancellationToken).ConfigureAwait(false);
+            var release = await updateTransport.ResolveLatestReleaseAsync(cancellationToken).ConfigureAwait(false);
             ValidateRelease(release);
             var checkedAt = DateTimeOffset.UtcNow;
             if (VersionedInstallLayout.CompareVersions(release.Version, LiveSupervisor.Version) <= 0)
@@ -202,21 +189,20 @@ internal sealed class OnlineUpdateManager : IAsyncDisposable
             var rid = RuntimeInformation.RuntimeIdentifier is "win-arm64" ? "win-arm64" : "win-x64";
             var architecture = rid == "win-arm64" ? "arm64" : "x64";
             var assetName = $"CodexScriptLoader-{release.Version}-windows-{architecture}.zip";
-            var archiveAsset = release.Assets.SingleOrDefault(asset => asset.Name == assetName)
-                ?? throw new InvalidDataException("Release does not contain the required architecture archive.");
             var checksumName = assetName + ".sha256";
-            var checksumAsset = release.Assets.SingleOrDefault(asset => asset.Name == checksumName)
-                ?? throw new InvalidDataException("Release does not contain the required package checksum.");
-            ValidateAsset(archiveAsset);
-            ValidateAsset(checksumAsset);
+            var archiveUri = ReleaseAssetUri(release.Version, assetName);
+            var checksumUri = ReleaseAssetUri(release.Version, checksumName);
 
             var cacheRoot = Path.Combine(paths.StateRoot, "update-cache");
             Directory.CreateDirectory(cacheRoot);
             var archivePath = Path.Combine(cacheRoot, assetName);
+            var checksumPath = Path.Combine(cacheRoot, checksumName);
             downloadCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             SetSnapshot(snapshot with { State = UpdateStage.Downloading, Progress = 0, Error = null, ErrorCode = null });
-            await DownloadAsync(archiveAsset, archivePath, downloadCancellation.Token).ConfigureAwait(false);
-            var checksum = await DownloadTextAsync(checksumAsset, downloadCancellation.Token).ConfigureAwait(false);
+            await updateTransport.DownloadAsync(checksumUri, checksumPath, 1024 * 1024, (_, _) => { }, downloadCancellation.Token).ConfigureAwait(false);
+            var checksum = await File.ReadAllTextAsync(checksumPath, downloadCancellation.Token).ConfigureAwait(false);
+            await updateTransport.DownloadAsync(archiveUri, archivePath, 600L * 1024 * 1024, (downloaded, total) =>
+                SetSnapshot(snapshot with { Progress = total <= 0 ? 0 : (double)downloaded / total }), downloadCancellation.Token).ConfigureAwait(false);
             downloadCancellation.Dispose();
             downloadCancellation = null;
 
@@ -289,166 +275,33 @@ internal sealed class OnlineUpdateManager : IAsyncDisposable
         return snapshot;
     }
 
-    private async Task DownloadAsync(GitHubReleaseAsset asset, string destination, CancellationToken cancellationToken)
-    {
-        var uri = new Uri(asset.BrowserDownloadUrl);
-        UpdatePackageVerifier.ValidateDownloadUri(uri);
-        try
-        {
-            await DownloadWithHttpAsync(asset, destination, cancellationToken).ConfigureAwait(false);
-        }
-        catch (HttpRequestException exception) when (IsSchannelCredentialFailure(exception) && fallbackDownload is not null)
-        {
-            logger.Warn("update-http-tls-fallback", new { host = uri.IdnHost, code = "SEC_E_NO_CREDENTIALS" });
-            await DownloadWithFallbackAsync(uri, destination, asset.Size, value =>
-                SetSnapshot(snapshot with { Progress = asset.Size == 0 ? 0 : (double)value / asset.Size }), cancellationToken).ConfigureAwait(false);
-            if (new FileInfo(destination).Length != asset.Size) throw new InvalidDataException("Release asset size does not match GitHub metadata.");
-        }
-    }
-
-    private async Task DownloadWithHttpAsync(GitHubReleaseAsset asset, string destination, CancellationToken cancellationToken)
-    {
-        var uri = new Uri(asset.BrowserDownloadUrl);
-        using var response = await http.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
-        UpdatePackageVerifier.ValidateDownloadUri(response.RequestMessage?.RequestUri ?? uri);
-        var declared = response.Content.Headers.ContentLength;
-        if (declared.HasValue && declared.Value != asset.Size) throw new InvalidDataException("Release asset response size does not match GitHub metadata.");
-        var temporary = destination + $".{Guid.NewGuid():N}.tmp";
-        try
-        {
-            long total = 0;
-            await using (var input = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false))
-            await using (var output = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
-            {
-                var buffer = new byte[64 * 1024];
-                while (true)
-                {
-                    var read = await input.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
-                    if (read == 0) break;
-                    await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
-                    total += read;
-                    if (total > asset.Size) throw new InvalidDataException("Release asset exceeded the declared size.");
-                    SetSnapshot(snapshot with { Progress = asset.Size == 0 ? 0 : (double)total / asset.Size });
-                }
-            }
-            if (total != asset.Size) throw new InvalidDataException("Release asset size does not match GitHub metadata.");
-            File.Move(temporary, destination, overwrite: true);
-        }
-        finally
-        {
-            if (File.Exists(temporary)) File.Delete(temporary);
-        }
-    }
-
-    private async Task<string> DownloadTextAsync(GitHubReleaseAsset asset, CancellationToken cancellationToken)
-    {
-        var uri = new Uri(asset.BrowserDownloadUrl);
-        UpdatePackageVerifier.ValidateDownloadUri(uri);
-        try
-        {
-            using var response = await http.GetAsync(uri, HttpCompletionOption.ResponseContentRead, cancellationToken).ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
-            UpdatePackageVerifier.ValidateDownloadUri(response.RequestMessage?.RequestUri ?? uri);
-            var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
-            if (bytes.LongLength != asset.Size || bytes.Length > 1024 * 1024) throw new InvalidDataException("Release checksum asset size is invalid.");
-            return Encoding.UTF8.GetString(bytes);
-        }
-        catch (HttpRequestException exception) when (IsSchannelCredentialFailure(exception) && fallbackDownload is not null)
-        {
-            logger.Warn("update-http-tls-fallback", new { host = uri.IdnHost, code = "SEC_E_NO_CREDENTIALS" });
-            var temporary = Path.Combine(paths.StateRoot, $"update-sums-{Guid.NewGuid():N}.tmp");
-            try
-            {
-                await DownloadWithFallbackAsync(uri, temporary, 1024 * 1024, _ => { }, cancellationToken).ConfigureAwait(false);
-                var bytes = await File.ReadAllBytesAsync(temporary, cancellationToken).ConfigureAwait(false);
-                if (bytes.LongLength != asset.Size) throw new InvalidDataException("Release checksum asset size is invalid.");
-                return Encoding.UTF8.GetString(bytes);
-            }
-            finally
-            {
-                if (File.Exists(temporary)) File.Delete(temporary);
-            }
-        }
-    }
-
-    private async Task<GitHubReleaseInfo> GetReleaseAsync(Uri uri, CancellationToken cancellationToken)
-    {
-        try
-        {
-            using var response = await http.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
-            UpdatePackageVerifier.ValidateDownloadUri(response.RequestMessage?.RequestUri ?? uri);
-            return await response.Content.ReadFromJsonAsync<GitHubReleaseInfo>(AtomicJsonFile.Options, cancellationToken).ConfigureAwait(false)
-                ?? throw new InvalidDataException("GitHub release response is empty.");
-        }
-        catch (HttpRequestException exception) when (IsSchannelCredentialFailure(exception) && fallbackDownload is not null)
-        {
-            logger.Warn("update-http-tls-fallback", new { host = uri.IdnHost, code = "SEC_E_NO_CREDENTIALS" });
-            var temporary = Path.Combine(paths.StateRoot, $"update-release-{Guid.NewGuid():N}.tmp");
-            try
-            {
-                await DownloadWithFallbackAsync(uri, temporary, 4 * 1024 * 1024, _ => { }, cancellationToken).ConfigureAwait(false);
-                await using var stream = new FileStream(temporary, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-                return await JsonSerializer.DeserializeAsync<GitHubReleaseInfo>(stream, AtomicJsonFile.Options, cancellationToken).ConfigureAwait(false)
-                    ?? throw new InvalidDataException("GitHub release response is empty.");
-            }
-            finally
-            {
-                if (File.Exists(temporary)) File.Delete(temporary);
-            }
-        }
-    }
-
-    private async Task DownloadWithFallbackAsync(Uri uri, string destination, long maximumBytes, Action<long> progress, CancellationToken cancellationToken)
-    {
-        var transport = fallbackDownload ?? throw new HttpRequestException("No secure update fallback transport is available.");
-        var result = await transport(uri, destination, maximumBytes, progress, cancellationToken).ConfigureAwait(false);
-        UpdatePackageVerifier.ValidateDownloadUri(result.FinalUri);
-        if (result.StatusCode is < 200 or >= 300 || result.BytesWritten <= 0 || result.BytesWritten > maximumBytes)
-        {
-            throw new InvalidDataException("Chromium update response metadata is invalid.");
-        }
-    }
-
-    internal static bool IsSchannelCredentialFailure(Exception exception)
-    {
-        for (Exception? current = exception; current is not null; current = current.InnerException)
-        {
-            if (current is Win32Exception win32 && win32.NativeErrorCode == unchecked((int)0x8009030E)) return true;
-        }
-        return false;
-    }
-
-    private static string ClassifyError(Exception exception) => IsSchannelCredentialFailure(exception)
-        ? "windowsTlsCredentials"
-        : exception is TaskCanceledException ? "timeout" : "networkOrPackage";
+    private static string ClassifyError(Exception exception) => exception is TaskCanceledException ? "timeout" : "networkOrPackage";
 
     private static string DescribeNetworkError(Exception exception)
     {
         var current = exception;
         while (current.InnerException is not null) current = current.InnerException;
-        return IsSchannelCredentialFailure(exception)
-            ? "Windows TLS credential acquisition failed (0x8009030E)."
-            : JsonlLogger.Redact(current.Message);
+        return JsonlLogger.Redact(current.Message);
     }
 
     internal static void ValidateRelease(GitHubReleaseInfo release)
     {
-        if (string.IsNullOrWhiteSpace(release.TagName) || string.IsNullOrWhiteSpace(release.HtmlUrl) || release.Assets is null || release.Assets.Count is 0 or > 100 ||
-            release.Draft || release.Prerelease || !release.TagName.StartsWith('v') || release.TagName[1..] != release.Version ||
-            release.Assets.Any(asset => asset is null) || !string.Equals(release.HtmlUrl, $"https://github.com/{Repository}/releases/tag/{release.TagName}", StringComparison.OrdinalIgnoreCase) ||
-            release.Assets.GroupBy(asset => asset.Name, StringComparer.Ordinal).Any(group => group.Count() != 1))
+        if (string.IsNullOrWhiteSpace(release.TagName) || string.IsNullOrWhiteSpace(release.HtmlUrl) ||
+            !release.TagName.StartsWith('v') || release.TagName[1..] != release.Version ||
+            !string.Equals(release.HtmlUrl, $"https://github.com/{Repository}/releases/tag/{release.TagName}", StringComparison.Ordinal))
         {
             throw new InvalidDataException("GitHub release identity is invalid or is not a stable release.");
         }
         VersionedInstallLayout.ValidateVersionAndRid(release.Version, "win-x64");
     }
 
-    private static void ValidateAsset(GitHubReleaseAsset asset)
+    private static Uri ReleaseAssetUri(string version, string assetName)
     {
-        if (string.IsNullOrWhiteSpace(asset.Name) || string.IsNullOrWhiteSpace(asset.BrowserDownloadUrl) || asset.Size <= 0 || asset.Size > 600L * 1024 * 1024) throw new InvalidDataException("Release asset metadata is invalid.");
-        UpdatePackageVerifier.ValidateDownloadUri(new Uri(asset.BrowserDownloadUrl));
+        VersionedInstallLayout.ValidateVersionAndRid(version, "win-x64");
+        if (string.IsNullOrWhiteSpace(assetName) || Path.GetFileName(assetName) != assetName) throw new InvalidDataException("Release asset name is invalid.");
+        var uri = new Uri($"https://github.com/{Repository}/releases/download/v{version}/{Uri.EscapeDataString(assetName)}");
+        UpdatePackageVerifier.ValidateDownloadUri(uri);
+        return uri;
     }
 
     private void SetSnapshot(UpdateSnapshot value)
@@ -499,26 +352,13 @@ internal sealed class OnlineUpdateManager : IAsyncDisposable
         downloadCancellation?.Cancel();
         downloadCancellation?.Dispose();
         operation.Dispose();
-        http.Dispose();
         return ValueTask.CompletedTask;
     }
 }
 
-internal sealed record GitHubReleaseInfo(
-    [property: JsonPropertyName("tag_name")] string TagName,
-    [property: JsonPropertyName("html_url")] string HtmlUrl,
-    [property: JsonPropertyName("draft")] bool Draft,
-    [property: JsonPropertyName("prerelease")] bool Prerelease,
-    [property: JsonPropertyName("assets")] IReadOnlyList<GitHubReleaseAsset> Assets)
+internal sealed record GitHubReleaseInfo(string TagName, string HtmlUrl)
 {
-    [JsonIgnore]
     public string Version => TagName.StartsWith('v') ? TagName[1..] : string.Empty;
 
-    [JsonIgnore]
     public int? LauncherProtocolHint => null;
 }
-
-internal sealed record GitHubReleaseAsset(
-    [property: JsonPropertyName("name")] string Name,
-    [property: JsonPropertyName("size")] long Size,
-    [property: JsonPropertyName("browser_download_url")] string BrowserDownloadUrl);

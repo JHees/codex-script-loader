@@ -6,7 +6,7 @@
 
 **打开 Codex 调试入口，加载用户脚本，并自动管理注入、重载与清理。**
 
-[![Version](https://img.shields.io/badge/version-0.5.1-f97316)](https://github.com/JHees/codex-script-loader)
+[![Version](https://img.shields.io/badge/version-0.5.2-f97316)](https://github.com/JHees/codex-script-loader)
 [![Windows](https://img.shields.io/badge/Windows-11-0078d4?logo=windows11)](#系统要求)
 [![macOS](https://img.shields.io/badge/macOS-未测试-999999?logo=apple)](#平台支持)
 [![.NET](https://img.shields.io/badge/.NET-10-512bd4?logo=dotnet)](global.json)
@@ -32,7 +32,7 @@ Windows 使用无控制台、无托盘图标的原生 .NET 10 后台宿主，是
 | macOS runtime | 发现 `Codex.app`，通过 Node.js 提供相同的 CDP 与脚本流程；当前未测试。 |
 | 诊断与重载 | Windows 再次启动同一 EXE 可打开诊断；`--reload` 原位替换脚本。 |
 | Loader 在线升级 | 启动后检查稳定版 GitHub Release，并在不重启 Codex 的情况下切换已校验宿主。 |
-| 内置 Bennett UI | 首次运行安装 Bennett UI Improvements 1.4.10。 |
+| 内置 Bennett UI | 首次运行安装 Bennett UI Improvements 1.4.11。 |
 | Windows 打包 | 为 x64/arm64 生成每用户 NSIS 安装器和 portable ZIP。 |
 
 ## 系统要求
@@ -49,7 +49,7 @@ Windows 使用无控制台、无托盘图标的原生 .NET 10 后台宿主，是
 
 0.5.0 是从 0.4.x 平铺目录迁移到版本化目录所需的最后一次手工安装。从 0.5.1 起，标准 NSIS 安装可在 **Codex 设置 → Script-Loader → 设置** 中直接升级宿主，Codex、当前任务和页面保持打开；portable 版本仍需手工替换。
 
-0.5.1 还会把更新错误与插件管理反馈彻底分离；当 Windows Schannel 明确返回 `SEC_E_NO_CREDENTIALS` 时，Loader 会改用自己管理的不可见 Chromium 网络 target。该后备通道仍只接受 GitHub 官方 host，并执行相同的大小、SHA-256、压缩包、更新清单和逐文件校验。
+0.5.2 会把更新错误固定显示在更新卡片内，并使用 Windows 系统 `curl.exe` 解析最新稳定 GitHub Release、直接下载发布资产。它不调用 GitHub API，也不读取 GitHub CLI 凭据。传输仅允许 HTTPS 与 GitHub 官方下载主机，并继续执行大小、SHA-256、压缩包、更新清单和逐文件校验。
 
 ### 从源码构建
 
@@ -68,12 +68,12 @@ build/
 ├── app/active.json
 ├── app/previous.json
 ├── app/update-manifest.json
-├── app/versions/0.5.1/win-x64/               # 完整 Loader 宿主
-├── CodexScriptLoader-0.5.1-windows-x64-setup.exe
-├── CodexScriptLoader-0.5.1-windows-x64-setup.exe.sha256
-├── CodexScriptLoader-0.5.1-windows-x64.zip
-├── CodexScriptLoader-0.5.1-windows-x64.zip.sha256
-└── CodexScriptLoader-0.5.1-x64.spdx.json
+├── app/versions/0.5.2/win-x64/               # 完整 Loader 宿主
+├── CodexScriptLoader-0.5.2-windows-x64-setup.exe
+├── CodexScriptLoader-0.5.2-windows-x64-setup.exe.sha256
+├── CodexScriptLoader-0.5.2-windows-x64.zip
+├── CodexScriptLoader-0.5.2-windows-x64.zip.sha256
+└── CodexScriptLoader-0.5.2-x64.spdx.json
 ```
 
 ### macOS live runtime（尚未测试）
@@ -108,7 +108,7 @@ macOS runtime 会发现 `Codex.app`，以随机 loopback CDP 端口启动它，�
 
 生产数据位于 `%LOCALAPPDATA%\CodexScriptLoader`，包含 `config.json`、`scripts`、`quarantine`、`logs` 和 `state`。日志使用 UTF-8 JSON Lines，诊断摘要会脱敏用户路径和无关命令行。
 
-在线更新固定使用 `JHees/codex-script-loader` 的稳定版 Release。Loader 会核对仓库、tag、资产名、架构、声明大小、GitHub 官方 HTTPS 下载主机、与压缩包同名的 `.sha256` 校验资产、ZIP 安全结构、协议版本及每个文件的哈希。GitHub Release + SHA-256 信任模型可以发现下载损坏和资产错配，但无法抵御 Release 与哈希文件被同时替换；独立签名与 Authenticode 留作后续安全增强。
+在线更新固定使用 `JHees/codex-script-loader` 的稳定版 Release。Loader 通过 Windows 系统 `curl.exe` 跟随仓库的 `releases/latest` 重定向，只构造预期的版本化资产名，完全不调用 GitHub API。它会核对 tag、资产名、架构、响应声明大小、GitHub 官方 HTTPS 下载主机、与压缩包同名的 `.sha256` 校验资产、ZIP 安全结构、协议版本及每个文件的哈希。GitHub Release + SHA-256 信任模型可以发现下载损坏和资产错配，但无法抵御 Release 与哈希文件被同时替换；独立签名与 Authenticode 留作后续安全增强。
 
 Windows 宿主通过官方包 API 启动 Codex，使用随机 loopback CDP 端口，并在注入前核对所属进程和目标 renderer。整个过程保持 Codex 应用文件不变，也不需要访问 `WindowsApps` 或申请管理员权限。
 

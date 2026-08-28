@@ -23,8 +23,7 @@ internal sealed class LoaderApplicationContext : ApplicationContext
         updateManager = new OnlineUpdateManager(
             paths: LoaderPaths.ForProduction(),
             logger,
-            SwitchHostAsync,
-            fallbackDownload: supervisor.DownloadUpdateResourceAsync);
+            SwitchHostAsync);
         supervisor.UpdateManager = updateManager;
         dispatcher.CreateControl();
 

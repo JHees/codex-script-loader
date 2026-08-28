@@ -11,7 +11,6 @@ public static class UpdatePackageVerifier
     private static readonly HashSet<string> AllowedDownloadHosts = new(StringComparer.OrdinalIgnoreCase)
     {
         "github.com",
-        "api.github.com",
         "objects.githubusercontent.com",
         "release-assets.githubusercontent.com",
         "github-releases.githubusercontent.com",

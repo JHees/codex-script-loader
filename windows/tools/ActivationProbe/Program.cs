@@ -14,7 +14,7 @@ internal static class Program
         try
         {
             Console.OutputEncoding = System.Text.Encoding.UTF8;
-            Console.WriteLine("Codex Script Loader Activation Probe v0.5.1");
+            Console.WriteLine("Codex Script Loader Activation Probe v0.5.2");
             var package = PackageDiscovery.DiscoverCodexForCurrentUser();
             Write("package.fullName", package.PackageFullName);
             Write("package.family", package.PackageFamilyName);
