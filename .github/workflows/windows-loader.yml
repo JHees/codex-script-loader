@@ -8,7 +8,7 @@ on:
   pull_request:
     paths:
       - "windows/**"
-      - "packages/bennett-ui-improvements/**"
+      - "packages/example-ui-plugin/**"
       - "src/settings-host.mjs"
       - "Directory.Build.props"
       - "global.json"

@@ -60,12 +60,12 @@ try {
     const metric = node => { const style = getComputedStyle(node); const rect = node.getBoundingClientRect(); return { tag: node.tagName, className: String(node.className || ""), text: String(node.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 160), rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }, color: style.color, background: style.backgroundColor, border: style.border, borderRadius: style.borderRadius, padding: style.padding, fontSize: style.fontSize, fontWeight: style.fontWeight }; };
     return { viewport: { width: innerWidth, height: innerHeight }, content: content ? metric(content) : null, headings: content ? [...content.querySelectorAll("h1,h2,h3")].map(metric) : [], rows: rows.map(metric) };
   })()`);
-  const bennett = await rectFor(`document.querySelector('[data-codex-loader-settings="nav:co.bennett.ui-improvements:main"]')`);
-  if (!bennett) throw new Error("Bennett settings navigation entry not found");
-  await clickAt(bennett);
+  const example = await rectFor(`document.querySelector('[data-codex-loader-settings="nav:dev.codex-script-loader.example-ui:main"]')`);
+  if (!example) throw new Error("Example plugin settings navigation entry not found");
+  await clickAt(example);
   await wait(500);
-  const bennettFile = await capture("bennett-settings-before.png");
-  console.log(JSON.stringify({ nativeFile, bennettFile, nativeMetrics }, null, 2));
+  const exampleFile = await capture("example-plugin-settings-before.png");
+  console.log(JSON.stringify({ nativeFile, exampleFile, nativeMetrics }, null, 2));
 } finally {
   await session.close();
 }

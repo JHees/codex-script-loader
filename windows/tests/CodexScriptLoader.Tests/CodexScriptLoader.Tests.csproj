@@ -10,11 +10,11 @@
     <ProjectReference Include="..\..\src\CodexScriptLoader.Windows\CodexScriptLoader.Windows.csproj" />
   </ItemGroup>
   <ItemGroup>
-    <Content Include="..\..\..\packages\bennett-ui-improvements\index.js" Link="fixtures\bennett-ui-improvements\index.js" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="..\..\..\packages\bennett-ui-improvements\manifest.json" Link="fixtures\bennett-ui-improvements\manifest.json" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="..\..\..\packages\bennett-ui-improvements\NOTICE.md" Link="fixtures\bennett-ui-improvements\NOTICE.md" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="..\..\..\packages\bennett-ui-improvements\README.md" Link="fixtures\bennett-ui-improvements\README.md" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="..\..\..\packages\bennett-ui-improvements\LICENSE" Link="fixtures\bennett-ui-improvements\LICENSE" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\..\packages\example-ui-plugin\index.js" Link="fixtures\example-ui-plugin\index.js" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\..\packages\example-ui-plugin\manifest.json" Link="fixtures\example-ui-plugin\manifest.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\..\packages\example-ui-plugin\NOTICE.md" Link="fixtures\example-ui-plugin\NOTICE.md" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\..\packages\example-ui-plugin\README.md" Link="fixtures\example-ui-plugin\README.md" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\..\packages\example-ui-plugin\LICENSE" Link="fixtures\example-ui-plugin\LICENSE" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\..\src\settings-host.mjs" Link="fixtures\settings-host.mjs" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

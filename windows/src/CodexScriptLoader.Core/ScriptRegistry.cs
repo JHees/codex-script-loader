@@ -31,6 +31,8 @@ public sealed partial class ScriptRegistry
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
         paths.EnsureDirectories();
+        await RecoverPendingPluginUpdateAsync(cancellationToken).ConfigureAwait(false);
+        CleanupOrphanedPendingPackages();
         await ReloadConfigAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -310,6 +312,42 @@ public sealed partial class ScriptRegistry
             }
         }
 
+        PluginUpdateDescriptor? update = null;
+        if (root.TryGetProperty("update", out var updateElement))
+        {
+            if (updateElement.ValueKind != JsonValueKind.Object)
+            {
+                throw new InvalidDataException("Manifest update must be an object.");
+            }
+
+            var provider = RequiredText(updateElement, "provider", 32);
+            if (provider != "github-releases")
+            {
+                throw new InvalidDataException("Manifest update provider must be github-releases.");
+            }
+
+            var repository = RequiredText(updateElement, "repository", 201);
+            if (!GitHubRepositoryRegex().IsMatch(repository) || repository.EndsWith(".git", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException("Manifest update repository must be owner/repository.");
+            }
+
+            var asset = RequiredText(updateElement, "asset", 160);
+            if (Path.GetFileName(asset) != asset || asset.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || !asset.EndsWith(".zip", StringComparison.OrdinalIgnoreCase) ||
+                asset.Split("{version}", StringSplitOptions.None).Length != 2 || asset.Replace("{version}", string.Empty, StringComparison.Ordinal).IndexOfAny(['{', '}']) >= 0)
+            {
+                throw new InvalidDataException("Manifest update asset must be a versioned ZIP filename using {version}.");
+            }
+
+            var version = OptionalText(root, "version", "0.0.0", 64);
+            if (!StableVersionRegex().IsMatch(version))
+            {
+                throw new InvalidDataException("Manifest update requires a stable major.minor.patch version.");
+            }
+
+            update = new PluginUpdateDescriptor(provider, repository, asset);
+        }
+
         return new ScriptDescriptor(
             id,
             OptionalText(root, "name", id, 128),
@@ -326,7 +364,8 @@ public sealed partial class ScriptRegistry
             documentation,
             settingsMode,
             settingsPageId,
-            settingsPageTitle);
+            settingsPageTitle,
+            update);
     }
 
     private static string ValidateRelativePackagePath(string? value, string name)
@@ -366,4 +405,10 @@ public sealed partial class ScriptRegistry
 
     [GeneratedRegex("^[A-Za-z_$][A-Za-z0-9_$]{0,127}$", RegexOptions.CultureInvariant)]
     private static partial Regex LifecycleRegex();
+
+    [GeneratedRegex("^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$", RegexOptions.CultureInvariant)]
+    private static partial Regex GitHubRepositoryRegex();
+
+    [GeneratedRegex("^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)$", RegexOptions.CultureInvariant)]
+    private static partial Regex StableVersionRegex();
 }

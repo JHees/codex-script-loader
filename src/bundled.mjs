@@ -2,7 +2,7 @@ import { fileURLToPath } from "node:url";
 import { loadScriptDescriptor } from "./manifest.mjs";
 
 const BUNDLED_PACKAGES = [
-  fileURLToPath(new URL("../packages/bennett-ui-improvements/", import.meta.url))
+  fileURLToPath(new URL("../packages/example-ui-plugin/", import.meta.url))
 ];
 
 export async function ensureBundledPackages(registry) {

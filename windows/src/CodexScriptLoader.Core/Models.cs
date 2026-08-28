@@ -55,7 +55,57 @@ public sealed record ScriptDescriptor(
     string? Documentation,
     string SettingsMode,
     string? SettingsPageId,
-    string? SettingsPageTitle);
+    string? SettingsPageTitle,
+    PluginUpdateDescriptor? Update);
+
+public sealed record PluginUpdateDescriptor(
+    string Provider,
+    string Repository,
+    string Asset);
+
+public sealed record PluginUpdatePreview(
+    string Token,
+    string Id,
+    string CurrentVersion,
+    string Version,
+    string ArchiveHash,
+    string CurrentFingerprint,
+    IReadOnlyList<string> NewPermissions);
+
+public enum PluginUpdateStage
+{
+    Unsupported,
+    Idle,
+    Checking,
+    UpToDate,
+    Available,
+    Downloading,
+    Verifying,
+    AwaitingConfirmation,
+    WaitingForEnable,
+    WaitingForRenderer,
+    Installing,
+    Reloading,
+    Succeeded,
+    RolledBack,
+    Failed,
+}
+
+public sealed record PluginUpdateSnapshot(
+    string Id,
+    bool Supported,
+    bool Automatic,
+    PluginUpdateStage State,
+    string? AvailableVersion = null,
+    DateTimeOffset? LastCheckedAt = null,
+    string? ReleaseUrl = null,
+    double? Progress = null,
+    IReadOnlyList<string>? NewPermissions = null,
+    bool LocalChanges = false,
+    bool RequiresConfirmation = false,
+    string? ConfirmationToken = null,
+    string? ErrorCode = null,
+    string? Error = null);
 
 public sealed record InjectionPlan(
     IReadOnlyList<ScriptDescriptor> Scripts,
@@ -86,7 +136,8 @@ public sealed record PluginSnapshot(
     string? SettingsPageTitle,
     string? Documentation,
     string? DocumentationExcerpt,
-    bool Legacy);
+    bool Legacy,
+    PluginUpdateSnapshot? Update);
 
 public sealed record PluginInstallPreview(
     string Token,

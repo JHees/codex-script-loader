@@ -6,7 +6,7 @@
 
 仓库：<https://github.com/openai/plugins>
 
-官方插件使用 `.codex-plugin/plugin.json`，主要承载 skills、apps、MCP、hooks、commands 和 assets。它适合扩展 agent 工具与工作流，但目前没有公开的 renderer JavaScript/CSS 注入接口，因此不能替代 Bennett UI 这类界面脚本加载器。
+官方插件使用 `.codex-plugin/plugin.json`，主要承载 skills、apps、MCP、hooks、commands 和 assets。它适合扩展 agent 工具与工作流，但目前没有公开的 renderer JavaScript/CSS 注入接口，因此不能替代本项目所加载的 renderer UI 插件。
 
 结论：保留官方插件体系，但它与本项目解决的是不同层次的问题。
 
@@ -91,10 +91,9 @@ Codex 文档：<https://opencli.info/docs/adapters/desktop/codex.html>
 
 本项目选择“外部 CDP 启动器 + 常驻 supervisor”，原因：
 
-1. Bennett UI 只需要 renderer 能力；
+1. UI 插件只需要 renderer 能力；
 2. 不修改 Codex 安装包，避免签名和 Store 副本维护；
 3. 不接触会话、认证和供应商文件；
 4. 可以完全独立于 CC Switch 更新；
 5. 通过 `Page.addScriptToEvaluateOnNewDocument` 和 target 监听可以补上简单 CDP injector 的刷新丢失问题；
 6. 如果将来 CDP 被官方构建禁用，可以保留 ASAR loader 作为明确标注的备用后端，而不是一开始就承担该复杂度。
-

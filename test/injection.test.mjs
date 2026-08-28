@@ -68,6 +68,17 @@ test("module lifecycle receives the scoped API and disposes on reload", () => {
   assert.equal(context.__moduleStops, 1);
 });
 
+test("host-only update metadata is not exposed through renderer api.manifest", () => {
+  const context = vm.createContext({ console });
+  const script = {
+    ...descriptor({ id: "test.update-host-only", source: "globalThis.__rendererManifest = api.manifest;" }),
+    update: { provider: "github-releases", repository: "Example/private-host-interface", asset: "plugin-{version}.zip" },
+    raw: { update: { provider: "github-releases", repository: "Example/private-host-interface", asset: "plugin-{version}.zip" } },
+  };
+  vm.runInContext(buildInjectionSource([script]), context);
+  assert.equal(Object.hasOwn(context.__rendererManifest, "update"), false);
+});
+
 test("settings API is permission-gated and owned by the loader host", () => {
   const context = vm.createContext({ console, setTimeout, clearTimeout });
   const script = {
@@ -78,7 +89,7 @@ test("settings API is permission-gated and owned by the loader host", () => {
   assert.equal(typeof context.__settingsApi.registerPage, "function");
   assert.equal(typeof context.__settingsApi.register, "function");
   assert.equal(context.__processKind, "renderer");
-  assert.equal(context.__codexScriptLoader.settingsHost.snapshot().version, "0.5.2");
+  assert.equal(context.__codexScriptLoader.settingsHost.snapshot().version, "0.5.3");
 
   const withoutPermission = { ...descriptor({ id: "test.no-settings", source: "globalThis.__settingsWithoutPermission = api.settings;" }), permissions: [] };
   vm.runInContext(buildInjectionSource([withoutPermission]), context);
@@ -92,7 +103,16 @@ test("settings host groups management and plugin pages under Script-Loader witho
   assert.match(source, /title: loaderLabels\(\)\.settings/);
   assert.match(source, /Add folder/);
   assert.match(source, /添加文件夹/);
+  assert.match(source, /async function addPlugin\(command\) \{\s+if \(busy\) return;\s+setBusy\(true\);/);
+  assert.doesNotMatch(source, /async function addPlugin\(command\) \{\s+if \(busy\) return;\s+setBusy\(true, labels\.checking\);/);
   assert.match(source, /reload_plugins/);
+  assert.match(source, /check_plugin_updates/);
+  assert.match(source, /set_plugin_auto_update/);
+  assert.match(source, /start_plugin_update/);
+  assert.match(source, /confirm_plugin_update/);
+  assert.match(source, /cancel_plugin_update/);
+  assert.match(source, /Check plugin updates/);
+  assert.match(source, /检查插件更新/);
   assert.match(source, /restart_codex/);
   assert.match(source, /color-background-primary/);
   assert.match(source, /p-panel/);

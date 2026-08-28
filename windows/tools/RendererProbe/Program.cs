@@ -7,6 +7,8 @@ namespace CodexScriptLoader.RendererProbe;
 
 internal static class Program
 {
+    private const string ExampleId = "dev.codex-script-loader.example-ui";
+
     private static async Task<int> Main(string[] args)
     {
         try
@@ -16,8 +18,9 @@ internal static class Program
             var paths = LoaderPaths.FromRoot(Path.Combine(repositoryRoot, ".runtime", "manual"));
             var registry = new ScriptRegistry(paths, Path.Combine(repositoryRoot, "src", "settings-host.mjs"));
             await registry.InitializeAsync();
+            await registry.EnsureBundledScriptAsync(Path.Combine(repositoryRoot, "packages", "example-ui-plugin"));
             var plan = await registry.BuildPlanAsync(force: true);
-            var expectedVersion = plan.Scripts.Single(script => script.Id == "co.bennett.ui-improvements").Version;
+            var expectedVersion = plan.Scripts.Single(script => script.Id == ExampleId).Version;
 
             var listeners = TcpOwnerLookup.GetIPv4LoopbackListeners(port);
             if (listeners.Count != 1)
@@ -55,29 +58,25 @@ internal static class Program
             await bridge.SyncAsync(targets, CancellationToken.None);
             var injector = new CdpInjector(client);
             var first = await injector.InjectAsync(plan.Source, plan.Scripts, targets, CancellationToken.None);
-            await Task.Delay(2200);
+            await Task.Delay(600);
             var second = await injector.InjectAsync(plan.Source, plan.Scripts, targets, CancellationToken.None);
-            await Task.Delay(2200);
+            await Task.Delay(600);
 
             await using var session = await CdpSession.ConnectAsync(new Uri(targets[0].WebSocketDebuggerUrl), CancellationToken.None);
             var evaluation = await session.SendAsync("Runtime.evaluate", new
             {
                 expression = """
                 (() => {
-                  const lifecycle = globalThis.__bennettUiImprovementsBigPizza;
-                  const settings = globalThis.__codexScriptLoader?.settingsHost?.snapshot?.();
+                  const lifecycle = globalThis.__codexScriptLoaderExampleUi;
                   return {
                     version: lifecycle?.version || null,
                     hasStop: typeof lifecycle?.stop === "function",
-                    hasSetFeature: typeof lifecycle?.setFeature === "function",
-                    features: Array.isArray(lifecycle?.features) ? lifecycle.features : [],
-                    loaderStatus: globalThis.__codexScriptLoader?.scripts?.["co.bennett.ui-improvements"]?.status || null,
-                    settings,
-                    projectStyles: document.querySelectorAll("#codexpp-sidebar-project-backgrounds").length,
-                    conversationStyles: document.querySelectorAll("#codexpp-sidebar-conversation-colors").length,
-                    settingsStyles: document.querySelectorAll("#bennett-ui-settings-style").length,
+                    hasSetBadgeEnabled: typeof lifecycle?.setBadgeEnabled === "function",
+                    loaderStatus: globalThis.__codexScriptLoader?.scripts?.["dev.codex-script-loader.example-ui"]?.status || null,
+                    styles: document.querySelectorAll("#codex-script-loader-example-ui-style").length,
+                    badges: document.querySelectorAll("#codex-script-loader-example-ui-badge").length,
                     loaderEntries: document.querySelectorAll('[data-codex-loader-settings="nav:loader:runtime"]').length,
-                    pluginEntries: document.querySelectorAll('[data-codex-loader-settings="nav:co.bennett.ui-improvements:main"]').length,
+                    pluginEntries: document.querySelectorAll('[data-codex-loader-settings="nav:dev.codex-script-loader.example-ui:main"]').length,
                     loaderErrors: Array.isArray(globalThis.__codexScriptLoader?.errors) ? globalThis.__codexScriptLoader.errors.length : 0
                   };
                 })()
@@ -87,25 +86,21 @@ internal static class Program
             var snapshot = evaluation.GetProperty("result").GetProperty("value");
             var version = snapshot.GetProperty("version").GetString();
             var loaderStatus = snapshot.GetProperty("loaderStatus").GetString();
-            if (version != expectedVersion || loaderStatus != "running" || !snapshot.GetProperty("hasStop").GetBoolean() || !snapshot.GetProperty("hasSetFeature").GetBoolean())
+            if (version != expectedVersion ||
+                loaderStatus != "running" ||
+                !snapshot.GetProperty("hasStop").GetBoolean() ||
+                !snapshot.GetProperty("hasSetBadgeEnabled").GetBoolean())
             {
-                throw new InvalidOperationException("Bennett lifecycle validation failed.");
+                throw new InvalidOperationException("Example plugin lifecycle validation failed.");
             }
 
-            foreach (var property in new[] { "projectStyles", "conversationStyles" })
+            foreach (var property in new[] { "styles", "badges", "loaderEntries", "pluginEntries" })
             {
                 var count = snapshot.GetProperty(property).GetInt32();
-                if (count != 1)
+                if (count > 1)
                 {
-                    throw new InvalidOperationException($"Duplicate or missing renderer node: {property}={count}.");
+                    throw new InvalidOperationException($"Duplicate renderer node: {property}={count}.");
                 }
-            }
-
-            if (snapshot.GetProperty("settingsStyles").GetInt32() > 1 ||
-                snapshot.GetProperty("loaderEntries").GetInt32() > 1 ||
-                snapshot.GetProperty("pluginEntries").GetInt32() > 1)
-            {
-                throw new InvalidOperationException("Duplicate settings host nodes were found.");
             }
 
             Console.WriteLine(JsonSerializer.Serialize(new

@@ -166,7 +166,12 @@ internal sealed class LoaderHostBridge : IAsyncDisposable
                 "set_auto_update" or
                 "check_for_updates" or
                 "start_update" or
-                "cancel_update"))
+                "cancel_update" or
+                "check_plugin_updates" or
+                "set_plugin_auto_update" or
+                "start_plugin_update" or
+                "confirm_plugin_update" or
+                "cancel_plugin_update"))
             {
                 throw new InvalidDataException("Bridge command is not allowed.");
             }

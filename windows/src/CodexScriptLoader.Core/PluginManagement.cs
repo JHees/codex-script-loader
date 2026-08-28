@@ -52,7 +52,8 @@ public sealed partial class ScriptRegistry
                     descriptor.SettingsPageTitle,
                     descriptor.Documentation,
                     documentation,
-                    legacy));
+                    legacy,
+                    null));
             }
             catch (Exception exception) when (exception is IOException or JsonException or InvalidDataException or UnauthorizedAccessException)
             {
@@ -73,7 +74,8 @@ public sealed partial class ScriptRegistry
                     null,
                     null,
                     null,
-                    true));
+                    true,
+                    null));
             }
         }
 
@@ -324,12 +326,19 @@ public sealed partial class ScriptRegistry
         long totalBytes = 0;
         var files = 0;
         var prefix = Path.GetFullPath(stageRoot).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var entry in archive.Entries)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var unixMode = (entry.ExternalAttributes >> 16) & 0xF000;
-            if (unixMode == 0xA000) throw new InvalidDataException("Plugin archives cannot contain symbolic links.");
-            var target = Path.GetFullPath(Path.Combine(stageRoot, entry.FullName.Replace('/', Path.DirectorySeparatorChar)));
+            if (unixMode == 0xA000 || (entry.ExternalAttributes & (int)FileAttributes.ReparsePoint) != 0) throw new InvalidDataException("Plugin archives cannot contain links or reparse points.");
+            var normalized = entry.FullName.Replace('\\', '/');
+            if (string.IsNullOrWhiteSpace(normalized) || normalized.StartsWith("/", StringComparison.Ordinal) ||
+                normalized.Split('/').Any(part => part == "..") || Path.IsPathRooted(normalized) || !names.Add(normalized))
+            {
+                throw new InvalidDataException("Plugin archive contains an unsafe or duplicate path.");
+            }
+            var target = Path.GetFullPath(Path.Combine(stageRoot, normalized.Replace('/', Path.DirectorySeparatorChar)));
             if (!target.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Plugin archive contains a path traversal entry.");
             if (string.IsNullOrEmpty(entry.Name))
             {

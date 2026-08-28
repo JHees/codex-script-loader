@@ -11,7 +11,7 @@ namespace CodexScriptLoader.Windows;
 
 internal sealed class LiveSupervisor : IAsyncDisposable
 {
-    public const string Version = "0.5.2";
+    public const string Version = "0.5.3";
     private static readonly TimeSpan GracefulRestartShutdownTimeout = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan ForcedRestartShutdownTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan PackageExitPollInterval = TimeSpan.FromMilliseconds(250);
@@ -25,6 +25,7 @@ internal sealed class LiveSupervisor : IAsyncDisposable
     private CdpClient? client;
     private CdpInjector? injector;
     private LoaderHostBridge? bridge;
+    private PluginUpdateManager? pluginUpdateManager;
     private CodexPackageIdentity? package;
     private CdpEndpointIdentity? endpoint;
     private IReadOnlyList<ScriptLoadResult> scripts = [];
@@ -80,10 +81,11 @@ internal sealed class LiveSupervisor : IAsyncDisposable
             }
 
             var settingsHost = Path.Combine(AppContext.BaseDirectory, "bundled", "settings-host.mjs");
-            var bundledBennett = Path.Combine(AppContext.BaseDirectory, "bundled", "bennett-ui-improvements");
+            var bundledExample = Path.Combine(AppContext.BaseDirectory, "bundled", "example-ui-plugin");
             registry = new ScriptRegistry(paths, settingsHost);
             await registry.InitializeAsync(cancellationToken).ConfigureAwait(false);
-            await registry.EnsureBundledScriptAsync(bundledBennett, cancellationToken).ConfigureAwait(false);
+            await registry.EnsureBundledScriptAsync(bundledExample, cancellationToken).ConfigureAwait(false);
+            await InitializePluginUpdateManagerAsync(cancellationToken).ConfigureAwait(false);
 
             var port = AllocateLoopbackPort();
             client = new CdpClient(port);
@@ -115,6 +117,15 @@ internal sealed class LiveSupervisor : IAsyncDisposable
             await bridge.SyncAsync(targets, cancellationToken).ConfigureAwait(false);
             await InjectAsync(targets, forceIds: null, cancellationToken).ConfigureAwait(false);
             StartMonitor();
+            var startupPluginUpdateManager = pluginUpdateManager;
+            if (State == LoaderState.Healthy && startupPluginUpdateManager is not null)
+            {
+                _ = Task.Run(async () =>
+                {
+                    try { await startupPluginUpdateManager.StartAfterHealthyAsync(lifetime.Token).ConfigureAwait(false); }
+                    catch (Exception exception) { HandlePluginUpdateFailure("plugin-update-startup-scan-failed", null, exception); }
+                });
+            }
         }
         catch (Exception exception)
         {
@@ -142,10 +153,11 @@ internal sealed class LiveSupervisor : IAsyncDisposable
             }
 
             var settingsHost = Path.Combine(AppContext.BaseDirectory, "bundled", "settings-host.mjs");
-            var bundledBennett = Path.Combine(AppContext.BaseDirectory, "bundled", "bennett-ui-improvements");
+            var bundledExample = Path.Combine(AppContext.BaseDirectory, "bundled", "example-ui-plugin");
             registry = new ScriptRegistry(paths, settingsHost);
             await registry.InitializeAsync(cancellationToken).ConfigureAwait(false);
-            await registry.EnsureBundledScriptAsync(bundledBennett, cancellationToken).ConfigureAwait(false);
+            await registry.EnsureBundledScriptAsync(bundledExample, cancellationToken).ConfigureAwait(false);
+            await InitializePluginUpdateManagerAsync(cancellationToken).ConfigureAwait(false);
 
             client = new CdpClient(transaction.Endpoint.Port);
             var targets = await WaitForTargetsAsync(client, TimeSpan.FromSeconds(10), cancellationToken).ConfigureAwait(false);
@@ -165,6 +177,15 @@ internal sealed class LiveSupervisor : IAsyncDisposable
                 .Select(script => script.Id).ToHashSet(StringComparer.Ordinal);
             await InjectAsync(targets, forceIds, cancellationToken).ConfigureAwait(false);
             logger.Info("managed-codex-adopted", new { transaction.Id, endpoint.Port, endpoint.OwnerPid, targetCount = targets.Count });
+            var adoptedPluginUpdateManager = pluginUpdateManager;
+            if (State == LoaderState.Healthy && adoptedPluginUpdateManager is not null)
+            {
+                _ = Task.Run(async () =>
+                {
+                    try { await adoptedPluginUpdateManager.StartAfterHealthyAsync(lifetime.Token).ConfigureAwait(false); }
+                    catch (Exception exception) { HandlePluginUpdateFailure("plugin-update-startup-scan-failed", null, exception); }
+                });
+            }
         }
         catch (Exception exception)
         {
@@ -278,9 +299,14 @@ internal sealed class LiveSupervisor : IAsyncDisposable
             {
                 await bridge.DisposeAsync().ConfigureAwait(false);
             }
+            if (pluginUpdateManager is not null)
+            {
+                await pluginUpdateManager.DisposeAsync().ConfigureAwait(false);
+            }
 
             client?.Dispose();
             bridge = null;
+            pluginUpdateManager = null;
             injector = null;
             client = null;
             registry = null;
@@ -457,7 +483,8 @@ internal sealed class LiveSupervisor : IAsyncDisposable
 
         if (command == "list_plugins")
         {
-            return await registry.ListPluginsAsync(RuntimeById(), cancellationToken).ConfigureAwait(false);
+            var plugins = await registry.ListPluginsAsync(RuntimeById(), cancellationToken).ConfigureAwait(false);
+            return plugins.Select(plugin => plugin with { Update = pluginUpdateManager?.SnapshotFor(plugin.Id) }).ToArray();
         }
 
         if (command == "set_plugin_enabled")
@@ -557,6 +584,49 @@ internal sealed class LiveSupervisor : IAsyncDisposable
             return (UpdateManager ?? throw new InvalidOperationException("Update manager is unavailable.")).CancelDownload();
         }
 
+        if (command == "check_plugin_updates")
+        {
+            return await (pluginUpdateManager ?? throw new InvalidOperationException("Plugin update manager is unavailable."))
+                .CheckAsync(ReadIds(payload), cancellationToken).ConfigureAwait(false);
+        }
+
+        if (command == "set_plugin_auto_update")
+        {
+            return await (pluginUpdateManager ?? throw new InvalidOperationException("Plugin update manager is unavailable."))
+                .SetAutomaticAsync(RequiredPayloadText(payload, "id", 128), RequiredPayloadBoolean(payload, "enabled"), cancellationToken).ConfigureAwait(false);
+        }
+
+        if (command == "start_plugin_update")
+        {
+            var manager = pluginUpdateManager ?? throw new InvalidOperationException("Plugin update manager is unavailable.");
+            var id = RequiredPayloadText(payload, "id", 128);
+            _ = Task.Run(async () =>
+            {
+                try { await manager.StartUpdateAsync(id, CancellationToken.None).ConfigureAwait(false); }
+                catch (Exception exception) { HandlePluginUpdateFailure("background-plugin-update-failed", id, exception); }
+            });
+            return new { accepted = true };
+        }
+
+        if (command == "confirm_plugin_update")
+        {
+            var manager = pluginUpdateManager ?? throw new InvalidOperationException("Plugin update manager is unavailable.");
+            var id = RequiredPayloadText(payload, "id", 128);
+            var token = RequiredPayloadText(payload, "token", 64);
+            _ = Task.Run(async () =>
+            {
+                try { await manager.ConfirmAsync(id, token, CancellationToken.None).ConfigureAwait(false); }
+                catch (Exception exception) { HandlePluginUpdateFailure("confirmed-plugin-update-failed", id, exception); }
+            });
+            return new { accepted = true };
+        }
+
+        if (command == "cancel_plugin_update")
+        {
+            return (pluginUpdateManager ?? throw new InvalidOperationException("Plugin update manager is unavailable."))
+                .Cancel(RequiredPayloadText(payload, "id", 128));
+        }
+
         var snapshot = Snapshot;
         return new
         {
@@ -607,6 +677,35 @@ internal sealed class LiveSupervisor : IAsyncDisposable
     private IReadOnlyDictionary<string, ScriptLoadResult> RuntimeById() => scripts
         .GroupBy(script => script.Id, StringComparer.Ordinal)
         .ToDictionary(group => group.Key, group => group.Last(), StringComparer.Ordinal);
+
+    private async Task ReloadAndVerifyPluginAsync(string id, CancellationToken cancellationToken)
+    {
+        var result = await ReloadPluginsAsync(new HashSet<string>(StringComparer.Ordinal) { id }, cancellationToken).ConfigureAwait(false);
+        var lifecycle = scripts.Where(script => string.Equals(script.Id, id, StringComparison.Ordinal)).ToArray();
+        if (result.Failed.Count > 0 || lifecycle.Length < Math.Max(1, lastTargetCount) || lifecycle.Any(script => script.LifecycleResult != "running" || script.ErrorCode is not null))
+        {
+            throw new InvalidOperationException($"Plugin lifecycle verification failed: {id}.");
+        }
+    }
+
+    private async Task InitializePluginUpdateManagerAsync(CancellationToken cancellationToken)
+    {
+        if (registry is null) throw new InvalidOperationException("Plugin registry is unavailable.");
+        if (pluginUpdateManager is not null) await pluginUpdateManager.DisposeAsync().ConfigureAwait(false);
+        pluginUpdateManager = new PluginUpdateManager(paths, registry, logger, ReloadAndVerifyPluginAsync, () => endpoint is not null && lastTargetCount > 0);
+        await pluginUpdateManager.InitializeAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private void HandlePluginUpdateFailure(string eventName, string? pluginId, Exception exception)
+    {
+        if (exception is PluginUpdateRollbackException)
+        {
+            logger.Error(eventName, exception);
+            SetState(LoaderState.Degraded, exception.Message);
+            return;
+        }
+        logger.Warn(eventName, new { pluginId, message = JsonlLogger.Redact(exception.Message) });
+    }
 
     private static IReadOnlySet<string>? ReadIds(JsonElement payload)
     {
@@ -774,6 +873,10 @@ internal sealed class LiveSupervisor : IAsyncDisposable
         if (bridge is not null)
         {
             await bridge.DisposeAsync().ConfigureAwait(false);
+        }
+        if (pluginUpdateManager is not null)
+        {
+            await pluginUpdateManager.DisposeAsync().ConfigureAwait(false);
         }
 
         client?.Dispose();

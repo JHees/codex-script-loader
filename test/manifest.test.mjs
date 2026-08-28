@@ -34,6 +34,32 @@ test("manifest accepts a safe lifecycle global and rejects property paths", () =
   assert.throws(() => validateManifest({ id: "test.valid", integrity: "sha256-bad" }, root), /integrity/);
 });
 
+test("manifest exposes a validated GitHub Release update interface", () => {
+  const root = "C:/loader/scripts/test";
+  assert.deepEqual(validateManifest({
+    id: "test.valid",
+    version: "1.2.3",
+    update: {
+      provider: "github-releases",
+      repository: "Example/plugin-repository",
+      asset: "example-plugin-{version}.zip",
+    },
+  }, root).update, {
+    provider: "github-releases",
+    repository: "Example/plugin-repository",
+    asset: "example-plugin-{version}.zip",
+  });
+  assert.equal(validateManifest({ id: "test.valid" }, root).update, null);
+  assert.throws(() => validateManifest({ id: "test.valid", update: { provider: "other", repository: "Example/repo", asset: "plugin-{version}.zip" } }, root), /update provider/);
+  assert.throws(() => validateManifest({ id: "test.valid", update: { provider: "github-releases", repository: "https:\/\/github.com\/Example\/repo", asset: "plugin-{version}.zip" } }, root), /repository/);
+  assert.throws(() => validateManifest({ id: "test.valid", update: { provider: "github-releases", repository: "Example/repo", asset: "folder\/plugin-{version}.zip" } }, root), /asset/);
+  assert.throws(() => validateManifest({ id: "test.valid", update: { provider: "github-releases", repository: "Example/repo", asset: "plugin-{tag}.zip" } }, root), /asset/);
+  assert.throws(() => validateManifest({ id: "test.valid", version: "1.2.3-beta.1", update: { provider: "github-releases", repository: "Example/repo", asset: "plugin-{version}.zip" } }, root), /stable/);
+  assert.throws(() => validateManifest({ id: "test.valid", version: "1.2.3", update: { provider: "github-releases", repository: "Example/repo.git", asset: "plugin-{version}.zip" } }, root), /repository/);
+  assert.throws(() => validateManifest({ id: "test.valid", version: "1.2.3", update: { provider: "github-releases", repository: "Example/repo", asset: "plugin-{version}-{version}.zip" } }, root), /asset/);
+  assert.throws(() => validateManifest({ id: "test.valid", version: "1.2.3", update: { provider: "github-releases", repository: "Example/repo", asset: "plugin:{version}.zip" } }, root), /asset/);
+});
+
 test("directory packages enforce the same source size limit", async () => {
   const root = await makeTempRoot();
   const directory = path.join(root, "test.large-package");

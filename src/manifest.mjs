@@ -6,6 +6,8 @@ import { integrityLabel, sha256Text } from "./hash.mjs";
 const ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 const RUN_AT = new Set(["document-start", "document-end"]);
 const LIFECYCLE_GLOBAL_PATTERN = /^[A-Za-z_$][A-Za-z0-9_$]{0,127}$/;
+const GITHUB_REPOSITORY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}\/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/;
+const STABLE_VERSION_PATTERN = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
 export const MAX_SOURCE_BYTES = 512 * 1024;
 export const MAX_MANIFEST_BYTES = 64 * 1024;
 
@@ -88,6 +90,23 @@ export function validateManifest(input, scriptDirectory) {
     }
   }
 
+  let update = null;
+  if (input.update !== undefined) {
+    if (!input.update || typeof input.update !== "object" || Array.isArray(input.update)) throw new Error("manifest update must be an object");
+    const provider = String(input.update.provider || "");
+    if (provider !== "github-releases") throw new Error("manifest update provider must be github-releases");
+    const repository = String(input.update.repository || "");
+    if (!GITHUB_REPOSITORY_PATTERN.test(repository) || repository.toLowerCase().endsWith(".git")) throw new Error("manifest update repository must be owner/repository");
+    const asset = String(input.update.asset || "");
+    const placeholderCount = asset.split("{version}").length - 1;
+    if (!asset || asset.length > 160 || path.basename(asset) !== asset || /[<>:"\\|?*\u0000-\u001f]/u.test(asset) || asset.includes("/") || !asset.toLowerCase().endsWith(".zip") || placeholderCount !== 1 || /[{}]/u.test(asset.replace("{version}", ""))) {
+      throw new Error("manifest update asset must be a versioned ZIP filename using {version}");
+    }
+    const version = String(input.version || "0.0.0");
+    if (!STABLE_VERSION_PATTERN.test(version)) throw new Error("manifest update requires a stable major.minor.patch version");
+    update = Object.freeze({ provider, repository, asset });
+  }
+
   return {
     schemaVersion,
     id,
@@ -106,6 +125,7 @@ export function validateManifest(input, scriptDirectory) {
     settingsMode,
     settingsPageId,
     settingsPageTitle,
+    update,
     raw: input
   };
 }

@@ -74,8 +74,8 @@ foreach ($required in @(
   "$hostRelative/CodexScriptLoader.Core.dll",
   "$hostRelative/CodexScriptLoader.Interop.dll",
   "$hostRelative/coreclr.dll",
-  "$hostRelative/bundled/bennett-ui-improvements/index.js",
-  "$hostRelative/bundled/bennett-ui-improvements/manifest.json",
+  "$hostRelative/bundled/example-ui-plugin/index.js",
+  "$hostRelative/bundled/example-ui-plugin/manifest.json",
   "$hostRelative/bundled/settings-host.mjs"
 )) {
   if (-not $appHashes.Contains($required)) { throw "Required application payload is missing: $required" }

@@ -26,6 +26,14 @@ quarantine, reload, and managed Codex restart. Folder and ZIP installation is
 staged and validated before it is committed. Built-in packages cannot be
 removed or replaced from the settings UI.
 
+`PluginUpdateManager` is a deep native module behind that management boundary.
+Its public surface scans plugins, stores per-plugin automatic-update preferences,
+starts or confirms an update, cancels a download, and returns snapshots. GitHub
+redirects, system-`curl.exe` transport, checksum and ZIP verification, package
+fingerprints, permission comparison, confirmation tokens, registry locking,
+transaction journals, rollback, and targeted lifecycle verification stay inside
+the module. A fixture transport keeps automated tests independent of GitHub.
+
 The renderer bridge is private Loader infrastructure, not part of the plugin
 API. It validates the command allowlist and payload shape. Results are serialized
 with stable camel-case fields, including actual reload counts and failures.
@@ -51,10 +59,15 @@ for the complete compatible-v1 contract.
 
 ## Bundled package
 
-The sole bundled package is Bennett UI Improvements. Its canonical source stays
-in the adjacent Bennett repository and is copied mechanically into this package.
-The bundled manifest and README provide the reference metadata and settings-page
-declaration.
+The sole bundled package is the Loader-owned Example UI Plugin. It is a concrete
+adapter at the renderer plugin package seam and exists only to demonstrate the
+public manifest, permission, settings, storage, and lifecycle interface.
+
+Third-party plugin repositories are independent. The Loader does not vendor,
+mirror, synchronize, test, version, or release their implementations. Users
+install third-party release artifacts through package management. An optional
+manifest update declaration lets the native host consume a repository's own
+stable GitHub Release assets without copying its source into this repository.
 
 ## Windows entry
 

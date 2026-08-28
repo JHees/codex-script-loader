@@ -6,7 +6,7 @@
 
 **打开 Codex 调试入口，加载用户脚本，并自动管理注入、重载与清理。**
 
-[![Version](https://img.shields.io/badge/version-0.5.2-f97316)](https://github.com/JHees/codex-script-loader)
+[![Version](https://img.shields.io/badge/version-0.5.3-f97316)](https://github.com/JHees/codex-script-loader)
 [![Windows](https://img.shields.io/badge/Windows-11-0078d4?logo=windows11)](#系统要求)
 [![macOS](https://img.shields.io/badge/macOS-未测试-999999?logo=apple)](#平台支持)
 [![.NET](https://img.shields.io/badge/.NET-10-512bd4?logo=dotnet)](global.json)
@@ -32,7 +32,8 @@ Windows 使用无控制台、无托盘图标的原生 .NET 10 后台宿主，是
 | macOS runtime | 发现 `Codex.app`，通过 Node.js 提供相同的 CDP 与脚本流程；当前未测试。 |
 | 诊断与重载 | Windows 再次启动同一 EXE 可打开诊断；`--reload` 原位替换脚本。 |
 | Loader 在线升级 | 启动后检查稳定版 GitHub Release，并在不重启 Codex 的情况下切换已校验宿主。 |
-| 内置 Bennett UI | 首次运行安装 Bennett UI Improvements 1.4.11。 |
+| 插件 Release 更新 | 扫描声明了公开 GitHub 更新源的插件，并对用户单独启用的更新执行校验、原子替换和定向重载。 |
+| 内置示例插件 | 首次运行安装一个由 Loader 自身维护、用于演示插件包契约的小型 UI 插件。 |
 | Windows 打包 | 为 x64/arm64 生成每用户 NSIS 安装器和 portable ZIP。 |
 
 ## 系统要求
@@ -51,6 +52,8 @@ Windows 使用无控制台、无托盘图标的原生 .NET 10 后台宿主，是
 
 0.5.2 会把更新错误固定显示在更新卡片内，并使用 Windows 系统 `curl.exe` 解析最新稳定 GitHub Release、直接下载发布资产。它不调用 GitHub API，也不读取 GitHub CLI 凭据。传输仅允许 HTTPS 与 GitHub 官方下载主机，并继续执行大小、SHA-256、压缩包、更新清单和逐文件校验。
 
+0.5.3 新增默认关闭、逐插件启用的 GitHub Release 更新。声明更新源的第三方插件会被独立扫描，通过相同的受限传输下载，经强制 `.sha256` 校验后以事务方式替换并原位重载。Loader 自有的示例插件仍随 Loader 打包，不进入第三方更新流程。
+
 ### 从源码构建
 
 ```powershell
@@ -68,12 +71,12 @@ build/
 ├── app/active.json
 ├── app/previous.json
 ├── app/update-manifest.json
-├── app/versions/0.5.2/win-x64/               # 完整 Loader 宿主
-├── CodexScriptLoader-0.5.2-windows-x64-setup.exe
-├── CodexScriptLoader-0.5.2-windows-x64-setup.exe.sha256
-├── CodexScriptLoader-0.5.2-windows-x64.zip
-├── CodexScriptLoader-0.5.2-windows-x64.zip.sha256
-└── CodexScriptLoader-0.5.2-x64.spdx.json
+├── app/versions/0.5.3/win-x64/               # 完整 Loader 宿主
+├── CodexScriptLoader-0.5.3-windows-x64-setup.exe
+├── CodexScriptLoader-0.5.3-windows-x64-setup.exe.sha256
+├── CodexScriptLoader-0.5.3-windows-x64.zip
+├── CodexScriptLoader-0.5.3-windows-x64.zip.sha256
+└── CodexScriptLoader-0.5.3-x64.spdx.json
 ```
 
 ### macOS live runtime（尚未测试）
@@ -114,7 +117,9 @@ Windows 宿主通过官方包 API 启动 Codex，使用随机 loopback CDP 端�
 
 ## 脚本包
 
-已安装插件统一在 **Codex 设置 → Script-Loader → 设置** 中管理。该页面展示实时状态，支持启用/禁用、单个或全部重载、本地文件夹/ZIP 安装、隔离与恢复，以及受控的 Codex 重启。声明了设置页的插件会直接列在“设置”入口下方。
+已安装插件统一在 **Codex 设置 → Script-Loader → 设置** 中管理。该页面展示实时状态，支持启用/禁用、单个或全部重载、本地文件夹/ZIP 安装、隔离与恢复、检查更新，以及受控的 Codex 重启。声明了设置页的插件会直接列在“设置”入口下方。
+
+第三方包可以选择声明自己的公开 GitHub Release 更新源。原生 Windows 宿主会在首次进入健康状态后扫描一次，也可从设置页手动检查；逐插件自动替换默认关闭。更新必须来自稳定的 `vMAJOR.MINOR.PATCH` Release，并同时提供版本化 ZIP 与同名 `.sha256`。新增权限或检测到本地修改时必须确认；插件已禁用或没有可用 renderer 时不会替换。此功能不建立远程市场，也不要求 Loader 仓库同步第三方源码、版本或发布流程。
 
 完整的插件编写与生命周期约定见 [`docs/PLUGIN_SPEC.md`](docs/PLUGIN_SPEC.md)。
 版本化目录、Release 校验和无需重启 Codex 的宿主接管流程见 [`docs/UPDATE_PROTOCOL.md`](docs/UPDATE_PROTOCOL.md)。
@@ -134,7 +139,9 @@ Renderer 包由 `manifest.json` 与入口脚本组成：
 }
 ```
 
-内置的 [Bennett UI Improvements](packages/bennett-ui-improvements) 是参考实现，Loader 保留其 manifest、权限、SHA-256、归属声明与生命周期语义。
+内置的 [Example UI Plugin](packages/example-ui-plugin) 是插件包 interface 的参考 adapter。它完全由本仓库维护和版本化，用于演示 manifest 权限、设置页注册、Loader 范围存储、可逆 DOM 修改和生命周期清理。
+
+第三方插件是独立项目。其源码、测试、版本、发布与部署说明均留在各自仓库中；Loader 开发不再要求把第三方源码复制或同步到本仓库。需要使用第三方插件时，应在设置页安装其独立发布的文件夹或 ZIP。
 
 Windows 添加自定义脚本时，将脚本包目录放入 `%LOCALAPPDATA%\CodexScriptLoader\scripts\<script-id>`，再运行 `CodexScriptLoader.exe --reload`。Node.js runtime 可用以下命令安装脚本包或单个 `.js` 文件：
 
@@ -183,8 +190,6 @@ Codex 更新可能需要 Loader 或脚本适配。本项目独立开发，与 Op
 
 ## 来源与许可
 
-- 内置插件：[Better UI Improvements for Codex](https://github.com/JHees/better-ui-improvements-for-codex)。保留 Bennett 包标识、原作者和 MIT 声明；Codex++ 支持已止于市场发布的 `1.2.4`，当前版本面向本 Loader。
-- Bennett 上游：[b-nnett/codex-plusplus-bennett-ui](https://github.com/b-nnett/codex-plusplus-bennett-ui)。
 - 编辑抽象图标方法：[ZzzLc0405/photo-abstract-editorial](https://github.com/ZzzLc0405/photo-abstract-editorial)。
 
-Loader 代码使用 [MIT License](LICENSE)。内置第三方代码继续遵守各自包含的许可与归属声明。`windows/branding` 下的改编品牌资源不属于 MIT 代码许可范围，受 [`windows/branding/README.md`](windows/branding/README.md) 记录的非商业限制约束；商业分发前必须获得原作者授权。
+Loader 代码和内置示例使用 [MIT License](LICENSE)。第三方插件在本仓库之外继续遵守各自的许可证。`windows/branding` 下的改编品牌资源不属于 MIT 代码许可范围，受 [`windows/branding/README.md`](windows/branding/README.md) 记录的非商业限制约束；商业分发前必须获得原作者授权。

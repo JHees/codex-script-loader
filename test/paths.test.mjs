@@ -17,5 +17,5 @@ test("path boundary rejects traversal", () => {
 });
 
 test("legacy script ids are normalized", () => {
-  assert.equal(safeScriptIdFromName("Bennett UI Improvements.js"), "local.bennett-ui-improvements-js");
+  assert.equal(safeScriptIdFromName("Example UI.js"), "local.example-ui-js");
 });

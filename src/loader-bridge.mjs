@@ -6,7 +6,8 @@ const ALLOWED_COMMANDS = new Set([
   "get_app_status", "list_plugins", "set_plugin_enabled", "reload_scripts", "reload_plugins",
   "pick_plugin_folder", "pick_plugin_archive", "install_plugin", "cancel_plugin_install",
   "remove_plugin", "list_quarantined", "restore_plugin", "restart_codex",
-  "get_update_status", "set_auto_update", "check_for_updates", "start_update", "cancel_update"
+  "get_update_status", "set_auto_update", "check_for_updates", "start_update", "cancel_update",
+  "check_plugin_updates", "set_plugin_auto_update", "start_plugin_update", "confirm_plugin_update", "cancel_plugin_update"
 ]);
 const MAX_REQUEST_BYTES = 16 * 1024;
 

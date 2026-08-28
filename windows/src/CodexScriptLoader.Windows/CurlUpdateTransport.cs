@@ -37,10 +37,13 @@ internal sealed class CurlUpdateTransport : IUpdateTransport
     }
 
     public async Task<GitHubReleaseInfo> ResolveLatestReleaseAsync(CancellationToken cancellationToken)
+        => await ResolveLatestReleaseAsync(Repository, cancellationToken).ConfigureAwait(false);
+
+    internal async Task<GitHubReleaseInfo> ResolveLatestReleaseAsync(string repository, CancellationToken cancellationToken)
     {
-        var latest = new Uri($"https://github.com/{Repository}/releases/latest");
+        var latest = new Uri($"https://github.com/{repository}/releases/latest");
         var probe = await ProbeAsync(latest, requireSize: false, cancellationToken).ConfigureAwait(false);
-        var prefix = $"https://github.com/{Repository}/releases/tag/v";
+        var prefix = $"https://github.com/{repository}/releases/tag/v";
         if (!probe.FinalUri.AbsoluteUri.StartsWith(prefix, StringComparison.Ordinal) ||
             probe.FinalUri.Query.Length != 0 || probe.FinalUri.Fragment.Length != 0)
         {

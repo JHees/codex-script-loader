@@ -30,11 +30,17 @@ plugin-id/
   "main": "index.js",
   "scope": "renderer",
   "runAt": "document-start",
+  "lifecycleGlobal": "__localExampleLifecycle",
   "documentation": "README.md",
   "settings": {
     "mode": "page",
     "pageId": "main",
     "title": "Example settings"
+  },
+  "update": {
+    "provider": "github-releases",
+    "repository": "owner/repository",
+    "asset": "example-{version}.zip"
   },
   "permissions": ["dom", "local-storage", "settings"]
 }
@@ -42,10 +48,24 @@ plugin-id/
 
 - `schemaVersion` remains `1` for compatibility.
 - `id`, `name`, `version`, `main`, `scope`, and `runAt` retain their existing meaning.
+- `lifecycleGlobal` is an optional JavaScript global property name for self-executing plugins. When used, the named object exposes an idempotent `stop()` method. Module-style plugins should prefer exported `start` and `stop` hooks.
 - `documentation` is a safe package-relative Markdown file. Current packages use `README.md`.
 - `settings.mode` is `page` or `none`. A `page` declaration requires the `settings` permission. `pageId` defaults to `main`.
 - Omitting `settings` or `documentation` is accepted only as legacy compatibility behavior.
+- `update` is optional host metadata. Version 1 supports only public `github.com` stable Releases through `provider: "github-releases"`. `repository` is exactly `owner/repository`, `asset` is a ZIP filename with one `{version}` placeholder, the tag is `v{version}`, and the checksum asset is `<ZIP filename>.sha256`.
+- Update-aware packages use a stable three-part numeric version. A candidate must preserve the installed package ID, repository, asset template, and declared update provider. Changing the update source requires a manual installation.
+- The Loader never includes `update` in renderer `api.manifest`. It is a native package-management interface, not plugin runtime authority.
 - `permissions` are capabilities, not a security sandbox. Renderer plugins execute trusted local JavaScript in Codex and must be reviewed before enabling.
+
+## GitHub Release updates
+
+The native Windows host scans update-aware third-party plugins once after its first `Healthy` state and on explicit user request. Scanning is independent of automatic replacement. Automatic update is stored per plugin and defaults to off; old packages without `update` continue to load but are not scanned. Bundled packages are released with the Loader and never enter this flow.
+
+The Release must use a stable `vMAJOR.MINOR.PATCH` tag and publish the versioned ZIP plus a same-name `.sha256` file containing exactly one matching SHA-256 record. The Loader follows only official GitHub HTTPS redirects, verifies the repository and tag, bounds downloads and extraction, rejects unsafe ZIP entries, and validates the complete candidate manifest before replacement.
+
+Replacement is transactional under the registry mutation lock. The installed version and full package fingerprint are rechecked, the old directory becomes a temporary backup, the candidate is moved atomically, and only that plugin is reloaded. Every managed renderer must report the new lifecycle as running. Failure restores and reloads the previous package; a persisted journal completes recovery after an interrupted process.
+
+New permissions or local changes always require an expiring confirmation bound to the candidate version, ZIP hash, installed fingerprint, and permission difference. Disabled plugins and enabled plugins without a renderer only report the available version. Downloads may be cancelled, but directory replacement must finish by commit or rollback.
 
 ## Lifecycle
 
@@ -71,6 +91,13 @@ The Loader owns enable, disable, and reload semantics:
 - Shutdown calls `stop({ reason: "shutdown" })` before closing the managed renderer when possible.
 
 A separate plugin-defined reload function is intentionally not required. One Loader-owned `stop → fresh source → start` path makes reload deterministic and prevents custom reload logic from drifting away from enable/disable cleanup.
+
+The Loader supports two adapters at this same lifecycle seam:
+
+- A module-style entry exports `start(api, context)` and optionally `stop(context)` as shown above.
+- A self-executing entry uses the injected `api` parameter directly and publishes a lifecycle object at the manifest's `lifecycleGlobal`. The object must provide `stop()`; the Loader captures and removes it during cleanup.
+
+Plugins must not read `globalThis.__codexScriptLoader.activeApi` or other Loader runtime internals. Those properties are implementation details, while the injected `api` parameter is the supported interface.
 
 `start` must be repeatable after `stop`. `stop` must clear timers, observers, event listeners, registered settings, inserted DOM, styles, pending asynchronous work, and exported lifecycle globals. A partial start failure must still expose enough cleanup for the Loader to remove what was created.
 

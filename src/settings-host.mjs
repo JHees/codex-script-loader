@@ -1,4 +1,4 @@
-const SETTINGS_HOST_VERSION = "0.5.2";
+const SETTINGS_HOST_VERSION = "0.5.3";
 
 /*
  * Renderer-only settings host inspired by b-nnett/codex-plusplus.
@@ -324,6 +324,19 @@ function installSettingsHost(version) {
         addFolder: "添加文件夹",
         addArchive: "添加 ZIP",
         reloadAll: "全部重新加载",
+        checkPluginUpdates: "检查插件更新",
+        pluginAutoUpdate: "自动更新",
+        pluginUpdateNow: "更新",
+        pluginUpdateCancel: "取消下载",
+        pluginUpdateConfirmTitle: "确认插件更新",
+        pluginUpdateConfirm: "确认更新",
+        pluginUpdateAvailable(version) { return `可更新至 ${version}`; },
+        pluginUpdateState(status) {
+          return ({ unsupported: "不支持", idle: "尚未检查", checking: "检查中", upToDate: "已是最新", available: "有新版本", downloading: "下载中", verifying: "校验中", awaitingConfirmation: "等待确认", waitingForEnable: "等待启用", waitingForRenderer: "等待 Codex 页面", installing: "替换中", reloading: "重载中", succeeded: "更新成功", rolledBack: "已回滚", failed: "更新失败" })[status] || "未知";
+        },
+        pluginPermissionIncrease(values) { return `新增权限：${values.join(", ")}`; },
+        pluginLocalChanges: "检测到本地修改；继续会覆盖本地文件。",
+        pluginEnableFirst: "请先启用插件，以便更新后验证运行状态。",
         noPlugins: "还没有安装插件。",
         builtIn: "内置",
         local: "本地",
@@ -434,6 +447,19 @@ function installSettingsHost(version) {
       addFolder: "Add folder",
       addArchive: "Add ZIP",
       reloadAll: "Reload all",
+      checkPluginUpdates: "Check plugin updates",
+      pluginAutoUpdate: "Automatic update",
+      pluginUpdateNow: "Update",
+      pluginUpdateCancel: "Cancel download",
+      pluginUpdateConfirmTitle: "Confirm plugin update",
+      pluginUpdateConfirm: "Confirm update",
+      pluginUpdateAvailable(version) { return `Update available: ${version}`; },
+      pluginUpdateState(status) {
+        return ({ unsupported: "Unsupported", idle: "Not checked", checking: "Checking", upToDate: "Up to date", available: "Update available", downloading: "Downloading", verifying: "Verifying", awaitingConfirmation: "Confirmation required", waitingForEnable: "Waiting for enable", waitingForRenderer: "Waiting for Codex renderer", installing: "Replacing", reloading: "Reloading", succeeded: "Updated", rolledBack: "Rolled back", failed: "Update failed" })[status] || "Unknown";
+      },
+      pluginPermissionIncrease(values) { return `New permissions: ${values.join(", ")}`; },
+      pluginLocalChanges: "Local changes were detected. Continuing will overwrite local files.",
+      pluginEnableFirst: "Enable the plugin first so Loader can verify the updated runtime.",
       noPlugins: "No plugins are installed yet.",
       builtIn: "Built in",
       local: "Local",
@@ -564,6 +590,8 @@ function installSettingsHost(version) {
     let quarantined = [];
     let updateStatus = null;
     let updateRefreshTimer = 0;
+    let pluginUpdateRefreshTimer = 0;
+    let pluginUpdateRefreshGrace = 0;
     let renderedUpdateSnapshot = "";
     root.className = "flex flex-col gap-10";
     root.style.cssText = "";
@@ -630,7 +658,8 @@ function installSettingsHost(version) {
     const addFolderButton = actionButton(labels.addFolder);
     const addArchiveButton = actionButton(labels.addArchive);
     const reloadAllButton = actionButton(labels.reloadAll);
-    pluginHeaderActions.append(addFolderButton, addArchiveButton, reloadAllButton);
+    const checkPluginUpdatesButton = actionButton(labels.checkPluginUpdates);
+    pluginHeaderActions.append(checkPluginUpdatesButton, addFolderButton, addArchiveButton, reloadAllButton);
     pluginsHeaderRow.appendChild(pluginHeaderActions);
     const pluginDescription = document.createElement("div");
     pluginDescription.className = "text-sm text-secondary";
@@ -679,7 +708,7 @@ function installSettingsHost(version) {
     function setBusy(next, message = "") {
       busy = next;
       feedback.textContent = message;
-      for (const button of [addFolderButton, addArchiveButton, reloadAllButton, restartButton]) button.disabled = next || !connected;
+      for (const button of [checkPluginUpdatesButton, addFolderButton, addArchiveButton, reloadAllButton, restartButton]) button.disabled = next || !connected;
       renderPlugins();
     }
 
@@ -778,6 +807,40 @@ function installSettingsHost(version) {
       return toggle;
     }
 
+    function pluginAutoUpdateControl(plugin) {
+      const enabled = plugin.update?.automatic === true;
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.setAttribute("role", "switch");
+      toggle.setAttribute("aria-label", `${plugin.name}: ${labels.pluginAutoUpdate}`);
+      toggle.setAttribute("aria-checked", enabled ? "true" : "false");
+      toggle.disabled = busy || plugin.bundled || !plugin.update?.supported || !connected;
+      toggle.title = labels.pluginAutoUpdate;
+      toggle.style.cssText = `box-sizing:border-box;position:relative;width:34px;height:20px;padding:2px;border:0;border-radius:999px;background:${enabled ? "var(--color-accent-blue,#2f9bf4)" : "var(--color-background-tertiary,#d8d8dc)"};cursor:pointer;`;
+      const knob = document.createElement("span");
+      knob.style.cssText = `display:block;width:16px;height:16px;border-radius:50%;background:white;box-shadow:0 1px 2px color-mix(in srgb,black 28%,transparent);transform:translateX(${enabled ? "14px" : "0"});transition:transform .15s ease;`;
+      toggle.appendChild(knob);
+      toggle.addEventListener("click", () => runPluginAction(plugin, "auto-update"));
+      return toggle;
+    }
+
+    function pluginUpdateIsActive(plugin) {
+      return ["checking", "downloading", "verifying", "installing", "reloading"].includes(String(plugin.update?.state || ""));
+    }
+
+    function schedulePluginUpdateRefresh() {
+      if (pluginUpdateRefreshTimer) clearTimeout(pluginUpdateRefreshTimer);
+      pluginUpdateRefreshTimer = 0;
+      const active = plugins.some(pluginUpdateIsActive);
+      if (active) pluginUpdateRefreshGrace = 0;
+      else if (pluginUpdateRefreshGrace > 0) pluginUpdateRefreshGrace--;
+      if (disposed || (!active && pluginUpdateRefreshGrace <= 0)) return;
+      pluginUpdateRefreshTimer = setTimeout(async () => {
+        pluginUpdateRefreshTimer = 0;
+        await refresh();
+      }, 750);
+    }
+
     function renderPlugins() {
       pluginsCard.innerHTML = "";
       if (!plugins.length) {
@@ -802,6 +865,17 @@ function installSettingsHost(version) {
         meta.className = "truncate text-sm text-secondary";
         meta.textContent = `${plugin.id} · ${labels.version} ${plugin.version} · ${plugin.bundled ? labels.builtIn : labels.local}${plugin.legacy ? ` · ${labels.legacy}` : ""}`;
         info.append(titleRow, meta);
+        if (plugin.update?.supported) {
+          const updateMeta = document.createElement("div");
+          const updateState = String(plugin.update.state || "idle");
+          updateMeta.className = updateState === "failed" || updateState === "rolledBack" ? "truncate text-xs text-token-charts-red" : "truncate text-xs text-secondary";
+          const available = plugin.update.availableVersion ? ` · ${labels.pluginUpdateAvailable(plugin.update.availableVersion)}` : "";
+          const progress = typeof plugin.update.progress === "number" ? ` · ${Math.max(0, Math.min(100, Math.round(plugin.update.progress * 100)))}%` : "";
+          updateMeta.textContent = `${labels.pluginUpdateState(updateState)}${available}${progress}`;
+          updateMeta.title = plugin.update.error || updateMeta.textContent;
+          updateMeta.setAttribute("aria-live", pluginUpdateIsActive(plugin) ? "polite" : "off");
+          info.appendChild(updateMeta);
+        }
         if (plugin.error) {
           const error = document.createElement("div");
           error.className = "truncate text-xs text-token-charts-red";
@@ -822,6 +896,17 @@ function installSettingsHost(version) {
         reload.addEventListener("click", () => runPluginAction(plugin, "reload"));
         actions.appendChild(reload);
         if (!plugin.bundled) {
+          if (plugin.update?.supported) {
+            const state = String(plugin.update.state || "idle");
+            if (["available", "awaitingConfirmation", "waitingForEnable", "waitingForRenderer", "failed", "downloading"].includes(state)) {
+              const updateAction = actionButton(state === "downloading" ? labels.pluginUpdateCancel : labels.pluginUpdateNow);
+              updateAction.disabled = busy || !connected || !plugin.enabled;
+              if (!plugin.enabled) updateAction.title = labels.pluginEnableFirst;
+              updateAction.addEventListener("click", () => runPluginAction(plugin, state === "downloading" ? "cancel-update" : "update"));
+              actions.appendChild(updateAction);
+            }
+            actions.appendChild(pluginAutoUpdateControl(plugin));
+          }
           const remove = actionButton(labels.remove, { danger: true });
           remove.disabled = busy || !connected;
           remove.addEventListener("click", () => runPluginAction(plugin, "remove"));
@@ -861,14 +946,29 @@ function installSettingsHost(version) {
         const choice = await showDialog({ title: labels.removeTitle, body: `${plugin.name}\n\n${labels.removeDescription}`, buttons: [{ label: labels.cancel, value: "cancel" }, { label: labels.remove, value: "remove", danger: true }] });
         if (choice !== "remove") return;
       }
+      if (action === "update" && plugin.update?.state === "awaitingConfirmation") {
+        const warnings = [
+          `${plugin.name}: ${plugin.version} → ${plugin.update.availableVersion || labels.unknown}`,
+          plugin.update.releaseUrl || "",
+          Array.isArray(plugin.update.newPermissions) && plugin.update.newPermissions.length ? labels.pluginPermissionIncrease(plugin.update.newPermissions) : "",
+          plugin.update.localChanges ? labels.pluginLocalChanges : "",
+        ].filter(Boolean).join("\n\n");
+        const choice = await showDialog({ title: labels.pluginUpdateConfirmTitle, body: warnings, buttons: [{ label: labels.cancel, value: "cancel" }, { label: labels.pluginUpdateConfirm, value: "confirm", primary: true }] });
+        if (choice !== "confirm") return;
+      }
       setBusy(true, action === "reload" ? labels.reloadingStatus : labels.checking);
       try {
         if (action === "toggle") await requestBridge("set_plugin_enabled", { id: plugin.id, enabled: !plugin.enabled });
+        else if (action === "auto-update") await requestBridge("set_plugin_auto_update", { id: plugin.id, enabled: plugin.update?.automatic !== true });
+        else if (action === "update" && plugin.update?.state === "awaitingConfirmation") await requestBridge("confirm_plugin_update", { id: plugin.id, token: plugin.update.confirmationToken });
+        else if (action === "update") await requestBridge("start_plugin_update", { id: plugin.id });
+        else if (action === "cancel-update") await requestBridge("cancel_plugin_update", { id: plugin.id });
         else if (action === "reload") {
           const result = await requestBridge("reload_plugins", { ids: [plugin.id] });
           if (Array.isArray(result?.failed) && result.failed.length) throw new Error(`${labels.reloadFailed}: ${result.failed.join(", ")}`);
           feedback.textContent = labels.reloadComplete(Number(result?.scriptCount || 0), Number(result?.targetCount || 0));
         } else if (action === "remove") await requestBridge("remove_plugin", { id: plugin.id });
+        if (action === "update" || action === "cancel-update") pluginUpdateRefreshGrace = 4;
         await refresh({ preserveFeedback: action === "reload" });
       } catch (error) {
         feedback.className = "text-token-charts-red";
@@ -880,7 +980,7 @@ function installSettingsHost(version) {
 
     async function addPlugin(command) {
       if (busy) return;
-      setBusy(true, labels.checking);
+      setBusy(true);
       try {
         const preview = await requestBridge(command, {});
         if (preview?.cancelled) return;
@@ -981,6 +1081,7 @@ function installSettingsHost(version) {
         feedback.className = "text-token-description-foreground";
         renderPlugins();
         renderQuarantined();
+        schedulePluginUpdateRefresh();
         if (updateStatusError) {
           updateState.value.textContent = labels.updateStatus("failed");
           updateState.value.className = "min-w-0 max-w-[46%] shrink-0 truncate text-right text-sm text-token-charts-red";
@@ -1001,9 +1102,22 @@ function installSettingsHost(version) {
         feedback.textContent = String(error?.message || error || labels.sidecarUnavailable);
         renderPlugins();
       }
-      for (const button of [addFolderButton, addArchiveButton, reloadAllButton, restartButton]) button.disabled = busy || !connected;
+      for (const button of [checkPluginUpdatesButton, addFolderButton, addArchiveButton, reloadAllButton, restartButton]) button.disabled = busy || !connected;
     }
 
+    checkPluginUpdatesButton.addEventListener("click", async () => {
+      if (busy) return;
+      setBusy(true, labels.checking);
+      try {
+        await requestBridge("check_plugin_updates", {});
+        await refresh();
+      } catch (error) {
+        feedback.className = "text-token-charts-red";
+        feedback.textContent = String(error?.message || error);
+      } finally {
+        if (!disposed) setBusy(false, feedback.textContent);
+      }
+    });
     addFolderButton.addEventListener("click", () => addPlugin("pick_plugin_folder"));
     addArchiveButton.addEventListener("click", () => addPlugin("pick_plugin_archive"));
     reloadAllButton.addEventListener("click", async () => {
@@ -1073,6 +1187,8 @@ function installSettingsHost(version) {
       disposed = true;
       if (updateRefreshTimer) clearTimeout(updateRefreshTimer);
       updateRefreshTimer = 0;
+      if (pluginUpdateRefreshTimer) clearTimeout(pluginUpdateRefreshTimer);
+      pluginUpdateRefreshTimer = 0;
       document.querySelectorAll('[data-codex-loader-settings="dialog"]').forEach((node) => node.remove());
     };
   }

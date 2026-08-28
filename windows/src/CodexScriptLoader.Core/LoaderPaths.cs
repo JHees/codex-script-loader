@@ -9,6 +9,8 @@ public sealed record LoaderPaths(
     string StateRoot,
     string UpdatePreferencesPath,
     string UpdateTransactionPath,
+    string PluginUpdatePreferencesPath,
+    string PluginUpdateTransactionPath,
     string InstanceLockPath)
 {
     public static LoaderPaths ForProduction()
@@ -35,6 +37,8 @@ public sealed record LoaderPaths(
             Path.Combine(dataRoot, "state"),
             Path.Combine(dataRoot, "update-preferences.json"),
             Path.Combine(dataRoot, "state", "update-transaction.json"),
+            Path.Combine(dataRoot, "plugin-update-preferences.json"),
+            Path.Combine(dataRoot, "state", "plugin-update-transaction.json"),
             Path.Combine(dataRoot, "state", "instance.v0.3.lock"));
     }
 

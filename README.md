@@ -6,7 +6,7 @@
 
 **Open Codex for user scripts, with automatic injection, reload, and cleanup.**
 
-[![Version](https://img.shields.io/badge/version-0.5.2-f97316)](https://github.com/JHees/codex-script-loader)
+[![Version](https://img.shields.io/badge/version-0.5.3-f97316)](https://github.com/JHees/codex-script-loader)
 [![Windows](https://img.shields.io/badge/Windows-11-0078d4?logo=windows11)](#requirements)
 [![macOS](https://img.shields.io/badge/macOS-untested-999999?logo=apple)](#platform-support)
 [![.NET](https://img.shields.io/badge/.NET-10-512bd4?logo=dotnet)](global.json)
@@ -32,7 +32,8 @@ Windows uses the native .NET 10 background host with no console or tray icon and
 | macOS runtime | Discovers `Codex.app` and provides the same managed CDP/script flow through Node.js; currently untested. |
 | Diagnostics and reload | Starting a second Windows instance opens diagnostics; `--reload` replaces scripts in place. |
 | Online host updates | Checks the stable GitHub Release after startup and switches verified Loader hosts without restarting Codex. |
-| Bennett UI included | Installs the bundled Bennett UI Improvements 1.4.11 package on first run. |
+| Plugin release updates | Scans update-aware public GitHub plugins, then verifies and atomically reloads an opted-in update per plugin. |
+| Example plugin included | Installs a small Loader-owned UI plugin that demonstrates the package contract. |
 | Windows packaging | Produces per-user NSIS setup executables and portable ZIP archives for x64 and arm64. |
 
 ## Requirements
@@ -51,6 +52,8 @@ Version 0.5.0 is the one-time installer migration from the older flat 0.4.x layo
 
 Version 0.5.2 isolates update errors inside the update card and uses the Windows system `curl.exe` to resolve the latest stable GitHub Release and download its assets directly. It does not use the GitHub API or CLI credentials. The transport is restricted to HTTPS and official GitHub download hosts and remains subject to size, SHA-256, archive, manifest, and per-file verification.
 
+Version 0.5.3 adds opt-in, per-plugin GitHub Release updates. Update-aware third-party plugins are scanned independently, downloaded through the same restricted transport, verified against a required `.sha256` asset, replaced transactionally, and reloaded in place. The Loader-owned example plugin remains bundled and is not part of the third-party update flow.
+
 ### Build from source
 
 ```powershell
@@ -68,12 +71,12 @@ build/
 ├── app/active.json
 ├── app/previous.json
 ├── app/update-manifest.json
-├── app/versions/0.5.2/win-x64/               # complete Loader host
-├── CodexScriptLoader-0.5.2-windows-x64-setup.exe
-├── CodexScriptLoader-0.5.2-windows-x64-setup.exe.sha256
-├── CodexScriptLoader-0.5.2-windows-x64.zip
-├── CodexScriptLoader-0.5.2-windows-x64.zip.sha256
-└── CodexScriptLoader-0.5.2-x64.spdx.json
+├── app/versions/0.5.3/win-x64/               # complete Loader host
+├── CodexScriptLoader-0.5.3-windows-x64-setup.exe
+├── CodexScriptLoader-0.5.3-windows-x64-setup.exe.sha256
+├── CodexScriptLoader-0.5.3-windows-x64.zip
+├── CodexScriptLoader-0.5.3-windows-x64.zip.sha256
+└── CodexScriptLoader-0.5.3-x64.spdx.json
 ```
 
 The setup executable at the top of `build` is the normal local installation entry. The `build\app` directory is packaging payload, not the recommended launch path. The installer keeps scripts and settings under `%LOCALAPPDATA%\CodexScriptLoader` when upgrading or uninstalling.
@@ -94,7 +97,7 @@ The macOS runtime discovers `Codex.app`, starts it with a random loopback CDP po
 2. It finds the Store Codex package and actual AUMID without reading `C:\Program Files\WindowsApps`.
 3. It activates Codex with a random loopback CDP port.
 4. It verifies the listener PID, package family, and exact renderer URL before injection.
-5. Bennett UI and other enabled scripts start inside the renderer.
+5. Enabled renderer plugins start through the same manifest and lifecycle contract.
 6. When the managed Codex process exits, the Loader releases its connections and exits automatically.
 
 Start the Loader executable a second time to open diagnostics. To reload installed scripts without focusing or refreshing Codex, run the same compatible executable as a second instance:
@@ -135,7 +138,9 @@ Online updates are fixed to the stable releases of `JHees/codex-script-loader`. 
 
 ## Script packages
 
-Installed plugins are managed under **Codex Settings → Script-Loader → Settings**. The page shows live status, supports enable/disable, targeted or full reload, local folder/ZIP installation, quarantine and restore, and a controlled Codex restart. Plugins that declare a settings page appear directly below the Settings entry.
+Installed plugins are managed under **Codex Settings → Script-Loader → Settings**. The page shows live status, supports enable/disable, targeted or full reload, local folder/ZIP installation, quarantine and restore, update checks, and a controlled Codex restart. Plugins that declare a settings page appear directly below the Settings entry.
+
+Third-party packages may optionally declare their own public GitHub Release source. The native Windows host scans those declarations once after becoming healthy and when requested from Settings. Per-plugin automatic replacement defaults to off. Updates require a stable `vMAJOR.MINOR.PATCH` Release, a versioned ZIP, and its exact same-name `.sha256` asset. Added permissions and local package changes require confirmation; disabled plugins and enabled plugins without a renderer are never replaced. This feature does not create a marketplace or couple third-party source and release work to the Loader repository.
 
 The complete authoring and lifecycle contract is documented in [`docs/PLUGIN_SPEC.md`](docs/PLUGIN_SPEC.md).
 The versioned layout, release verification, and no-Codex-restart handoff are documented in [`docs/UPDATE_PROTOCOL.md`](docs/UPDATE_PROTOCOL.md).
@@ -171,7 +176,9 @@ module.exports = {
 };
 ```
 
-The bundled [Bennett UI Improvements](packages/bennett-ui-improvements) package is the reference implementation. Its manifest, permission, SHA-256, attribution, and lifecycle semantics are preserved.
+The bundled [Example UI Plugin](packages/example-ui-plugin) is the reference adapter for the plugin package interface. It is owned and versioned by this repository and demonstrates manifest permissions, settings registration, Loader-scoped storage, reversible DOM changes, and lifecycle cleanup.
+
+Third-party plugins are independent projects. Their source, tests, versions, releases, and deployment instructions stay in their own repositories. Loader development never requires copying or synchronizing third-party source into this repository; install a released folder or ZIP through Settings instead.
 
 To add a custom package on Windows, place its directory under `%LOCALAPPDATA%\CodexScriptLoader\scripts\<script-id>` and run `CodexScriptLoader.exe --reload`. With the Node.js runtime, install a package or a single `.js` file with:
 
@@ -211,7 +218,7 @@ See [`windows/README.md`](windows/README.md) for NSIS, portable ZIP, optional si
 | `windows/src/CodexScriptLoader.Windows` | WinForms background host, CDP, lifecycle supervision, diagnostics, and single instance. |
 | `windows/packaging` | NSIS installer definition and Windows image assets. |
 | `windows/scripts` | Build-time packaging, icon generation, validation, and reproducibility tools. |
-| `packages/bennett-ui-improvements` | Bundled, attributed Bennett UI package. |
+| `packages/example-ui-plugin` | Loader-owned reference adapter for the renderer plugin package interface. |
 | `src` | Legacy Node development/parity implementation; not the Windows production entry point. |
 
 ## Troubleshooting
@@ -237,8 +244,6 @@ Issues and focused pull requests are welcome. For setup, architecture, testing, 
 
 ## Credits and license
 
-- Bundled plugin: [Better UI Improvements for Codex](https://github.com/JHees/better-ui-improvements-for-codex), with the Bennett package identity, original authorship, and MIT notices preserved. Codex++ support ended at the market-published `1.2.4`; current builds target this Loader.
-- Bennett upstream: [b-nnett/codex-plusplus-bennett-ui](https://github.com/b-nnett/codex-plusplus-bennett-ui).
 - Editorial icon method: [ZzzLc0405/photo-abstract-editorial](https://github.com/ZzzLc0405/photo-abstract-editorial).
 
-Loader code is released under the [MIT License](LICENSE). Bundled third-party code remains under its included license and notices. Adapted assets under `windows/branding` are excluded from the MIT code license and remain subject to the non-commercial restrictions documented in [`windows/branding/README.md`](windows/branding/README.md); obtain the original author's authorization before commercial distribution of those assets.
+Loader code and the bundled example are released under the [MIT License](LICENSE). Third-party plugins retain their own licenses outside this repository. Adapted assets under `windows/branding` are excluded from the MIT code license and remain subject to the non-commercial restrictions documented in [`windows/branding/README.md`](windows/branding/README.md); obtain the original author's authorization before commercial distribution of those assets.

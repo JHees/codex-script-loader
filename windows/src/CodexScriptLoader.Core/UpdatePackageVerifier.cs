@@ -27,17 +27,18 @@ public static class UpdatePackageVerifier
     public static string ReadUniqueSha256(string sums, string assetName)
     {
         var pattern = new Regex($"^([a-fA-F0-9]{{64}})[ \\t]+\\*?{Regex.Escape(assetName)}$", RegexOptions.CultureInvariant);
-        var matches = sums.Replace("\r", string.Empty, StringComparison.Ordinal)
+        var lines = sums.Replace("\r", string.Empty, StringComparison.Ordinal)
             .Split('\n', StringSplitOptions.RemoveEmptyEntries)
-            .Select(line => pattern.Match(line))
-            .Where(match => match.Success)
+            .Select(line => line.Trim())
+            .Where(line => line.Length > 0)
             .ToArray();
-        if (matches.Length != 1)
+        if (lines.Length != 1)
         {
             throw new InvalidDataException("Release checksum file must contain exactly one matching asset record.");
         }
-
-        return matches[0].Groups[1].Value.ToLowerInvariant();
+        var match = pattern.Match(lines[0]);
+        if (!match.Success) throw new InvalidDataException("Release checksum file must contain exactly one matching asset record.");
+        return match.Groups[1].Value.ToLowerInvariant();
     }
 
     public static async Task<UpdateManifest> VerifyAndExtractAsync(
