@@ -7,6 +7,10 @@ const SETTINGS_HOST_VERSION = "0.5.3";
 function installSettingsHost(version) {
   const runtime = globalThis.__codexScriptLoader;
   if (!runtime) return;
+  // Monochrome mask derived from windows/branding/png/CodexScriptLoader-44.png.
+  // Using the approved mark as a mask keeps the sidebar icon aligned with
+  // Codex's currentColor-based system settings icons in light and dark themes.
+  const loaderBrandMask = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAYAAACNiR0NAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAEYSURBVDhP7dK9K4ZhFMfxj1LkJQMp5CULEjYZFH+ASZn8DwaDyWSRySSLyWgQk1UGYhIZDLIgWQwmyUtXnXJ39eh5PKN8l7vfOdc517nu3+GvUIs21OeJakmNrnCD1jxZLUd4w2ye+C018d3GA2ayfMX04hIDoQ9whjE0ZWfL0oNn7IZewCO6sYFrNGQ1P9KBJ+yEnsI7JkM34xgXaCnUlSS5eYu9Qmwd94WGibRGpzgp/OOSpGe8YLMQm48Ji7HEFu7KNUyM4BUroeuwhg8MRyxd8hkGVcR4FCyFTk9M06xiKHJzWU1ZkhmpcCImSUYt4jAaV8VgOLmPczSiMz/0G7owGnu3jOnYxapJ0/ShHf1hWNrTf775Amv8Ll/zMvAfAAAAAElFTkSuQmCC";
   const current = runtime.settingsHost;
   if (current?.version === version) {
     current.start();
@@ -134,7 +138,7 @@ function installSettingsHost(version) {
   }
 
   function loaderIcon() {
-    return '<svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" class="icon-sm inline-block align-middle" aria-hidden="true"><path d="M4 10a6 6 0 0 1 10.24-4.24L16 7.5M16 4v3.5h-3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M16 10a6 6 0 0 1-10.24 4.24L4 12.5M4 16v-3.5h3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    return `<span data-codex-loader-brand-icon class="icon-sm inline-block shrink-0 align-middle" style="width:20px;height:20px;background-color:currentColor;mask-image:url(&quot;${loaderBrandMask}&quot;);-webkit-mask-image:url(&quot;${loaderBrandMask}&quot;);mask-position:center;-webkit-mask-position:center;mask-repeat:no-repeat;-webkit-mask-repeat:no-repeat;mask-size:20px 20px;-webkit-mask-size:20px 20px" aria-hidden="true"></span>`;
   }
 
   function groupHeader(text) {

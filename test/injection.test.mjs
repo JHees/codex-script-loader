@@ -101,6 +101,10 @@ test("settings host groups management and plugin pages under Script-Loader witho
   assert.match(source, /loaderGroup: "Script-Loader"/);
   assert.doesNotMatch(source, /tweaksGroup:/);
   assert.match(source, /title: loaderLabels\(\)\.settings/);
+  assert.match(source, /data-codex-loader-brand-icon/);
+  assert.match(source, /data:image\/png;base64/);
+  assert.match(source, /mask-image:url/);
+  assert.doesNotMatch(source, /M4 10a6 6 0 0 1/);
   assert.match(source, /Add folder/);
   assert.match(source, /添加文件夹/);
   assert.match(source, /async function addPlugin\(command\) \{\s+if \(busy\) return;\s+setBusy\(true\);/);
