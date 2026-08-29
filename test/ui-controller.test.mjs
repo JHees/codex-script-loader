@@ -21,7 +21,7 @@ test("UI controller exposes allowlisted commands and offline status", async () =
   assert.ok(listUiCommands().includes("restore_quarantined"));
   assert.ok(listUiCommands().includes("get_update_status"));
   const update = await controller.dispatch("get_update_status");
-  assert.equal(update.currentVersion, "0.5.4");
+  assert.equal(update.currentVersion, "0.5.6");
   assert.equal(update.requiresInstaller, true);
   assert.equal(listUiCommands().includes("delete_script_permanently"), false);
   await assert.rejects(() => controller.dispatch("execute_script", { source: "danger" }), /unsupported loader command/);
