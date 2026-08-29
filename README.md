@@ -6,7 +6,7 @@
 
 **Open Codex for user scripts, with automatic injection, reload, and cleanup.**
 
-[![Version](https://img.shields.io/badge/version-0.5.3-f97316)](https://github.com/JHees/codex-script-loader)
+[![Version](https://img.shields.io/badge/version-0.5.4-f97316)](https://github.com/JHees/codex-script-loader)
 [![Windows](https://img.shields.io/badge/Windows-11-0078d4?logo=windows11)](#requirements)
 [![macOS](https://img.shields.io/badge/macOS-untested-999999?logo=apple)](#platform-support)
 [![.NET](https://img.shields.io/badge/.NET-10-512bd4?logo=dotnet)](global.json)
@@ -71,12 +71,12 @@ build/
 ├── app/active.json
 ├── app/previous.json
 ├── app/update-manifest.json
-├── app/versions/0.5.3/win-x64/               # complete Loader host
-├── CodexScriptLoader-0.5.3-windows-x64-setup.exe
-├── CodexScriptLoader-0.5.3-windows-x64-setup.exe.sha256
-├── CodexScriptLoader-0.5.3-windows-x64.zip
-├── CodexScriptLoader-0.5.3-windows-x64.zip.sha256
-└── CodexScriptLoader-0.5.3-x64.spdx.json
+├── app/versions/0.5.4/win-x64/               # complete Loader host
+├── CodexScriptLoader-0.5.4-windows-x64-setup.exe
+├── CodexScriptLoader-0.5.4-windows-x64-setup.exe.sha256
+├── CodexScriptLoader-0.5.4-windows-x64.zip
+├── CodexScriptLoader-0.5.4-windows-x64.zip.sha256
+└── CodexScriptLoader-0.5.4-x64.spdx.json
 ```
 
 The setup executable at the top of `build` is the normal local installation entry. The `build\app` directory is packaging payload, not the recommended launch path. The installer keeps scripts and settings under `%LOCALAPPDATA%\CodexScriptLoader` when upgrading or uninstalling.

@@ -1,6 +1,6 @@
 {
   "name": "codex-script-loader",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "private": true,
   "description": "A local, CDP-based script loader for Codex Desktop.",
   "type": "module",

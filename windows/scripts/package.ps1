@@ -3,7 +3,7 @@ param(
   [ValidateSet("win-x64", "win-arm64")]
   [string]$RuntimeIdentifier = "win-x64",
   [ValidatePattern("^\d+\.\d+\.\d+$")]
-  [string]$Version = "0.5.3",
+  [string]$Version = "0.5.4",
   [string]$NsisPath,
   [string]$CertificatePath,
   [string]$CertificatePassword,
