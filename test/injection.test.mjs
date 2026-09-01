@@ -89,11 +89,69 @@ test("settings API is permission-gated and owned by the loader host", () => {
   assert.equal(typeof context.__settingsApi.registerPage, "function");
   assert.equal(typeof context.__settingsApi.register, "function");
   assert.equal(context.__processKind, "renderer");
-  assert.equal(context.__codexScriptLoader.settingsHost.snapshot().version, "0.5.6");
+  assert.equal(context.__codexScriptLoader.settingsHost.snapshot().version, "0.5.7");
 
   const withoutPermission = { ...descriptor({ id: "test.no-settings", source: "globalThis.__settingsWithoutPermission = api.settings;" }), permissions: [] };
   vm.runInContext(buildInjectionSource([withoutPermission]), context);
   assert.equal(context.__settingsWithoutPermission, undefined);
+});
+
+test("loopback WebSocket API is opt-in and scoped to the plugin permission", () => {
+  const context = vm.createContext({ console, __codexScriptLoaderLocalTransport: {
+    openWebSocket(pluginId, endpoint) {
+      return { pluginId, endpoint, send() {}, close() {} };
+    }
+  } });
+  const privileged = {
+    ...descriptor({ id: "test.loopback", source: "globalThis.__loopbackApi = { present: !!api.localTransport, open: typeof api.localTransport?.openWebSocket };" }),
+    permissions: ["loopback-websocket"]
+  };
+  vm.runInContext(buildInjectionSource([privileged]), context);
+  assert.deepEqual(JSON.parse(JSON.stringify(context.__loopbackApi)), { present: true, open: "function" });
+
+  const unprivileged = descriptor({ id: "test.no-loopback", source: "globalThis.__noLoopbackApi = { present: !!api.localTransport, keys: Object.keys(api).includes('localTransport') };" });
+  vm.runInContext(buildInjectionSource([unprivileged]), context);
+  assert.deepEqual(JSON.parse(JSON.stringify(context.__noLoopbackApi)), { present: false, keys: false });
+});
+
+test("page companion API is permission-gated and injects only fixed host commands", async () => {
+  const calls = [];
+  const context = vm.createContext({ console, __codexScriptLoaderHostBridge: { request(command, payload) { calls.push({ command, payload }); return Promise.resolve({ ok: true }); } } });
+  const privileged = {
+    ...descriptor({ id: "test.companion", source: "globalThis.__pageCompanionApi = api.pageCompanion;" }),
+    permissions: ["browser-page-companion"],
+  };
+  vm.runInContext(buildInjectionSource([privileged]), context);
+  await context.__pageCompanionApi.probe();
+  await context.__pageCompanionApi.bind();
+  await context.__pageCompanionApi.invoke("probe_chat", { bounded: true });
+  await context.__pageCompanionApi.unbind();
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
+    { command: "page_companion_probe", payload: { pluginId: "test.companion" } },
+    { command: "page_companion_bind", payload: { pluginId: "test.companion" } },
+    { command: "page_companion_invoke", payload: { pluginId: "test.companion", operation: "probe_chat", payload: { bounded: true } } },
+    { command: "page_companion_unbind", payload: { pluginId: "test.companion" } },
+  ]);
+  const unprivileged = descriptor({ id: "test.no-companion", source: "globalThis.__pageCompanionMissing = api.pageCompanion;" });
+  vm.runInContext(buildInjectionSource([unprivileged]), context);
+  assert.equal(context.__pageCompanionMissing, undefined);
+});
+
+test("loopback socket opened asynchronously is still cleaned up when the plugin reloads", async () => {
+  let resolveOpen;
+  let closeCount = 0;
+  const context = vm.createContext({ console, __codexScriptLoaderLocalTransport: {
+    openWebSocket() { return new Promise(resolve => { resolveOpen = resolve; }); }
+  } });
+  const script = {
+    ...descriptor({ id: "test.loopback-pending", source: "module.exports = { start(api) { globalThis.__pendingSocket = api.localTransport.openWebSocket('ws://127.0.0.1:53478/renderer'); }, stop() {} };" }),
+    permissions: ["loopback-websocket"]
+  };
+  vm.runInContext(buildInjectionSource([script]), context);
+  vm.runInContext(buildInjectionSource([]), context);
+  resolveOpen({ close() { closeCount += 1; } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(closeCount, 1);
 });
 
 test("settings host groups management and plugin pages under Script-Loader without refreshing Codex", () => {

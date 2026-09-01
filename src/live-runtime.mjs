@@ -4,6 +4,8 @@ import { CdpInjector, assertLoopbackEndpoint, connectCdpSession, listTargets, pi
 import { buildChromiumDebugArgs } from "./launcher.mjs";
 import { ScriptRegistry } from "./registry.mjs";
 import { LoaderHostBridge } from "./loader-bridge.mjs";
+import { LoopbackTransportHost } from "./loopback-transport.mjs";
+import { PageCompanionHost } from "./page-companion.mjs";
 import { UiController } from "./ui-controller.mjs";
 import {
   activateWindowsCodex,
@@ -108,12 +110,14 @@ function sanitizedErrorMessage(error) {
 }
 
 export class LiveSupervisor {
-  constructor({ registry, injector, targetProvider, hostBridge = null, pollIntervalMs = DEFAULT_POLL_INTERVAL_MS, onEvent = () => {} }) {
+  constructor({ registry, injector, targetProvider, hostBridge = null, localTransportHost = null, pageCompanionHost = null, pollIntervalMs = DEFAULT_POLL_INTERVAL_MS, onEvent = () => {} }) {
     if (!registry || !injector || typeof targetProvider !== "function") throw new TypeError("registry, injector and targetProvider are required");
     this.registry = registry;
     this.injector = injector;
     this.targetProvider = targetProvider;
     this.hostBridge = hostBridge;
+    this.localTransportHost = localTransportHost;
+    this.pageCompanionHost = pageCompanionHost;
     this.pollIntervalMs = pollIntervalMs;
     this.onEvent = onEvent;
     this.lastSignature = null;
@@ -146,6 +150,9 @@ export class LiveSupervisor {
     await this.registry.reloadConfig();
     const plan = await this.registry.buildPlan({ forceIds: restartIds });
     const targets = pickCodexTargets(suppliedTargets ?? await this.targetProvider());
+    if (this.localTransportHost?.setAuthorizedPlugins) await this.localTransportHost.setAuthorizedPlugins(plan.descriptors);
+    if (this.pageCompanionHost?.setAuthorizedPlugins) await this.pageCompanionHost.setAuthorizedPlugins(plan.descriptors);
+    if (this.pageCompanionHost?.sync) await this.pageCompanionHost.sync();
     if (this.hostBridge) await this.hostBridge.sync({ targets });
     this.state.safeMode = Boolean(plan.safeMode);
     this.state.enabledScripts = plan.summary.length;
@@ -202,18 +209,30 @@ export class LiveSupervisor {
     this.emit("supervisor-stopped");
   }
 
-  stop() {
+  async stop() {
     this.stopped = true;
-    return this.hostBridge?.close?.();
+    try {
+      await this.hostBridge?.close?.();
+    } finally {
+      try { await this.pageCompanionHost?.close?.(); }
+      finally { await this.localTransportHost?.close?.(); }
+    }
   }
 }
 
-function createLoaderHostBridge({ registry, injector, supervisor, targetProvider, sessionFactory }) {
+function createLoaderHostBridge({ registry, injector, supervisor, targetProvider, sessionFactory, transportHost = null, pageCompanionHost = null }) {
   const controller = new UiController({ registry, injector, supervisor });
   const bridge = new LoaderHostBridge({
     targetProvider,
     sessionFactory,
-    dispatch: (command, payload) => controller.dispatch(command, payload),
+    transportHost,
+    dispatch: (command, payload) => {
+      if (command === "page_companion_probe") return pageCompanionHost.probe(payload.pluginId);
+      if (command === "page_companion_bind") return pageCompanionHost.bind(payload.pluginId);
+      if (command === "page_companion_invoke") return pageCompanionHost.invoke(payload.pluginId, payload.operation, payload.payload || {});
+      if (command === "page_companion_unbind") return pageCompanionHost.unbind(payload.pluginId);
+      return controller.dispatch(command, payload);
+    },
   });
   supervisor.hostBridge = bridge;
   return { controller, bridge };
@@ -267,15 +286,28 @@ export async function startWindowsLiveRuntime({
     return createSession(endpoint);
   };
   const injector = new CdpInjector({ targetProvider, sessionFactory: verifiedSessionFactory });
-  const supervisor = new LiveSupervisor({ registry, injector, targetProvider, pollIntervalMs, onEvent });
+  const localTransportHost = new LoopbackTransportHost({
+    targetProvider,
+    sessionFactory: verifiedSessionFactory,
+    forbiddenPorts: [port],
+  });
+  const pageCompanionHost = new PageCompanionHost({ targetProvider, sessionFactory: verifiedSessionFactory });
+  const supervisor = new LiveSupervisor({ registry, injector, targetProvider, localTransportHost, pageCompanionHost, pollIntervalMs, onEvent });
   const { controller, bridge } = createLoaderHostBridge({
     registry,
     injector,
     supervisor,
     targetProvider,
     sessionFactory: verifiedSessionFactory,
+    transportHost: localTransportHost,
+    pageCompanionHost,
   });
-  await supervisor.tick({ force: true, targets: readyTargets });
+  try {
+    await supervisor.tick({ force: true, targets: readyTargets });
+  } catch (error) {
+    try { await supervisor.stop(); } catch { /* Preserve the startup failure while releasing local bindings. */ }
+    throw error;
+  }
   return Object.freeze({
     port,
     packageInfo,
@@ -285,6 +317,8 @@ export async function startWindowsLiveRuntime({
     supervisor,
     controller,
     bridge,
+    localTransportHost,
+    pageCompanionHost,
     run: options => supervisor.run(options),
     close: async () => supervisor.stop()
   });
@@ -321,17 +355,30 @@ export async function startMacLiveRuntime({ dataRoot, debugPort, pollIntervalMs 
     return createSession(endpoint);
   };
   const injector = new CdpInjector({ targetProvider, sessionFactory: verifiedSessionFactory });
-  const supervisor = new LiveSupervisor({ registry, injector, targetProvider, pollIntervalMs, onEvent });
+  const localTransportHost = new LoopbackTransportHost({
+    targetProvider,
+    sessionFactory: verifiedSessionFactory,
+    forbiddenPorts: [port],
+  });
+  const pageCompanionHost = new PageCompanionHost({ targetProvider, sessionFactory: verifiedSessionFactory });
+  const supervisor = new LiveSupervisor({ registry, injector, targetProvider, localTransportHost, pageCompanionHost, pollIntervalMs, onEvent });
   const { controller, bridge } = createLoaderHostBridge({
     registry,
     injector,
     supervisor,
     targetProvider,
     sessionFactory: verifiedSessionFactory,
+    transportHost: localTransportHost,
+    pageCompanionHost,
   });
-  await supervisor.tick({ force: true, targets: readyTargets });
+  try {
+    await supervisor.tick({ force: true, targets: readyTargets });
+  } catch (error) {
+    try { await supervisor.stop(); } catch { /* Preserve the startup failure while releasing local bindings. */ }
+    throw error;
+  }
   return Object.freeze({
-    port, packageInfo, activation, registry, injector, supervisor, controller, bridge,
+    port, packageInfo, activation, registry, injector, supervisor, controller, bridge, localTransportHost, pageCompanionHost,
     run: options => supervisor.run(options),
     close: async () => supervisor.stop()
   });

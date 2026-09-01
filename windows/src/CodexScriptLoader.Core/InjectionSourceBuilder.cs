@@ -94,6 +94,12 @@ public static class InjectionSourceBuilder
                 pageId = descriptor.SettingsPageId,
                 title = descriptor.SettingsPageTitle,
             },
+            pageCompanion = descriptor.PageCompanion is null ? null : new
+            {
+                id = descriptor.PageCompanion.Id,
+                origin = descriptor.PageCompanion.Origin,
+                operations = descriptor.PageCompanion.Operations,
+            },
         });
         var forceValue = force ? "true" : "false";
         return $$"""
@@ -121,7 +127,7 @@ public static class InjectionSourceBuilder
               register: (section) => { const handle = runtime.settingsHost.registerSection({{id}}, manifest, section); disposers.push(() => handle.unregister()); return handle; },
               registerPage: (page) => { const handle = runtime.settingsHost.registerPage({{id}}, manifest, page); disposers.push(() => handle.unregister()); return handle; }
             }) : undefined;
-            const api = Object.freeze({
+            const apiBase = {
               id: {{id}}, version: {{version}}, manifest, process: "renderer", permissions: Object.freeze([...permissionSet]),
               log: Object.freeze({ info: (...args) => console.info("[{{descriptor.Id}}]", ...args), warn: (...args) => console.warn("[{{descriptor.Id}}]", ...args), error: (...args) => console.error("[{{descriptor.Id}}]", ...args) }),
               storage, settings,
@@ -130,7 +136,50 @@ public static class InjectionSourceBuilder
                 observe: (target, callback, options = { childList: true, subtree: true }) => { requirePermission("dom"); const observer = new MutationObserver(callback); observer.observe(target, options); disposers.push(() => observer.disconnect()); return () => observer.disconnect(); }
               }),
               events: Object.freeze({ on: (target, type, listener, options) => { target.addEventListener(type, listener, options); const dispose = () => target.removeEventListener(type, listener, options); disposers.push(dispose); return dispose; } })
+            };
+            const apiExtensions = {};
+            if (permissionSet.has("loopback-websocket")) apiExtensions.localTransport = Object.freeze({
+                openWebSocket: (endpoint) => {
+                  const hostTransport = globalThis.__codexScriptLoaderLocalTransport;
+                  if (!hostTransport || typeof hostTransport.openWebSocket !== "function") throw new Error("Loader local transport is unavailable");
+                  const opened = hostTransport.openWebSocket({{id}}, endpoint);
+                  if (opened && typeof opened.then === "function") {
+                    let socketValue = null, cleanupRequested = false, closed = false;
+                    const closeSocket = () => { cleanupRequested = true; if (closed || !socketValue || typeof socketValue.close !== "function") return; closed = true; try { socketValue.close(); } catch {} };
+                    disposers.push(closeSocket);
+                    return opened.then((socket) => {
+                      socketValue = socket;
+                      if (cleanupRequested) closeSocket();
+                      return socket;
+                    });
+                  }
+                  if (opened && typeof opened.close === "function") disposers.push(() => { try { opened.close(); } catch {} });
+                  return opened;
+                }
+              });
+            if (permissionSet.has("browser-page-companion")) apiExtensions.pageCompanion = Object.freeze({
+              probe: () => {
+                const bridge = globalThis.__codexScriptLoaderHostBridge;
+                if (!bridge || typeof bridge.request !== "function") return Promise.reject(new Error("Loader page companion host is unavailable"));
+                return bridge.request("page_companion_probe", { pluginId: {{id}} });
+              },
+              bind: () => {
+                const bridge = globalThis.__codexScriptLoaderHostBridge;
+                if (!bridge || typeof bridge.request !== "function") return Promise.reject(new Error("Loader page companion host is unavailable"));
+                return bridge.request("page_companion_bind", { pluginId: {{id}} });
+              },
+              invoke: (operation, payload = {}) => {
+                const bridge = globalThis.__codexScriptLoaderHostBridge;
+                if (!bridge || typeof bridge.request !== "function") return Promise.reject(new Error("Loader page companion host is unavailable"));
+                return bridge.request("page_companion_invoke", { pluginId: {{id}}, operation, payload });
+              },
+              unbind: () => {
+                const bridge = globalThis.__codexScriptLoaderHostBridge;
+                if (!bridge || typeof bridge.request !== "function") return Promise.reject(new Error("Loader page companion host is unavailable"));
+                return bridge.request("page_companion_unbind", { pluginId: {{id}} });
+              }
             });
+            const api = Object.freeze({ ...apiBase, ...apiExtensions });
             const module = { exports: {} };
             runtime.activeApi = api;
             try {
@@ -165,7 +214,7 @@ public static class InjectionSourceBuilder
     (() => {
       const existing = globalThis.__codexScriptLoader;
       const runtime = existing && typeof existing === "object" ? existing : {};
-      runtime.runtimeVersion = "0.5.6";
+      runtime.runtimeVersion = "0.5.7";
       runtime.documentId = runtime.documentId || Math.random().toString(36).slice(2);
       runtime.scripts = runtime.scripts || Object.create(null);
       runtime.errors = Array.isArray(runtime.errors) ? runtime.errors.slice(-100) : [];

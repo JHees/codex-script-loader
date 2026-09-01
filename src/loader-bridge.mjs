@@ -7,7 +7,8 @@ const ALLOWED_COMMANDS = new Set([
   "pick_plugin_folder", "pick_plugin_archive", "install_plugin", "cancel_plugin_install",
   "remove_plugin", "list_quarantined", "restore_plugin", "restart_codex",
   "get_update_status", "set_auto_update", "check_for_updates", "start_update", "cancel_update",
-  "check_plugin_updates", "set_plugin_auto_update", "start_plugin_update", "confirm_plugin_update", "cancel_plugin_update"
+  "check_plugin_updates", "set_plugin_auto_update", "start_plugin_update", "confirm_plugin_update", "cancel_plugin_update",
+  "page_companion_probe", "page_companion_bind", "page_companion_invoke", "page_companion_unbind"
 ]);
 const MAX_REQUEST_BYTES = 16 * 1024;
 
@@ -49,10 +50,11 @@ function installBridgeClient(bindingName, globalName, requestTimeoutMs) {
       if (disposed) return Promise.reject(new Error("Loader sidecar is not connected"));
       const id = `${Date.now().toString(36)}-${(nextId++).toString(36)}`;
       return new Promise((resolve, reject) => {
+        const timeoutMs = command === "page_companion_invoke" ? Math.max(requestTimeoutMs, 300000) : requestTimeoutMs;
         const timer = setTimeout(() => {
           pending.delete(id);
           reject(new Error("Loader request timed out"));
-        }, requestTimeoutMs);
+        }, timeoutMs);
         pending.set(id, { resolve, reject, timer });
         try {
           binding(JSON.stringify({ version: 1, id, command, payload }));
@@ -105,7 +107,7 @@ function parseRequest(payload) {
 }
 
 export class LoaderHostBridge {
-  constructor({ dispatch, targetProvider, sessionFactory, bindingName = createBindingName(), requestTimeoutMs = 8000 } = {}) {
+  constructor({ dispatch, targetProvider, sessionFactory, bindingName = createBindingName(), requestTimeoutMs = 8000, transportHost = null } = {}) {
     if (typeof dispatch !== "function" || typeof targetProvider !== "function" || typeof sessionFactory !== "function") {
       throw new TypeError("dispatch, targetProvider and sessionFactory are required");
     }
@@ -114,6 +116,7 @@ export class LoaderHostBridge {
     this.sessionFactory = sessionFactory;
     this.bindingName = bindingName;
     this.requestTimeoutMs = requestTimeoutMs;
+    this.transportHost = transportHost;
     this.sessions = new Map();
     this.syncPromise = null;
     this.closed = false;
@@ -160,9 +163,11 @@ export class LoaderHostBridge {
         void this.handleBindingCall(target.id, message.params);
       });
       this.sessions.set(target.id, { endpoint, session, unsubscribe, registrationId });
+      if (this.transportHost?.attachToSession) await this.transportHost.attachToSession(target, session);
       const evaluation = await session.sendCommand("Runtime.evaluate", { expression: source, returnByValue: true });
       if (evaluation?.exceptionDetails) throw new Error("renderer rejected the Loader bridge client");
     } catch (error) {
+      try { await this.transportHost?.detachSession?.(target.id); } catch {}
       this.sessions.delete(target.id);
       if (registrationId) {
         try { await session.sendCommand("Page.removeScriptToEvaluateOnNewDocument", { identifier: registrationId }); } catch {}
@@ -217,6 +222,7 @@ export class LoaderHostBridge {
     const state = this.sessions.get(targetId);
     if (!state) return;
     this.sessions.delete(targetId);
+    try { await this.transportHost?.detachSession?.(targetId); } catch {}
     try { state.unsubscribe?.(); } catch {}
     try {
       await state.session.sendCommand("Runtime.evaluate", {

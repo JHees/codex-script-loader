@@ -6,7 +6,7 @@
 
 **打开 Codex 调试入口，加载用户脚本，并自动管理注入、重载与清理。**
 
-[![Version](https://img.shields.io/badge/version-0.5.6-f97316)](https://github.com/JHees/codex-script-loader)
+[![Version](https://img.shields.io/badge/version-0.5.7-f97316)](https://github.com/JHees/codex-script-loader)
 [![Windows](https://img.shields.io/badge/Windows-11-0078d4?logo=windows11)](#系统要求)
 [![macOS](https://img.shields.io/badge/macOS-未测试-999999?logo=apple)](#平台支持)
 [![.NET](https://img.shields.io/badge/.NET-10-512bd4?logo=dotnet)](global.json)
@@ -71,12 +71,12 @@ build/
 ├── app/active.json
 ├── app/previous.json
 ├── app/update-manifest.json
-├── app/versions/0.5.6/win-x64/               # 完整 Loader 宿主
-├── CodexScriptLoader-0.5.6-windows-x64-setup.exe
-├── CodexScriptLoader-0.5.6-windows-x64-setup.exe.sha256
-├── CodexScriptLoader-0.5.6-windows-x64.zip
-├── CodexScriptLoader-0.5.6-windows-x64.zip.sha256
-└── CodexScriptLoader-0.5.6-x64.spdx.json
+├── app/versions/0.5.7/win-x64/               # 完整 Loader 宿主
+├── CodexScriptLoader-0.5.7-windows-x64-setup.exe
+├── CodexScriptLoader-0.5.7-windows-x64-setup.exe.sha256
+├── CodexScriptLoader-0.5.7-windows-x64.zip
+├── CodexScriptLoader-0.5.7-windows-x64.zip.sha256
+└── CodexScriptLoader-0.5.7-x64.spdx.json
 ```
 
 ### macOS live runtime（尚未测试）
@@ -138,6 +138,40 @@ Renderer 包由 `manifest.json` 与入口脚本组成：
   "permissions": ["dom", "local-storage", "settings"]
 }
 ```
+
+### 可选的 loopback WebSocket 传输
+
+`loopback-websocket` 是插件在 manifest 中显式声明的可选 capability。只有声明
+该权限的包才会获得 `api.localTransport.openWebSocket(endpoint)`；未声明的包
+没有 `localTransport` 属性，其他既有 API 形状保持不变。权限是受信任本地
+JavaScript 的 capability 声明，不是安全沙箱，启用插件前应先审查其代码。
+
+```json
+{ "permissions": ["dom", "loopback-websocket"] }
+```
+
+```js
+const socket = await api.localTransport.openWebSocket(
+  "ws://127.0.0.1:43127/renderer",
+);
+socket.addEventListener("message", event => handleMessage(event.data));
+socket.send("hello");
+```
+
+宿主只接受精确的 `ws://127.0.0.1:<port>/<safe-path>` endpoint；会拒绝
+`localhost`、IPv6、局域网地址、`wss:`、凭据、query、fragment、不安全路径、
+CDP 路径以及 Loader 管理的 CDP 端口。传输仅允许文本，并限制为单帧 64 KiB、
+每个入站队列 32 条消息/256 KiB、每个 target 8 条连接、总计 32 条连接、
+1 秒 long-poll、最多 32 个并行 binding dispatch 和 5 秒 binding 请求；关闭连接
+最多短暂保留 30 秒以排空终止事件。
+每个请求都携带 plugin ID，宿主会重新核验当前启用的 descriptor 及其权限。
+无效或未授权请求会 fail-closed 并返回经过清理的错误；不会记录传输内容、
+endpoint 或 secret，也不会暴露 CDP endpoint。
+
+该传输使用独立的 binding 与协议，与 Loader 管理桥完全分离；不会改变任何既有
+management command 或行为，也不包含 Bridge 专属的 ID、路径或协议。插件停止、
+重载、禁用、target 丢失或替换、重连以及 Loader 关闭时，连接都会被清理。Windows
+原生宿主与 Node.js runtime 提供相同的公开 seam 和限制。
 
 内置的 [Example UI Plugin](packages/example-ui-plugin) 是插件包 interface 的参考 adapter。它完全由本仓库维护和版本化，用于演示 manifest 权限、设置页注册、Loader 范围存储、可逆 DOM 修改和生命周期清理。
 

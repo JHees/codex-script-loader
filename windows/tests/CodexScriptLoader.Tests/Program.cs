@@ -1,4 +1,7 @@
 using System.IO.Compression;
+using System.Net;
+using System.Net.Sockets;
+using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -18,6 +21,13 @@ internal static class Program
         try
         {
             await TestDescriptorAndInjectionAsync(testRoot);
+            await TestLoopbackTransportBoundariesAsync();
+            await TestNativeTransportBindingRollbackAsync();
+            await TestNativeTransportConnectionMessageBeforeCloseAsync();
+            await TestNativeTransportBatchDrainClearsSignalAsync();
+            await TestNativeTransportClosedRetentionKeepsNewestAsync();
+            await TestLoopbackTransportLifecycleAsync();
+            await TestNativeTransportAuthorizationRefreshAsync();
             await TestInvalidConfigForcesSafeModeAsync(testRoot);
             await TestQuarantineRoundTripAsync(testRoot);
             await TestPluginManagementAsync(testRoot);
@@ -60,7 +70,7 @@ internal static class Program
         var plan = await registry.BuildPlanAsync(force: true);
         Equal(1, plan.Scripts.Count, "Bundled script count");
         Equal("dev.codex-script-loader.example-ui", plan.Scripts[0].Id, "Bundled script id");
-        True(plan.Source.Contains("runtime.runtimeVersion = \"0.5.6\"", StringComparison.Ordinal), "Runtime version source");
+        True(plan.Source.Contains("runtime.runtimeVersion = \"0.5.7\"", StringComparison.Ordinal), "Runtime version source");
         True(plan.Source.Contains("__codexScriptLoaderExampleUi", StringComparison.Ordinal), "Lifecycle source");
         True(plan.Source.Contains("installSettingsHost", StringComparison.Ordinal), "Settings host source");
         True(plan.Source.Contains("sha256-" + plan.Scripts[0].Fingerprint, StringComparison.Ordinal), "Integrity source");
@@ -86,6 +96,40 @@ internal static class Program
             await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "fixtures", "settings-host.mjs")),
             force: false);
         True(!updateInjection.Contains("Example/plugin-repository", StringComparison.Ordinal), "Native renderer manifest excludes host-only update source");
+        var transportPaths = LoaderPaths.FromRoot(Path.Combine(testRoot, "loopback-transport-manifest"));
+        await CreateTestPluginAsync(transportPaths, "local.loopback", permissions: ["loopback-websocket"]);
+        var transportDescriptor = await ScriptRegistry.LoadDescriptorAsync(Path.Combine(transportPaths.ScriptsRoot, "local.loopback"));
+        True(transportDescriptor.Permissions.SequenceEqual(["loopback-websocket"], StringComparer.Ordinal), "Native manifest preserves opt-in loopback transport permission");
+        var transportInjection = InjectionSourceBuilder.Build(
+            [transportDescriptor],
+            await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "fixtures", "settings-host.mjs")),
+            force: false);
+        True(transportInjection.Contains("permissionSet.has(\"loopback-websocket\")", StringComparison.Ordinal), "Native injection gates loopback transport API by permission");
+        var companionPaths = LoaderPaths.FromRoot(Path.Combine(testRoot, "page-companion-manifest"));
+        await CreateTestPluginAsync(companionPaths, "local.page-companion", permissions: ["browser-page-companion"]);
+        var companionDirectory = Path.Combine(companionPaths.ScriptsRoot, "local.page-companion");
+        var companionManifestPath = Path.Combine(companionDirectory, "manifest.json");
+        var companionManifest = JsonNode.Parse(await File.ReadAllTextAsync(companionManifestPath))!.AsObject();
+        companionManifest["pageCompanion"] = new JsonObject
+        {
+            ["id"] = "chat",
+            ["origin"] = "https://chatgpt.com",
+            ["main"] = "page-companion.js",
+            ["operations"] = new JsonArray("probe_chat", "send_message"),
+        };
+        await File.WriteAllTextAsync(companionManifestPath, companionManifest.ToJsonString());
+        await File.WriteAllTextAsync(Path.Combine(companionDirectory, "page-companion.js"), "module.exports = { invoke(operation) { return { operation }; } };\n");
+        var companionDescriptor = await ScriptRegistry.LoadDescriptorAsync(companionDirectory);
+        Equal("https://chatgpt.com", companionDescriptor.PageCompanion?.Origin, "Native manifest accepts one fixed allowlisted page companion");
+        True(companionDescriptor.PageCompanion?.Operations.SequenceEqual(["probe_chat", "send_message"], StringComparer.Ordinal) is true, "Native manifest preserves the fixed page companion operation allowlist");
+        var companionInjection = InjectionSourceBuilder.Build(
+            [companionDescriptor],
+            await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "fixtures", "settings-host.mjs")),
+            force: false);
+        True(companionInjection.Contains("permissionSet.has(\"browser-page-companion\")", StringComparison.Ordinal), "Native injection gates page companion API by permission");
+        companionManifest["pageCompanion"]!["origin"] = "https://example.com";
+        await File.WriteAllTextAsync(companionManifestPath, companionManifest.ToJsonString());
+        await ThrowsAsync<InvalidDataException>(() => ScriptRegistry.LoadDescriptorAsync(companionDirectory), "Native manifest rejects a page companion outside the origin allowlist");
         updateManifest["version"] = "1.0.0-beta.1";
         await File.WriteAllTextAsync(updateManifestPath, updateManifest.ToJsonString());
         await ThrowsAsync<InvalidDataException>(() => ScriptRegistry.LoadDescriptorAsync(Path.GetDirectoryName(updateManifestPath)!), "Native manifest rejects update prerelease version");
@@ -100,6 +144,325 @@ internal static class Program
         updateManifest["update"]!["asset"] = "example-plugin:{version}.zip";
         await File.WriteAllTextAsync(updateManifestPath, updateManifest.ToJsonString());
         await ThrowsAsync<InvalidDataException>(() => ScriptRegistry.LoadDescriptorAsync(Path.GetDirectoryName(updateManifestPath)!), "Native manifest rejects unsafe asset filename");
+    }
+
+    private static async Task TestLoopbackTransportBoundariesAsync()
+    {
+        Equal("ws://127.0.0.1:53478/renderer", LoopbackTransportEndpoint.Validate("ws://127.0.0.1:53478/renderer").AbsoluteUri, "Native transport accepts explicit IPv4 loopback endpoint");
+        foreach (var endpoint in new[]
+        {
+            "ws://localhost:53478/renderer",
+            "ws://127.0.0.2:53478/renderer",
+            "ws://[::1]:53478/renderer",
+            "wss://127.0.0.1:53478/renderer",
+            "ws://127.0.0.1:53478/renderer?secret=value",
+            "ws://127.0.0.1:53478/renderer#fragment",
+            "ws://user:pass@127.0.0.1:53478/renderer",
+            "ws://127.0.0.1:53478/devtools/page/1",
+            "ws://127.0.0.1:53478/../renderer",
+            "ws://127.0.0.1:0/renderer",
+            "ws://127.0.0.1:65536/renderer",
+            "ws://127.0.0.1:53478/%00",
+            "ws://127.0.0.1:53478/%5cfoo",
+            "ws://127.0.0.1:53478/%GGfoo",
+        })
+        {
+            var rejected = false;
+            try { _ = LoopbackTransportEndpoint.Validate(endpoint); }
+            catch (InvalidDataException) { rejected = true; }
+            True(rejected, $"Native transport rejects unsafe endpoint: {endpoint}");
+        }
+
+        var blocked = false;
+        try { _ = LoopbackTransportEndpoint.Validate("ws://127.0.0.1:53478/renderer", new HashSet<int> { 53478 }); }
+        catch (InvalidDataException) { blocked = true; }
+        True(blocked, "Native transport rejects the managed CDP port");
+
+        foreach (var payload in new[]
+        {
+            "{\"version\":2147483648,\"id\":\"request-1\",\"op\":\"poll\",\"pluginId\":\"local.loopback\",\"connectionId\":\"0123456789abcdef0123456789abcdef\"}",
+            "{\"version\":1,\"id\":\"request-1\",\"op\":\"poll\",\"pluginId\":\"local.loopback\",\"connectionId\":\"0123456789abcdef0123456789abcdef\",\"waitMs\":2147483648}",
+            "{\"version\":\"1\",\"id\":\"request-1\",\"op\":\"poll\",\"pluginId\":\"local.loopback\",\"connectionId\":\"0123456789abcdef0123456789abcdef\"}",
+        })
+        {
+            Throws<InvalidDataException>(() => LoopbackTransportHost.ValidateRequestForTests(payload), "Native transport normalizes malformed numeric request shapes");
+        }
+
+        await using var host = new LoopbackTransportHost();
+        var clientSource = host.BuildClientSourceForTests();
+        True(clientSource.Contains("eventBuffer", StringComparison.Ordinal), "Native renderer transport buffers immediate events");
+        True(clientSource.Contains("eventBufferBytes", StringComparison.Ordinal), "Native renderer transport bounds buffered event bytes");
+    }
+
+    private static async Task TestLoopbackTransportLifecycleAsync()
+    {
+        var host = new LoopbackTransportHost();
+        var clientSource = host.BuildClientSourceForTests();
+        True(clientSource.Contains("maxPendingRequests", StringComparison.Ordinal), "Native renderer transport bounds pending binding requests");
+        True(clientSource.Contains("request limit reached", StringComparison.Ordinal), "Native renderer transport reports a stable pending-request limit error");
+        True(clientSource.Contains("cancelledOpenRequests", StringComparison.Ordinal), "Native renderer transport reclaims late open responses after owner disposal");
+        True(clientSource.Contains("fireAndForget", StringComparison.Ordinal), "Native renderer transport can close late or disposed sockets without a pending reply");
+        await host.DisposeAsync();
+        await host.DisposeAsync();
+        True(true, "Native transport shutdown is idempotent");
+    }
+
+    private static async Task TestNativeTransportAuthorizationRefreshAsync()
+    {
+        await using var host = new LoopbackTransportHost();
+        var descriptor = new ScriptDescriptor(
+            Id: "local.loopback",
+            Name: "Loopback",
+            Version: "1.0.0",
+            Scope: "renderer",
+            RunAt: "document-end",
+            LifecycleGlobal: null,
+            Permissions: ["loopback-websocket"],
+            Source: string.Empty,
+            Fingerprint: "sha256-test",
+            Directory: string.Empty,
+            Description: string.Empty,
+            Author: string.Empty,
+            Documentation: null,
+            SettingsMode: "legacy",
+            SettingsPageId: null,
+            SettingsPageTitle: null,
+            Update: null);
+        await host.SetAuthorizedPluginsAsync([descriptor]);
+        var generation = host.AuthorizationGenerationForTests;
+        await host.SetAuthorizedPluginsAsync([descriptor with { Name = "Loopback (refreshed)" }]);
+        Equal(generation, host.AuthorizationGenerationForTests, "Native transport keeps authorization generation stable for the same effective set");
+        await host.SetAuthorizedPluginsAsync([]);
+        Equal(generation + 1, host.AuthorizationGenerationForTests, "Native transport advances authorization generation when the effective set changes");
+    }
+
+    private static async Task TestNativeTransportBindingRollbackAsync()
+    {
+        foreach (var failureStage in new[] { "binding", "page", "evaluation" })
+        {
+            var portProbe = new TcpListener(IPAddress.Loopback, 0);
+            portProbe.Start();
+            var port = ((IPEndPoint)portProbe.LocalEndpoint).Port;
+            portProbe.Stop();
+
+            using var listener = new HttpListener();
+            listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+            listener.Start();
+            var commands = new List<string>();
+            var server = Task.Run(async () =>
+            {
+                var context = await listener.GetContextAsync();
+                var accepted = await context.AcceptWebSocketAsync(null);
+                using var socket = accepted.WebSocket;
+                var buffer = new byte[64 * 1024];
+                try
+                {
+                    while (socket.State == WebSocketState.Open)
+                    {
+                        using var message = new MemoryStream();
+                        WebSocketReceiveResult result;
+                        do
+                        {
+                            result = await socket.ReceiveAsync(buffer, CancellationToken.None);
+                            if (result.MessageType == WebSocketMessageType.Close) return;
+                            await message.WriteAsync(buffer.AsMemory(0, result.Count));
+                        }
+                        while (!result.EndOfMessage);
+
+                        using var document = JsonDocument.Parse(message.ToArray());
+                        var root = document.RootElement;
+                        var id = root.GetProperty("id").GetInt32();
+                        var method = root.GetProperty("method").GetString()!;
+                        commands.Add(method);
+                        var response = new JsonObject { ["id"] = id };
+                        if (failureStage == "binding" && method == "Runtime.addBinding")
+                        {
+                            response["error"] = new JsonObject { ["message"] = "fixture binding failure" };
+                        }
+                        else if (failureStage == "page" && method == "Page.addScriptToEvaluateOnNewDocument")
+                        {
+                            response["error"] = new JsonObject { ["message"] = "fixture page failure" };
+                        }
+                        else if (failureStage == "evaluation" && method == "Runtime.evaluate")
+                        {
+                            response["result"] = new JsonObject { ["exceptionDetails"] = new JsonObject { ["text"] = "fixture evaluation failure" } };
+                        }
+                        else if (method == "Page.addScriptToEvaluateOnNewDocument")
+                        {
+                            response["result"] = new JsonObject { ["identifier"] = "transport-registration" };
+                        }
+                        else
+                        {
+                            response["result"] = new JsonObject();
+                        }
+
+                        var encoded = Encoding.UTF8.GetBytes(response.ToJsonString());
+                        await socket.SendAsync(encoded, WebSocketMessageType.Text, true, CancellationToken.None);
+                    }
+                }
+                catch (WebSocketException)
+                {
+                }
+            });
+
+            var session = await CdpSession.ConnectAsync(new Uri($"ws://127.0.0.1:{port}/cdp"), CancellationToken.None);
+            try
+            {
+                await using var host = new LoopbackTransportHost();
+                await host.SetAuthorizedPluginsAsync([new ScriptDescriptor(
+                    Id: "local.loopback",
+                    Name: "Loopback",
+                    Version: "1.0.0",
+                    Scope: "renderer",
+                    RunAt: "document-end",
+                    LifecycleGlobal: null,
+                    Permissions: ["loopback-websocket"],
+                    Source: string.Empty,
+                    Fingerprint: "sha256-test",
+                    Directory: string.Empty,
+                    Description: string.Empty,
+                    Author: string.Empty,
+                    Documentation: null,
+                    SettingsMode: "legacy",
+                    SettingsPageId: null,
+                    SettingsPageTitle: null,
+                    Update: null)]);
+                var target = new CdpTarget("codex-page", "page", "app://-/index.html", $"ws://127.0.0.1:{port}/cdp");
+                await ThrowsAsync<InvalidOperationException>(() => host.AttachToSessionAsync(target, session), $"Native transport binding rollback ({failureStage})");
+                True(commands.Contains("Runtime.removeBinding"), $"Native transport removes binding after {failureStage} failure");
+                if (failureStage is "binding" or "page")
+                {
+                    True(!commands.Contains("Page.removeScriptToEvaluateOnNewDocument"), $"Native transport does not remove an unregistered future script after {failureStage} failure");
+                }
+                else
+                {
+                    True(commands.Contains("Page.removeScriptToEvaluateOnNewDocument"), "Native transport removes future script after evaluation failure");
+                }
+            }
+            finally
+            {
+                await session.DisposeAsync();
+                await server;
+                listener.Stop();
+            }
+        }
+    }
+
+    private static async Task TestNativeTransportConnectionMessageBeforeCloseAsync()
+    {
+        var portProbe = new TcpListener(IPAddress.Loopback, 0);
+        portProbe.Start();
+        var port = ((IPEndPoint)portProbe.LocalEndpoint).Port;
+        portProbe.Stop();
+
+        using var listener = new HttpListener();
+        listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+        listener.Start();
+        var server = Task.Run(async () =>
+        {
+            var context = await listener.GetContextAsync();
+            var accepted = await context.AcceptWebSocketAsync(null);
+            await accepted.WebSocket.SendAsync(Encoding.UTF8.GetBytes("final-frame"), WebSocketMessageType.Text, true, CancellationToken.None);
+            await Task.Delay(25);
+            await accepted.WebSocket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
+            accepted.WebSocket.Dispose();
+        });
+
+        await using var connection = new TransportConnection("local.loopback", new Uri($"ws://127.0.0.1:{port}/transport"));
+        await connection.ConnectAsync();
+        await server;
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(2);
+        while (!connection.IsClosed && DateTime.UtcNow < deadline) await Task.Delay(10);
+        True(connection.IsClosed, "Native transport observes the close before polling");
+        var result = await connection.PollAsync(0);
+        Equal(2, result.Events.Count, "Native transport preserves message before close");
+        Equal("message", result.Events[0].Type, "Native transport emits the final message first");
+        Equal("final-frame", result.Events[0].Data, "Native transport preserves the final message data");
+        Equal("close", result.Events[1].Type, "Native transport emits close after the final message");
+        True(result.Closed, "Native transport marks the ordered poll closed");
+        listener.Stop();
+    }
+
+    private static async Task TestNativeTransportBatchDrainClearsSignalAsync()
+    {
+        var portProbe = new TcpListener(IPAddress.Loopback, 0);
+        portProbe.Start();
+        var port = ((IPEndPoint)portProbe.LocalEndpoint).Port;
+        portProbe.Stop();
+
+        using var listener = new HttpListener();
+        listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+        listener.Start();
+        var sent = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var server = Task.Run(async () =>
+        {
+            var context = await listener.GetContextAsync();
+            var accepted = await context.AcceptWebSocketAsync(null);
+            for (var index = 0; index < 3; index++)
+            {
+                await accepted.WebSocket.SendAsync(Encoding.UTF8.GetBytes($"batch-{index}"), WebSocketMessageType.Text, true, CancellationToken.None);
+            }
+
+            sent.TrySetResult(true);
+            await release.Task;
+            try { await accepted.WebSocket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None); }
+            catch (WebSocketException) { }
+            accepted.WebSocket.Dispose();
+        });
+
+        await using var connection = new TransportConnection("local.loopback", new Uri($"ws://127.0.0.1:{port}/transport"));
+        await connection.ConnectAsync();
+        await sent.Task;
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(2);
+        while (connection.QueuedEventCountForTests < 3 && DateTime.UtcNow < deadline) await Task.Delay(10);
+        Equal(3, connection.QueuedEventCountForTests, "Native transport queues the complete batch before the first poll");
+
+        var first = await connection.PollAsync(0);
+        Equal(3, first.Events.Count, "Native transport drains the complete queued batch");
+        var started = DateTime.UtcNow;
+        var second = await connection.PollAsync(100);
+        var elapsed = DateTime.UtcNow - started;
+        Equal(0, second.Events.Count, "Native transport does not return a stale signal after draining a batch");
+        True(!second.Closed, "Native transport keeps an open connection waiting after draining a batch");
+        True(elapsed >= TimeSpan.FromMilliseconds(75), "Native transport waits for the requested poll timeout after draining a batch");
+
+        release.TrySetResult(true);
+        await server;
+        listener.Stop();
+    }
+
+    private static async Task TestNativeTransportClosedRetentionKeepsNewestAsync()
+    {
+        await using var host = new LoopbackTransportHost();
+        await using var session = new CdpSession();
+        await host.AttachToSessionAsync(new CdpTarget("retention-target", "page", "app://-/index.html", "ws://127.0.0.1:43127/cdp"), session);
+
+        var sessions = (System.Collections.IDictionary)typeof(LoopbackTransportHost)
+            .GetField("sessions", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .GetValue(host)!;
+        var state = sessions["retention-target"]!;
+        var connections = state.GetType().GetProperty("Connections")!.GetValue(state)!;
+        var tryAdd = connections.GetType().GetMethods()
+            .Single(method => method.Name == "TryAdd" && method.GetParameters().Length == 2);
+        var closedAt = typeof(TransportConnection).GetProperty("ClosedAt")!;
+        var created = new List<TransportConnection>();
+        for (var index = 0; index < 10; index++)
+        {
+            var connection = new TransportConnection("local.loopback", new Uri("ws://127.0.0.1:53478/renderer"));
+            connection.Close();
+            closedAt.SetValue(connection, DateTimeOffset.UtcNow.AddSeconds(index - 10));
+            _ = tryAdd.Invoke(connections, [connection.Id, connection]);
+            created.Add(connection);
+        }
+
+        var collect = typeof(LoopbackTransportHost).GetMethod("CollectClosedConnectionsUnlocked", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        var removed = ((IEnumerable<TransportConnection>)collect.Invoke(host, null)!).ToArray();
+        var retainedIds = ((System.Collections.IEnumerable)connections.GetType().GetProperty("Keys")!.GetValue(connections)!).Cast<string>().ToHashSet(StringComparer.Ordinal);
+        Equal(2, removed.Length, "Native transport removes only the per-target retention excess");
+        True(created.Take(2).All(connection => removed.Contains(connection)), "Native transport removes the oldest closed connections first");
+        True(created.Skip(2).All(connection => retainedIds.Contains(connection.Id)), "Native transport retains the newest closed connections");
+        foreach (var connection in removed) await connection.DisposeAsync();
     }
 
     private static async Task TestInvalidConfigForcesSafeModeAsync(string testRoot)
@@ -536,7 +899,7 @@ internal static class Program
 
     private static async Task TestOnlineUpdatePipelineAsync(string testRoot)
     {
-        const string nextVersion = "0.5.7";
+        const string nextVersion = "0.5.8";
         var fixtureRoot = Path.Combine(testRoot, "online-update");
         var installRoot = Path.Combine(fixtureRoot, "install");
         var currentHostRoot = Path.Combine(installRoot, "versions", LiveSupervisor.Version, "win-x64");

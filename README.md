@@ -6,7 +6,7 @@
 
 **Open Codex for user scripts, with automatic injection, reload, and cleanup.**
 
-[![Version](https://img.shields.io/badge/version-0.5.6-f97316)](https://github.com/JHees/codex-script-loader)
+[![Version](https://img.shields.io/badge/version-0.5.7-f97316)](https://github.com/JHees/codex-script-loader)
 [![Windows](https://img.shields.io/badge/Windows-11-0078d4?logo=windows11)](#requirements)
 [![macOS](https://img.shields.io/badge/macOS-untested-999999?logo=apple)](#platform-support)
 [![.NET](https://img.shields.io/badge/.NET-10-512bd4?logo=dotnet)](global.json)
@@ -71,12 +71,12 @@ build/
 ├── app/active.json
 ├── app/previous.json
 ├── app/update-manifest.json
-├── app/versions/0.5.6/win-x64/               # complete Loader host
-├── CodexScriptLoader-0.5.6-windows-x64-setup.exe
-├── CodexScriptLoader-0.5.6-windows-x64-setup.exe.sha256
-├── CodexScriptLoader-0.5.6-windows-x64.zip
-├── CodexScriptLoader-0.5.6-windows-x64.zip.sha256
-└── CodexScriptLoader-0.5.6-x64.spdx.json
+├── app/versions/0.5.7/win-x64/               # complete Loader host
+├── CodexScriptLoader-0.5.7-windows-x64-setup.exe
+├── CodexScriptLoader-0.5.7-windows-x64-setup.exe.sha256
+├── CodexScriptLoader-0.5.7-windows-x64.zip
+├── CodexScriptLoader-0.5.7-windows-x64.zip.sha256
+└── CodexScriptLoader-0.5.7-x64.spdx.json
 ```
 
 The setup executable at the top of `build` is the normal local installation entry. The `build\app` directory is packaging payload, not the recommended launch path. The installer keeps scripts and settings under `%LOCALAPPDATA%\CodexScriptLoader` when upgrading or uninstalling.
@@ -175,6 +175,57 @@ module.exports = {
   },
 };
 ```
+
+### Optional loopback WebSocket transport
+
+The `loopback-websocket` manifest permission is an explicit capability opt-in.
+Only a package that declares it receives `api.localTransport.openWebSocket(endpoint)`;
+packages without it have no `localTransport` property and keep the existing API
+shape. Permissions are capability declarations for trusted local JavaScript, not
+a security sandbox, so review a plugin before enabling it.
+
+```json
+{ "permissions": ["dom", "loopback-websocket"] }
+```
+
+```js
+const socket = await api.localTransport.openWebSocket(
+  "ws://127.0.0.1:43127/renderer",
+);
+socket.addEventListener("message", event => handleMessage(event.data));
+socket.send("hello");
+```
+
+The host accepts only an exact `ws://127.0.0.1:<port>/<safe-path>` endpoint. It
+rejects `localhost`, IPv6, LAN addresses, `wss:`, credentials, query strings,
+fragments, unsafe paths, CDP paths, and the managed CDP port. The transport is
+text-only and bounded to 64 KiB frames, 32 messages/256 KiB per inbound queue,
+8 connections per target, 32 connections total, 32 in-flight binding dispatches,
+1-second polls, and 5-second binding requests; closed connections are retained
+only briefly (up to 30 seconds)
+to drain terminal events. Every request carries the plugin ID and the host
+re-checks the current enabled descriptor and permission. Invalid or unauthorized
+requests fail closed with sanitized errors; transport content, endpoints, and
+secrets are not logged and the CDP endpoint is never exposed.
+
+The transport uses its own binding and protocol, separate from the Loader
+management bridge. It does not change any existing management command or
+behavior and contains no Bridge-specific ID, path, or protocol. Connections are
+cleaned up on plugin stop/reload/disable, target drop or replacement, reconnect,
+and Loader shutdown. Native Windows and Node.js runtimes implement the same
+public seam and limits.
+
+### Optional browser page companion
+
+The `browser-page-companion` permission is a narrow host-owned browser seam.
+The manifest fixes an allowlisted origin, a package-relative companion bundle,
+and a small operation allowlist. Loader selects a unique matching page target,
+injects only that installed bundle, and exposes `api.pageCompanion.probe()`,
+`bind()`, `invoke(operation, payload)`, and `unbind()` to the renderer plugin.
+It never exposes CDP, arbitrary targets, URLs, selectors, scripts, cookies, or
+browser profiles. Any top-level navigation or reload ends the binding and
+requires a fresh bind. See the [Plugin Specification](docs/PLUGIN_SPEC.md) for
+the complete contract.
 
 The bundled [Example UI Plugin](packages/example-ui-plugin) is the reference adapter for the plugin package interface. It is owned and versioned by this repository and demonstrates manifest permissions, settings registration, Loader-scoped storage, reversible DOM changes, and lifecycle cleanup.
 

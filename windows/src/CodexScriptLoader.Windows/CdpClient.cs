@@ -47,6 +47,20 @@ internal sealed class CdpClient : IDisposable
             IsManagedEndpoint(target.WebSocketDebuggerUrl));
     }
 
+    public async Task<IReadOnlyList<CdpTarget>> GetPageTargetsAsync(string origin, CancellationToken cancellationToken)
+    {
+        if (!Uri.TryCreate(origin, UriKind.Absolute, out var expected) || expected.GetLeftPart(UriPartial.Authority) != origin)
+        {
+            throw new ArgumentException("Page target origin is invalid.", nameof(origin));
+        }
+        var targets = await GetTargetsAsync(cancellationToken).ConfigureAwait(false);
+        return targets.Where(target =>
+            string.Equals(target.Type, "page", StringComparison.Ordinal) &&
+            Uri.TryCreate(target.Url, UriKind.Absolute, out var page) &&
+            string.Equals(page.GetLeftPart(UriPartial.Authority), origin, StringComparison.Ordinal) &&
+            IsManagedEndpoint(target.WebSocketDebuggerUrl)).ToArray();
+    }
+
     public async Task<Uri> GetBrowserEndpointAsync(CancellationToken cancellationToken)
     {
         using var response = await httpClient.GetAsync("json/version", cancellationToken).ConfigureAwait(false);

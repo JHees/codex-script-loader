@@ -10,14 +10,16 @@ internal sealed class LoaderHostBridge : IAsyncDisposable
     private static readonly JsonSerializerOptions BridgeJsonOptions = CreateBridgeJsonOptions();
     private readonly CdpClient client;
     private readonly Func<string, JsonElement, CancellationToken, Task<object>> dispatch;
+    private readonly LoopbackTransportHost? transportHost;
     private readonly string bindingName = $"__codex_loader_{Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(12))}";
     private readonly Dictionary<string, BridgeSession> sessions = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim sync = new(1, 1);
 
-    public LoaderHostBridge(CdpClient client, Func<string, JsonElement, CancellationToken, Task<object>> dispatch)
+    public LoaderHostBridge(CdpClient client, Func<string, JsonElement, CancellationToken, Task<object>> dispatch, LoopbackTransportHost? transportHost = null)
     {
         this.client = client;
         this.dispatch = dispatch;
+        this.transportHost = transportHost;
     }
 
     public async Task SyncAsync(IReadOnlyList<CdpTarget> targets, CancellationToken cancellationToken)
@@ -85,6 +87,10 @@ internal sealed class LoaderHostBridge : IAsyncDisposable
             registrationId = registration.TryGetProperty("identifier", out var identifier) ? identifier.GetString() : null;
             session.EventReceived += message => HandleEvent(target.Id, message);
             sessions[target.Id] = new BridgeSession(session, registrationId);
+            if (transportHost is not null)
+            {
+                await transportHost.AttachToSessionAsync(target, session, cancellationToken).ConfigureAwait(false);
+            }
             var evaluation = await session.SendAsync("Runtime.evaluate", new { expression = source, returnByValue = true }, cancellationToken).ConfigureAwait(false);
             if (evaluation.TryGetProperty("exceptionDetails", out _))
             {
@@ -93,6 +99,10 @@ internal sealed class LoaderHostBridge : IAsyncDisposable
         }
         catch
         {
+            if (transportHost is not null)
+            {
+                try { await transportHost.DetachSessionAsync(target.Id, cancellationToken).ConfigureAwait(false); } catch { }
+            }
             sessions.Remove(target.Id);
             if (!string.IsNullOrWhiteSpace(registrationId))
             {
@@ -168,6 +178,10 @@ internal sealed class LoaderHostBridge : IAsyncDisposable
                 "start_update" or
                 "cancel_update" or
                 "check_plugin_updates" or
+                "page_companion_probe" or
+                "page_companion_bind" or
+                "page_companion_invoke" or
+                "page_companion_unbind" or
                 "set_plugin_auto_update" or
                 "start_plugin_update" or
                 "confirm_plugin_update" or
@@ -224,6 +238,11 @@ internal sealed class LoaderHostBridge : IAsyncDisposable
             return;
         }
 
+        if (transportHost is not null)
+        {
+            try { await transportHost.DetachSessionAsync(targetId, cancellationToken).ConfigureAwait(false); } catch { }
+        }
+
         try
         {
             await state.Session.SendAsync("Runtime.evaluate", new
@@ -276,7 +295,7 @@ internal sealed class LoaderHostBridge : IAsyncDisposable
           if (disposed) return Promise.reject(new Error("Loader sidecar is not connected"));
           const id = `${Date.now().toString(36)}-${(nextId++).toString(36)}`;
           return new Promise((resolve, reject) => {
-            const timeoutMs = command === "pick_plugin_folder" || command === "pick_plugin_archive"
+            const timeoutMs = command === "pick_plugin_folder" || command === "pick_plugin_archive" || command === "page_companion_invoke"
               ? pickerTimeoutMs
               : command === "get_app_status" || command === "list_plugins" || command === "list_quarantined" || command === "get_update_status"
                 ? requestTimeoutMs

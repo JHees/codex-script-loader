@@ -10,6 +10,7 @@ public sealed partial class ScriptRegistry
     private const int MaxManifestBytes = 64 * 1024;
     private const int MaxSourceBytes = 512 * 1024;
     private static readonly HashSet<string> AllowedRunAt = ["document-start", "document-end"];
+    private static readonly HashSet<string> AllowedPageCompanionOrigins = ["https://chatgpt.com"];
     private readonly LoaderPaths paths;
     private readonly string settingsHostModulePath;
     private readonly SemaphoreSlim registryMutation = new(1, 1);
@@ -271,6 +272,52 @@ public sealed partial class ScriptRegistry
             }
         }
 
+        PageCompanionDescriptor? pageCompanion = null;
+        if (root.TryGetProperty("pageCompanion", out var pageCompanionElement))
+        {
+            if (pageCompanionElement.ValueKind != JsonValueKind.Object || !permissions.Contains("browser-page-companion", StringComparer.Ordinal))
+            {
+                throw new InvalidDataException("Manifest pageCompanion requires the browser-page-companion permission.");
+            }
+
+            var companionId = OptionalText(pageCompanionElement, "id", "main", 64);
+            if (!ScriptIdRegex().IsMatch(companionId)) throw new InvalidDataException("Manifest pageCompanion id is invalid.");
+            var companionOrigin = RequiredText(pageCompanionElement, "origin", 200);
+            if (!Uri.TryCreate(companionOrigin, UriKind.Absolute, out var originUri) || originUri.GetLeftPart(UriPartial.Authority) != companionOrigin ||
+                originUri.AbsolutePath != "/" || !string.IsNullOrEmpty(originUri.Query) || !string.IsNullOrEmpty(originUri.Fragment) ||
+                !AllowedPageCompanionOrigins.Contains(companionOrigin))
+            {
+                throw new InvalidDataException("Manifest pageCompanion origin is not allowlisted.");
+            }
+
+            var companionEntry = ValidateRelativePackagePath(
+                pageCompanionElement.TryGetProperty("main", out var companionMain) ? companionMain.GetString() : null,
+                "pageCompanion main");
+            var companionEntryPath = Path.GetFullPath(Path.Combine(directory.FullName, companionEntry));
+            var companionRootPrefix = directory.FullName.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            if (!companionEntryPath.StartsWith(companionRootPrefix, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Manifest pageCompanion main escapes its package.");
+            var companionInfo = new FileInfo(companionEntryPath);
+            if (!companionInfo.Exists || companionInfo.Attributes.HasFlag(FileAttributes.ReparsePoint) || companionInfo.Length > MaxSourceBytes)
+            {
+                throw new InvalidDataException("Page companion entry must be a regular file no larger than 512 KiB.");
+            }
+
+            if (!pageCompanionElement.TryGetProperty("operations", out var operationsElement) || operationsElement.ValueKind != JsonValueKind.Array ||
+                operationsElement.GetArrayLength() is < 1 or > 16)
+            {
+                throw new InvalidDataException("Manifest pageCompanion operations must contain 1-16 items.");
+            }
+            var operations = operationsElement.EnumerateArray().Select(item => ValidateText(item.GetString(), "pageCompanion operation", 64, allowEmpty: false)).ToArray();
+            if (operations.Distinct(StringComparer.Ordinal).Count() != operations.Length || operations.Any(operation => !PageCompanionOperationRegex().IsMatch(operation)))
+            {
+                throw new InvalidDataException("Manifest pageCompanion operations are invalid or duplicated.");
+            }
+
+            var companionSource = await File.ReadAllTextAsync(companionEntryPath, Encoding.UTF8, cancellationToken).ConfigureAwait(false);
+            var companionFingerprint = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(companionSource)));
+            pageCompanion = new PageCompanionDescriptor(companionId, companionOrigin, companionEntry, operations, companionSource, companionFingerprint);
+        }
+
         var source = await File.ReadAllTextAsync(entryPath, Encoding.UTF8, cancellationToken).ConfigureAwait(false);
         var fingerprint = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(source)));
         if (root.TryGetProperty("integrity", out var integrityElement) && integrityElement.ValueKind != JsonValueKind.Null)
@@ -365,7 +412,8 @@ public sealed partial class ScriptRegistry
             settingsMode,
             settingsPageId,
             settingsPageTitle,
-            update);
+            update,
+            pageCompanion);
     }
 
     private static string ValidateRelativePackagePath(string? value, string name)
@@ -411,4 +459,7 @@ public sealed partial class ScriptRegistry
 
     [GeneratedRegex("^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)$", RegexOptions.CultureInvariant)]
     private static partial Regex StableVersionRegex();
+
+    [GeneratedRegex("^[a-z][a-z0-9_]{0,63}$", RegexOptions.CultureInvariant)]
+    private static partial Regex PageCompanionOperationRegex();
 }

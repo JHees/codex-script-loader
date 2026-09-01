@@ -56,7 +56,16 @@ public sealed record ScriptDescriptor(
     string SettingsMode,
     string? SettingsPageId,
     string? SettingsPageTitle,
-    PluginUpdateDescriptor? Update);
+    PluginUpdateDescriptor? Update,
+    PageCompanionDescriptor? PageCompanion = null);
+
+public sealed record PageCompanionDescriptor(
+    string Id,
+    string Origin,
+    string Entry,
+    IReadOnlyList<string> Operations,
+    string Source,
+    string Fingerprint);
 
 public sealed record PluginUpdateDescriptor(
     string Provider,

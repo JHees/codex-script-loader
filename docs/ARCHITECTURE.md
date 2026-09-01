@@ -19,6 +19,22 @@ configuration, skills, projects, or conversations.
 6. The settings host mounts one `Script-Loader` group: the Loader-owned
    `Settings` page first, followed by every plugin-declared settings page.
 
+The optional renderer loopback transport is a separate host module and binding.
+It shares an already-authorized CDP session only as a carrier; it does not
+reuse the management command protocol or expand `ALLOWED_COMMANDS`. A plugin
+must explicitly declare the `loopback-websocket` permission before the
+injected API includes `localTransport.openWebSocket(endpoint)`. The native
+Windows host and Node.js parity runtime both re-check that permission against
+the current enabled descriptor on every binding request.
+
+The optional page-companion host is another independent capability module. A
+plugin with `browser-page-companion` declares a fixed allowlisted origin,
+package bundle, and operation allowlist. Loader alone enumerates and binds the
+browser target, injects the reviewed bundle, and drops its session on every
+main-frame navigation, reload, target loss, or plugin lifecycle transition.
+The renderer receives no CDP endpoint and cannot submit arbitrary URLs,
+selectors, scripts, methods, cookies, or profile reads.
+
 ## Management boundary
 
 The native host owns package installation, deletion, enable/disable state,
@@ -38,6 +54,24 @@ The renderer bridge is private Loader infrastructure, not part of the plugin
 API. It validates the command allowlist and payload shape. Results are serialized
 with stable camel-case fields, including actual reload counts and failures.
 
+## Local transport boundary
+
+`LoopbackTransportHost` validates plugin-provided endpoints as exact
+`ws://127.0.0.1:<port>/<safe-path>` URLs. It rejects non-loopback hosts,
+IPv6, `localhost`, `wss:`, credentials, query/fragment components, unsafe
+paths, CDP paths, and the managed CDP port. The host applies bounded text
+frames, queues, connections, in-flight binding dispatches, long-poll waits, and
+request timeouts. It does
+not expose a CDP discovery endpoint and does not log transport content or
+secrets.
+
+The binding protocol carries the plugin ID in every operation and returns only
+sanitized errors. Target replacement/drop, authorization changes, plugin
+disable/reload, reconnect, shutdown, and startup failure dispose connection
+state and remove the independent binding. The renderer client buffers events
+that arrive before a plugin installs its `onmessage`/listener callback, so an
+immediate server frame cannot be lost during `openWebSocket()` setup.
+
 ## Plugin contract
 
 A compatible package declares its documentation, settings capability, required
@@ -52,6 +86,8 @@ The renderer API currently exposes:
 - `api.dom.ready()` and `api.dom.observe(...)`
 - `api.events.on(...)`
 - `api.settings.registerPage(...)` and `api.settings.register(...)`
+- `api.localTransport.openWebSocket(...)` when `loopback-websocket` is declared
+- `api.pageCompanion.probe|bind|invoke|unbind` when a fixed page companion is declared
 
 The settings host owns navigation, active-page state, mounting, and cleanup.
 Plugins own only their page contents. See [Plugin Design Specification](PLUGIN_SPEC.md)

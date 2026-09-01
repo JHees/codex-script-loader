@@ -85,7 +85,7 @@ export function wrapScript(descriptor, { force = false } = {}) {
         return handle;
       }
     }) : undefined;
-    const api = Object.freeze({
+    const apiBase = {
       id: ${id},
       version: ${JSON.stringify(descriptor.version)},
       manifest,
@@ -116,7 +116,57 @@ export function wrapScript(descriptor, { force = false } = {}) {
           return dispose;
         }
       })
+    };
+    const apiExtensions = {};
+    if (permissionSet.has("loopback-websocket")) apiExtensions.localTransport = Object.freeze({
+        openWebSocket: (endpoint) => {
+          const hostTransport = globalThis.__codexScriptLoaderLocalTransport;
+          if (!hostTransport || typeof hostTransport.openWebSocket !== "function") throw new Error("Loader local transport is unavailable");
+          const opened = hostTransport.openWebSocket(${id}, endpoint);
+          if (opened && typeof opened.then === "function") {
+            let socketValue = null;
+            let cleanupRequested = false;
+            let closed = false;
+            const closeSocket = () => {
+              cleanupRequested = true;
+              if (closed || !socketValue || typeof socketValue.close !== "function") return;
+              closed = true;
+              try { socketValue.close(); } catch {}
+            };
+            disposers.push(closeSocket);
+            return opened.then((socket) => {
+              socketValue = socket;
+              if (cleanupRequested) closeSocket();
+              return socket;
+            });
+          }
+          if (opened && typeof opened.close === "function") disposers.push(() => { try { opened.close(); } catch {} });
+          return opened;
+        }
+      });
+    if (permissionSet.has("browser-page-companion")) apiExtensions.pageCompanion = Object.freeze({
+      probe: () => {
+        const bridge = globalThis.__codexScriptLoaderHostBridge;
+        if (!bridge || typeof bridge.request !== "function") return Promise.reject(new Error("Loader page companion host is unavailable"));
+        return bridge.request("page_companion_probe", { pluginId: ${id} });
+      },
+      bind: () => {
+        const bridge = globalThis.__codexScriptLoaderHostBridge;
+        if (!bridge || typeof bridge.request !== "function") return Promise.reject(new Error("Loader page companion host is unavailable"));
+        return bridge.request("page_companion_bind", { pluginId: ${id} });
+      },
+      invoke: (operation, payload = {}) => {
+        const bridge = globalThis.__codexScriptLoaderHostBridge;
+        if (!bridge || typeof bridge.request !== "function") return Promise.reject(new Error("Loader page companion host is unavailable"));
+        return bridge.request("page_companion_invoke", { pluginId: ${id}, operation, payload });
+      },
+      unbind: () => {
+        const bridge = globalThis.__codexScriptLoaderHostBridge;
+        if (!bridge || typeof bridge.request !== "function") return Promise.reject(new Error("Loader page companion host is unavailable"));
+        return bridge.request("page_companion_unbind", { pluginId: ${id} });
+      }
     });
+    const api = Object.freeze({ ...apiBase, ...apiExtensions });
     const module = { exports: {} };
     runtime.activeApi = api;
     try {

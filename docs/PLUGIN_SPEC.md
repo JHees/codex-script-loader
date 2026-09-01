@@ -56,6 +56,8 @@ plugin-id/
 - Update-aware packages use a stable three-part numeric version. A candidate must preserve the installed package ID, repository, asset template, and declared update provider. Changing the update source requires a manual installation.
 - The Loader never includes `update` in renderer `api.manifest`. It is a native package-management interface, not plugin runtime authority.
 - `permissions` are capabilities, not a security sandbox. Renderer plugins execute trusted local JavaScript in Codex and must be reviewed before enabling.
+- The opt-in `loopback-websocket` permission adds `api.localTransport.openWebSocket(endpoint)`. A plugin that does not declare this permission has no `localTransport` property; the rest of its `api` shape is unchanged.
+- The opt-in `browser-page-companion` permission requires a fixed `pageCompanion` manifest declaration and adds only `api.pageCompanion.probe|bind|invoke|unbind`. It does not expose CDP, arbitrary targets, selectors, scripts, cookies, or profiles.
 
 ## GitHub Release updates
 
@@ -110,7 +112,79 @@ Plugins must not read `globalThis.__codexScriptLoader.activeApi` or other Loader
 - `api.events.on(...)`, which is automatically disposed with the plugin lifecycle
 - `api.settings.registerPage(...)` and `api.settings.register(...)` with the `settings` permission
 
+## Loopback WebSocket transport
+
+`loopback-websocket` is a narrowly scoped local-transport capability for plugins
+that need to exchange text messages with a separately running local service. It
+is not a general network permission and does not expose the Loader's management
+bridge or its CDP endpoint.
+
+```js
+if (api.localTransport) {
+  const socket = await api.localTransport.openWebSocket("ws://127.0.0.1:43127/renderer");
+  socket.addEventListener("message", event => handleMessage(event.data));
+  socket.send("hello");
+}
+```
+
+The endpoint is supplied by the plugin, but the host accepts only an exact
+`ws://127.0.0.1:<port>/<safe-path>` URL. `localhost`, IPv6, other LAN
+addresses, `wss:`, credentials, query strings, fragments, unsafe path
+segments, the managed CDP port, and CDP paths such as `/devtools` and `/json`
+are rejected. The transport is text-only: requests and frames are bounded to
+64 KiB, inbound queues to 32 messages/256 KiB, connections to 8 per target and
+32 in total, renderer binding dispatch work to 32 in-flight requests,
+long-poll waits to 1 second, and binding requests to 5 seconds.
+Closed connections retain their queued terminal events only briefly (up to 30
+seconds) and are swept before a new connection consumes a connection slot.
+
+Every binding request carries the plugin ID. Before opening or using a
+connection, the host re-checks the current enabled descriptor and the
+`loopback-websocket` permission. The transport uses a separate binding and
+protocol from the management command allowlist; adding this permission does
+not add management commands. Renderer content, endpoint contents, and secrets
+are not written to Loader logs.
+
+Connections and the renderer-side transport object are cleaned up on plugin
+stop/reload/disable, target loss or replacement, Loader shutdown, and transport
+reconnect. The native Windows host and the Node.js parity runtime implement the
+same public seam and limits.
+
 The settings host owns the Script-Loader navigation group, page shell, active state, cleanup, and unavailable/error placeholders. A plugin owns only the content it renders inside the provided root. A plugin that declares `settings.mode: "none"` must not register settings UI.
+
+## Browser page companion
+
+`browser-page-companion` lets a reviewed plugin ship one fixed companion bundle
+for a Loader-allowlisted browser origin. The host retains target enumeration,
+CDP ownership, bundle injection, and lifecycle cleanup; the renderer plugin sees
+only four bounded calls.
+
+```json
+{
+  "permissions": ["browser-page-companion"],
+  "pageCompanion": {
+    "id": "companion",
+    "origin": "https://chatgpt.com",
+    "main": "page-companion.js",
+    "operations": ["probe", "bind", "send", "await", "unbind"]
+  }
+}
+```
+
+The manifest fixes the origin, package-relative bundle, and 1–16 operation
+names. The current host allowlist contains only `https://chatgpt.com`. The
+bundle must be a regular non-link file no larger than 512 KiB. `probe()` reports
+only whether target selection is unique; `bind()` fails when zero or multiple
+allowlisted targets exist; `invoke(operation, payload)` accepts only a declared
+operation with a bounded serializable payload; and `unbind()` disposes the
+session. Any main-frame navigation or reload, target loss/replacement, plugin
+reload/disable, authorization change, or Loader shutdown ends the binding. A
+fresh bind is required before another invocation.
+
+The interface is business-neutral: plugins define their own fixed operation
+names and bundle behavior, while Loader does not know their selectors, state
+machines, messages, or response formats. Callers cannot provide a URL, selector,
+JavaScript source, CDP method, target ID, cookie, or browser-profile path.
 
 ## Package management behavior
 

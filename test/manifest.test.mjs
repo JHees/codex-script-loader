@@ -69,6 +69,32 @@ test("directory packages enforce the same source size limit", async () => {
   await assert.rejects(() => loadScriptDescriptor(directory), /exceeds/);
 });
 
+test("manifest loads only an allowlisted fixed page companion bundle", async () => {
+  const root = await makeTempRoot();
+  const directory = path.join(root, "test.companion");
+  await mkdir(directory, { recursive: true });
+  await writeFile(path.join(directory, "index.js"), "module.exports = {};", "utf8");
+  await writeFile(path.join(directory, "page-companion.js"), "module.exports = { invoke() {} };", "utf8");
+  await writeFile(path.join(directory, "manifest.json"), JSON.stringify({
+    id: "test.companion",
+    main: "index.js",
+    permissions: ["browser-page-companion"],
+    pageCompanion: {
+      id: "chat",
+      origin: "https://chatgpt.com",
+      main: "page-companion.js",
+      operations: ["probe_chat", "send_message"],
+    },
+  }), "utf8");
+  const descriptor = await loadScriptDescriptor(directory);
+  assert.equal(descriptor.pageCompanion.origin, "https://chatgpt.com");
+  assert.equal(descriptor.pageCompanion.fingerprint, sha256Text("module.exports = { invoke() {} };"));
+  assert.deepEqual(descriptor.pageCompanion.operations, ["probe_chat", "send_message"]);
+  assert.throws(() => validateManifest({ id: "test.bad", pageCompanion: { id: "chat", origin: "https://chatgpt.com", main: "page.js", operations: ["probe_chat"] } }, directory), /permission/);
+  assert.throws(() => validateManifest({ id: "test.bad", permissions: ["browser-page-companion"], pageCompanion: { id: "chat", origin: "https://example.com", main: "page.js", operations: ["probe_chat"] } }, directory), /allowlisted/);
+  assert.throws(() => validateManifest({ id: "test.bad", permissions: ["browser-page-companion"], pageCompanion: { id: "chat", origin: "https://chatgpt.com", main: "page.js", operations: ["probe_chat", "probe_chat"] } }, directory), /duplicated/);
+});
+
 test("text script descriptors reject empty names and oversized UTF-8 source", () => {
   assert.throws(() => describeTextScript({ name: ".js", sourceText: "" }), /include a name/);
   assert.throws(() => describeTextScript({ name: "../bad.js", sourceText: "" }), /path separators/);

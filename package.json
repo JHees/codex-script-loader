@@ -1,6 +1,6 @@
 {
   "name": "codex-script-loader",
-  "version": "0.5.6",
+  "version": "0.5.7",
   "private": true,
   "description": "A local, CDP-based script loader for Codex Desktop.",
   "type": "module",
@@ -9,7 +9,7 @@
   },
   "scripts": {
     "test": "node --test",
-    "check": "node --check src/cli.mjs && node --check src/cdp.mjs && node --check src/loader-bridge.mjs && node --check src/settings-host.mjs && node --check src/injection.mjs && node --check src/live-runtime.mjs && node --check src/windows-platform.mjs && node --check src/macos-platform.mjs && node --check packages/example-ui-plugin/index.js && node --check scripts/live-hot-reload.mjs",
+    "check": "node --check src/cli.mjs && node --check src/cdp.mjs && node --check src/loader-bridge.mjs && node --check src/loopback-transport.mjs && node --check src/page-companion.mjs && node --check src/settings-host.mjs && node --check src/injection.mjs && node --check src/live-runtime.mjs && node --check src/windows-platform.mjs && node --check src/macos-platform.mjs && node --check packages/example-ui-plugin/index.js && node --check scripts/live-hot-reload.mjs",
     "smoke:live": "node scripts/live-hot-reload.mjs",
     "start": "node src/cli.mjs run --live --data-dir .runtime/manual",
     "windows:build": ".\\.tools\\dotnet\\dotnet.exe build .\\windows\\CodexScriptLoader.Windows.sln -c Release --configfile .\\NuGet.Config",

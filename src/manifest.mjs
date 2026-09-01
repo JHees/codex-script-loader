@@ -8,6 +8,9 @@ const RUN_AT = new Set(["document-start", "document-end"]);
 const LIFECYCLE_GLOBAL_PATTERN = /^[A-Za-z_$][A-Za-z0-9_$]{0,127}$/;
 const GITHUB_REPOSITORY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}\/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/;
 const STABLE_VERSION_PATTERN = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
+const PAGE_COMPANION_OPERATION_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
+const PAGE_COMPANION_PERMISSION = "browser-page-companion";
+const PAGE_COMPANION_ORIGINS = new Set(["https://chatgpt.com"]);
 export const MAX_SOURCE_BYTES = 512 * 1024;
 export const MAX_MANIFEST_BYTES = 64 * 1024;
 
@@ -67,6 +70,7 @@ export function validateManifest(input, scriptDirectory) {
   if (input.permissions !== undefined && !Array.isArray(input.permissions)) throw new Error("manifest permissions must be an array");
   const permissions = (input.permissions || []).map(permission => boundedText(permission, "", "permission", 64));
   if (permissions.length > 32) throw new Error("manifest declares too many permissions");
+  const pageCompanion = validatePageCompanion(input.pageCompanion, scriptDirectory, permissions);
   const integrity = input.integrity == null ? null : String(input.integrity);
   if (integrity !== null && !/^sha256-[a-f0-9]{64}$/u.test(integrity)) throw new Error("manifest integrity must be a sha256 hex label");
   let documentation = null;
@@ -126,8 +130,33 @@ export function validateManifest(input, scriptDirectory) {
     settingsPageId,
     settingsPageTitle,
     update,
+    pageCompanion,
     raw: input
   };
+}
+
+function validatePageCompanion(input, scriptDirectory, permissions) {
+  if (input === undefined) return null;
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("manifest pageCompanion must be an object");
+  if (!permissions.includes(PAGE_COMPANION_PERMISSION)) throw new Error("pageCompanion requires the browser-page-companion permission");
+  const id = boundedText(input.id, "main", "pageCompanion id", 64);
+  if (!ID_PATTERN.test(id)) throw new Error("manifest pageCompanion id is invalid");
+  const origin = boundedText(input.origin, "", "pageCompanion origin", 200);
+  let parsedOrigin;
+  try { parsedOrigin = new URL(origin); }
+  catch { throw new Error("manifest pageCompanion origin is invalid"); }
+  if (parsedOrigin.origin !== origin || parsedOrigin.pathname !== "/" || parsedOrigin.search || parsedOrigin.hash || !PAGE_COMPANION_ORIGINS.has(origin)) {
+    throw new Error("manifest pageCompanion origin is not allowlisted");
+  }
+  const entry = boundedText(input.main ?? input.entry, "", "pageCompanion main", 240);
+  if (path.isAbsolute(entry)) throw new Error("manifest pageCompanion main must be a safe relative path");
+  const entryPath = assertWithinDirectory(scriptDirectory, path.join(scriptDirectory, entry), "pageCompanion main");
+  if (!Array.isArray(input.operations) || input.operations.length === 0 || input.operations.length > 16) throw new Error("manifest pageCompanion operations must contain 1-16 items");
+  const operations = [...new Set(input.operations.map(operation => boundedText(operation, "", "pageCompanion operation", 64)))];
+  if (operations.length !== input.operations.length || operations.some(operation => !PAGE_COMPANION_OPERATION_PATTERN.test(operation))) {
+    throw new Error("manifest pageCompanion operations are invalid or duplicated");
+  }
+  return Object.freeze({ id, origin, entry, entryPath, operations });
 }
 
 export async function loadScriptDescriptor(scriptDirectory) {
@@ -146,6 +175,20 @@ export async function loadScriptDescriptor(scriptDirectory) {
   const canonicalEntryPath = await realpath(manifest.entryPath);
   assertWithinDirectory(canonicalDirectory, canonicalEntryPath, "manifest entry");
   const source = await readFile(canonicalEntryPath, "utf8");
+  let pageCompanion = null;
+  if (manifest.pageCompanion) {
+    const companionInfo = await lstat(manifest.pageCompanion.entryPath);
+    if (!companionInfo.isFile() || companionInfo.isSymbolicLink() || companionInfo.size > MAX_SOURCE_BYTES) throw new Error("page companion entry must be a regular file no larger than 512 KiB");
+    const canonicalCompanionPath = await realpath(manifest.pageCompanion.entryPath);
+    assertWithinDirectory(canonicalDirectory, canonicalCompanionPath, "pageCompanion main");
+    const companionSource = await readFile(canonicalCompanionPath, "utf8");
+    pageCompanion = Object.freeze({
+      ...manifest.pageCompanion,
+      entryPath: canonicalCompanionPath,
+      source: companionSource,
+      fingerprint: sha256Text(companionSource),
+    });
+  }
   if (manifest.documentationPath) {
     const documentationInfo = await lstat(manifest.documentationPath);
     if (!documentationInfo.isFile() || documentationInfo.isSymbolicLink() || documentationInfo.size > 256 * 1024) throw new Error("declared plugin documentation is missing or invalid");
@@ -156,5 +199,5 @@ export async function loadScriptDescriptor(scriptDirectory) {
   if (manifest.integrity && manifest.integrity !== integrityLabel(fingerprint)) {
     throw new Error(`integrity mismatch for ${manifest.id}`);
   }
-  return { ...manifest, entryPath: canonicalEntryPath, source, fingerprint, manifestPath, directory };
+  return { ...manifest, entryPath: canonicalEntryPath, source, fingerprint, pageCompanion, manifestPath, directory };
 }

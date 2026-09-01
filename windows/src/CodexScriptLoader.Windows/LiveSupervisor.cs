@@ -11,7 +11,7 @@ namespace CodexScriptLoader.Windows;
 
 internal sealed class LiveSupervisor : IAsyncDisposable
 {
-    public const string Version = "0.5.6";
+    public const string Version = "0.5.7";
     private static readonly TimeSpan GracefulRestartShutdownTimeout = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan ForcedRestartShutdownTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan PackageExitPollInterval = TimeSpan.FromMilliseconds(250);
@@ -25,6 +25,8 @@ internal sealed class LiveSupervisor : IAsyncDisposable
     private CdpClient? client;
     private CdpInjector? injector;
     private LoaderHostBridge? bridge;
+    private LoopbackTransportHost? transport;
+    private PageCompanionHost? pageCompanions;
     private PluginUpdateManager? pluginUpdateManager;
     private CodexPackageIdentity? package;
     private CdpEndpointIdentity? endpoint;
@@ -113,7 +115,12 @@ internal sealed class LiveSupervisor : IAsyncDisposable
 
             endpoint = new CdpEndpointIdentity(owner.Address, owner.Port, owner.ProcessId, ownerFamily!, targets[0].Url);
             injector = new CdpInjector(client);
-            bridge = new LoaderHostBridge(client, DispatchBridgeAsync);
+            transport = new LoopbackTransportHost([port]);
+            pageCompanions = new PageCompanionHost(client);
+            var initialPlan = await registry.BuildPlanAsync(force: false, cancellationToken).ConfigureAwait(false);
+            await transport.SetAuthorizedPluginsAsync(initialPlan.Scripts, cancellationToken).ConfigureAwait(false);
+            await pageCompanions.SetAuthorizedPluginsAsync(initialPlan.Scripts, cancellationToken).ConfigureAwait(false);
+            bridge = new LoaderHostBridge(client, DispatchBridgeAsync, transport);
             await bridge.SyncAsync(targets, cancellationToken).ConfigureAwait(false);
             await InjectAsync(targets, forceIds: null, cancellationToken).ConfigureAwait(false);
             StartMonitor();
@@ -129,6 +136,7 @@ internal sealed class LiveSupervisor : IAsyncDisposable
         }
         catch (Exception exception)
         {
+            try { await DisposeBridgeAndTransportAsync().ConfigureAwait(false); } catch (Exception cleanup) { logger.Error("startup-transport-cleanup-failed", cleanup); }
             logger.Error("startup-failed", exception);
             SetState(LoaderState.Faulted, exception.Message);
             throw;
@@ -171,7 +179,12 @@ internal sealed class LiveSupervisor : IAsyncDisposable
             endpoint = transaction.Endpoint;
             activationProcessId = transaction.ActivationProcessId;
             injector = new CdpInjector(client);
-            bridge = new LoaderHostBridge(client, DispatchBridgeAsync);
+            transport = new LoopbackTransportHost([transaction.Endpoint.Port]);
+            pageCompanions = new PageCompanionHost(client);
+            var initialPlan = await registry.BuildPlanAsync(force: false, cancellationToken).ConfigureAwait(false);
+            await transport.SetAuthorizedPluginsAsync(initialPlan.Scripts, cancellationToken).ConfigureAwait(false);
+            await pageCompanions.SetAuthorizedPluginsAsync(initialPlan.Scripts, cancellationToken).ConfigureAwait(false);
+            bridge = new LoaderHostBridge(client, DispatchBridgeAsync, transport);
             await bridge.SyncAsync(targets, cancellationToken).ConfigureAwait(false);
             var forceIds = (await registry.BuildPlanAsync(force: true, cancellationToken).ConfigureAwait(false)).Scripts
                 .Select(script => script.Id).ToHashSet(StringComparer.Ordinal);
@@ -189,6 +202,7 @@ internal sealed class LiveSupervisor : IAsyncDisposable
         }
         catch (Exception exception)
         {
+            try { await DisposeBridgeAndTransportAsync().ConfigureAwait(false); } catch (Exception cleanup) { logger.Error("handoff-transport-cleanup-failed", cleanup); }
             logger.Error("handoff-adoption-failed", exception);
             SetState(LoaderState.Faulted, exception.Message);
             throw;
@@ -207,6 +221,14 @@ internal sealed class LiveSupervisor : IAsyncDisposable
         {
             if (client is null || injector is null) throw new InvalidOperationException("Managed runtime is not ready for handoff suspension.");
             var targets = await client.GetCodexTargetsAsync(CancellationToken.None).ConfigureAwait(false);
+            if (transport is not null)
+            {
+                // The candidate must own the only active transport registration
+                // after adoption; disable the old host before releasing the
+                // single-instance lock so no stale future renderer executes it.
+                await transport.SetAuthorizedPluginsAsync(Array.Empty<ScriptDescriptor>(), CancellationToken.None).ConfigureAwait(false);
+            }
+            if (pageCompanions is not null) await pageCompanions.SetAuthorizedPluginsAsync(Array.Empty<ScriptDescriptor>(), CancellationToken.None).ConfigureAwait(false);
             await injector.RemoveFutureRegistrationsAsync(targets, CancellationToken.None).ConfigureAwait(false);
         }
         finally
@@ -229,8 +251,10 @@ internal sealed class LiveSupervisor : IAsyncDisposable
 
             var targets = await client.GetCodexTargetsAsync(cancellationToken).ConfigureAwait(false);
             if (targets.Count == 0) throw new InvalidOperationException("No renderer target is available for handoff recovery.");
-            await bridge.ReconnectAsync(targets, cancellationToken).ConfigureAwait(false);
             var plan = await registry.BuildPlanAsync(force: true, cancellationToken).ConfigureAwait(false);
+            if (transport is not null) await transport.SetAuthorizedPluginsAsync(plan.Scripts, cancellationToken).ConfigureAwait(false);
+            if (pageCompanions is not null) await pageCompanions.SetAuthorizedPluginsAsync(plan.Scripts, cancellationToken).ConfigureAwait(false);
+            await bridge.ReconnectAsync(targets, cancellationToken).ConfigureAwait(false);
             scripts = await injector.InjectAsync(plan.Source, plan.Scripts, targets, cancellationToken).ConfigureAwait(false);
             lastTargetCount = targets.Count;
             lastInjectionAt = DateTimeOffset.UtcNow;
@@ -267,6 +291,9 @@ internal sealed class LiveSupervisor : IAsyncDisposable
                 throw new InvalidOperationException("No exact Codex renderer target is available.");
             }
 
+            var authorizationPlan = await registry.BuildPlanAsync(force: false, cancellationToken).ConfigureAwait(false);
+            if (transport is not null) await transport.SetAuthorizedPluginsAsync(authorizationPlan.Scripts, cancellationToken).ConfigureAwait(false);
+            if (pageCompanions is not null) await pageCompanions.SetAuthorizedPluginsAsync(authorizationPlan.Scripts, cancellationToken).ConfigureAwait(false);
             await bridge.SyncAsync(targets, cancellationToken).ConfigureAwait(false);
             await InjectAsync(targets, forceIds, cancellationToken).ConfigureAwait(false);
         }
@@ -295,10 +322,7 @@ internal sealed class LiveSupervisor : IAsyncDisposable
         await operation.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (bridge is not null)
-            {
-                await bridge.DisposeAsync().ConfigureAwait(false);
-            }
+            await DisposeBridgeAndTransportAsync().ConfigureAwait(false);
             if (pluginUpdateManager is not null)
             {
                 await pluginUpdateManager.DisposeAsync().ConfigureAwait(false);
@@ -479,6 +503,34 @@ internal sealed class LiveSupervisor : IAsyncDisposable
         {
             var ids = command == "reload_plugins" ? ReadIds(payload) : null;
             return await ReloadPluginsAsync(ids, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (command == "page_companion_probe")
+        {
+            var pluginId = RequiredPayloadText(payload, "pluginId", 128);
+            return await (pageCompanions ?? throw new InvalidOperationException("Page companion host is unavailable.")).ProbeAsync(pluginId, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (command == "page_companion_bind")
+        {
+            var pluginId = RequiredPayloadText(payload, "pluginId", 128);
+            return await (pageCompanions ?? throw new InvalidOperationException("Page companion host is unavailable.")).BindAsync(pluginId, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (command == "page_companion_invoke")
+        {
+            var pluginId = RequiredPayloadText(payload, "pluginId", 128);
+            var companionOperation = RequiredPayloadText(payload, "operation", 64);
+            var companionPayload = payload.TryGetProperty("payload", out var supplied) && supplied.ValueKind == JsonValueKind.Object
+                ? supplied.Clone()
+                : JsonSerializer.SerializeToElement(new { });
+            return await (pageCompanions ?? throw new InvalidOperationException("Page companion host is unavailable.")).InvokeAsync(pluginId, companionOperation, companionPayload, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (command == "page_companion_unbind")
+        {
+            var pluginId = RequiredPayloadText(payload, "pluginId", 128);
+            return await (pageCompanions ?? throw new InvalidOperationException("Page companion host is unavailable.")).UnbindAsync(pluginId, cancellationToken).ConfigureAwait(false);
         }
 
         if (command == "list_plugins")
@@ -785,6 +837,7 @@ internal sealed class LiveSupervisor : IAsyncDisposable
                     {
                         await bridge.SyncAsync(targets, cancellationToken).ConfigureAwait(false);
                     }
+                    if (pageCompanions is not null) await pageCompanions.SyncAsync(cancellationToken).ConfigureAwait(false);
                 }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -872,7 +925,11 @@ internal sealed class LiveSupervisor : IAsyncDisposable
 
         if (bridge is not null)
         {
-            await bridge.DisposeAsync().ConfigureAwait(false);
+            await DisposeBridgeAndTransportAsync().ConfigureAwait(false);
+        }
+        else if (transport is not null)
+        {
+            await DisposeBridgeAndTransportAsync().ConfigureAwait(false);
         }
         if (pluginUpdateManager is not null)
         {
@@ -882,5 +939,24 @@ internal sealed class LiveSupervisor : IAsyncDisposable
         client?.Dispose();
         operation.Dispose();
         lifetime.Dispose();
+    }
+
+    private async Task DisposeBridgeAndTransportAsync()
+    {
+        var currentPageCompanions = pageCompanions;
+        pageCompanions = null;
+        if (currentPageCompanions is not null) await currentPageCompanions.DisposeAsync().ConfigureAwait(false);
+        var currentBridge = bridge;
+        bridge = null;
+        try
+        {
+            if (currentBridge is not null) await currentBridge.DisposeAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            var currentTransport = transport;
+            transport = null;
+            if (currentTransport is not null) await currentTransport.DisposeAsync().ConfigureAwait(false);
+        }
     }
 }
