@@ -70,7 +70,7 @@ internal static class Program
         var plan = await registry.BuildPlanAsync(force: true);
         Equal(1, plan.Scripts.Count, "Bundled script count");
         Equal("dev.codex-script-loader.example-ui", plan.Scripts[0].Id, "Bundled script id");
-        True(plan.Source.Contains("runtime.runtimeVersion = \"0.5.7\"", StringComparison.Ordinal), "Runtime version source");
+        True(plan.Source.Contains("runtime.runtimeVersion = \"0.5.8\"", StringComparison.Ordinal), "Runtime version source");
         True(plan.Source.Contains("__codexScriptLoaderExampleUi", StringComparison.Ordinal), "Lifecycle source");
         True(plan.Source.Contains("installSettingsHost", StringComparison.Ordinal), "Settings host source");
         True(plan.Source.Contains("sha256-" + plan.Scripts[0].Fingerprint, StringComparison.Ordinal), "Integrity source");
@@ -899,7 +899,7 @@ internal static class Program
 
     private static async Task TestOnlineUpdatePipelineAsync(string testRoot)
     {
-        const string nextVersion = "0.5.8";
+        const string nextVersion = "0.5.9";
         var fixtureRoot = Path.Combine(testRoot, "online-update");
         var installRoot = Path.Combine(fixtureRoot, "install");
         var currentHostRoot = Path.Combine(installRoot, "versions", LiveSupervisor.Version, "win-x64");

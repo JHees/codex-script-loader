@@ -6,7 +6,7 @@
 
 **打开 Codex 调试入口，加载用户脚本，并自动管理注入、重载与清理。**
 
-[![Version](https://img.shields.io/badge/version-0.5.7-f97316)](https://github.com/JHees/codex-script-loader)
+[![Version](https://img.shields.io/badge/version-0.5.8-f97316)](https://github.com/JHees/codex-script-loader)
 [![Windows](https://img.shields.io/badge/Windows-11-0078d4?logo=windows11)](#系统要求)
 [![macOS](https://img.shields.io/badge/macOS-未测试-999999?logo=apple)](#平台支持)
 [![.NET](https://img.shields.io/badge/.NET-10-512bd4?logo=dotnet)](global.json)
@@ -71,12 +71,12 @@ build/
 ├── app/active.json
 ├── app/previous.json
 ├── app/update-manifest.json
-├── app/versions/0.5.7/win-x64/               # 完整 Loader 宿主
-├── CodexScriptLoader-0.5.7-windows-x64-setup.exe
-├── CodexScriptLoader-0.5.7-windows-x64-setup.exe.sha256
-├── CodexScriptLoader-0.5.7-windows-x64.zip
-├── CodexScriptLoader-0.5.7-windows-x64.zip.sha256
-└── CodexScriptLoader-0.5.7-x64.spdx.json
+├── app/versions/0.5.8/win-x64/               # 完整 Loader 宿主
+├── CodexScriptLoader-0.5.8-windows-x64-setup.exe
+├── CodexScriptLoader-0.5.8-windows-x64-setup.exe.sha256
+├── CodexScriptLoader-0.5.8-windows-x64.zip
+├── CodexScriptLoader-0.5.8-windows-x64.zip.sha256
+└── CodexScriptLoader-0.5.8-x64.spdx.json
 ```
 
 ### macOS live runtime（尚未测试）
