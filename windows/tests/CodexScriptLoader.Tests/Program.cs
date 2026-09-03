@@ -38,6 +38,7 @@ internal static class Program
             await TestArchiveSafetyAsync(testRoot);
             TestPathBoundary(testRoot);
             TestPackageProcessTerminationBoundary();
+            TestCodexPackageUpgradeClassification();
             TestLogRedaction(testRoot);
             await TestAtomicUpdateStateAsync(testRoot);
             await TestUpdatePackageVerificationAsync(testRoot);
@@ -61,6 +62,27 @@ internal static class Program
         }
     }
 
+    private static void TestCodexPackageUpgradeClassification()
+    {
+        var current = new CodexPackageIdentity(
+            "OpenAI.Codex_1.2.3.4_x64__2p2nqsd0c76g0",
+            PackageDiscovery.CodexPackageFamilyName,
+            "App",
+            $"{PackageDiscovery.CodexPackageFamilyName}!App",
+            "x64",
+            new Version(1, 2, 3, 4));
+        var upgraded = current with
+        {
+            PackageFullName = "OpenAI.Codex_1.2.4.0_x64__2p2nqsd0c76g0",
+            Version = new Version(1, 2, 4, 0),
+        };
+
+        True(LiveSupervisor.IsPackageUpgrade(current, upgraded), "Newer Codex package is classified as an update restart");
+        True(!LiveSupervisor.IsPackageUpgrade(current, current), "Same Codex package is not classified as an update restart");
+        True(!LiveSupervisor.IsPackageUpgrade(upgraded, current), "Older Codex package is not classified as an update restart");
+        True(!LiveSupervisor.IsPackageUpgrade(current, upgraded with { PackageFamilyName = "Example.Other_family" }), "Different package family is not classified as a Codex update restart");
+    }
+
     private static async Task TestDescriptorAndInjectionAsync(string testRoot)
     {
         var paths = LoaderPaths.FromRoot(Path.Combine(testRoot, "healthy"));
@@ -70,7 +92,7 @@ internal static class Program
         var plan = await registry.BuildPlanAsync(force: true);
         Equal(1, plan.Scripts.Count, "Bundled script count");
         Equal("dev.codex-script-loader.example-ui", plan.Scripts[0].Id, "Bundled script id");
-        True(plan.Source.Contains("runtime.runtimeVersion = \"0.5.8\"", StringComparison.Ordinal), "Runtime version source");
+        True(plan.Source.Contains("runtime.runtimeVersion = \"0.5.9\"", StringComparison.Ordinal), "Runtime version source");
         True(plan.Source.Contains("__codexScriptLoaderExampleUi", StringComparison.Ordinal), "Lifecycle source");
         True(plan.Source.Contains("installSettingsHost", StringComparison.Ordinal), "Settings host source");
         True(plan.Source.Contains("sha256-" + plan.Scripts[0].Fingerprint, StringComparison.Ordinal), "Integrity source");
@@ -899,7 +921,7 @@ internal static class Program
 
     private static async Task TestOnlineUpdatePipelineAsync(string testRoot)
     {
-        const string nextVersion = "0.5.9";
+        const string nextVersion = "0.5.10";
         var fixtureRoot = Path.Combine(testRoot, "online-update");
         var installRoot = Path.Combine(fixtureRoot, "install");
         var currentHostRoot = Path.Combine(installRoot, "versions", LiveSupervisor.Version, "win-x64");

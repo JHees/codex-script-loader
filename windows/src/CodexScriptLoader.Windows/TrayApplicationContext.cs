@@ -28,7 +28,7 @@ internal sealed class LoaderApplicationContext : ApplicationContext
         dispatcher.CreateControl();
 
         supervisor.StateChanged += snapshot => Post(() => ApplySnapshot(snapshot));
-        supervisor.ManagedCodexExited += () => Post(ExitAfterManagedCodex);
+        supervisor.ManagedCodexExited += reason => Post(() => HandleManagedCodexExit(reason));
         supervisor.PackagePickerAsync = PickPluginPackageAsync;
         instance.CommandReceived += command => Post(() => HandleInstanceCommand(command));
         if (candidate is null) instance.StartServer();
@@ -117,9 +117,39 @@ internal sealed class LoaderApplicationContext : ApplicationContext
         }
     }
 
-    private void ExitAfterManagedCodex()
+    private void HandleManagedCodexExit(ManagedCodexExitReason reason)
     {
+        if (reason == ManagedCodexExitReason.PackageUpdated)
+        {
+            _ = RecoverAfterCodexUpdateAsync();
+            return;
+        }
+
         ExitThread();
+    }
+
+    private async Task RecoverAfterCodexUpdateAsync()
+    {
+        try
+        {
+            logger.Info("codex-update-recovery-started");
+            await supervisor.RestartAsync(CancellationToken.None);
+            logger.Info("codex-update-recovery-succeeded", new
+            {
+                package = supervisor.Snapshot.PackageFullName,
+                activationProcessId = supervisor.Snapshot.ActivationProcessId,
+            });
+        }
+        catch (Exception exception)
+        {
+            logger.Error("codex-update-recovery-failed", exception);
+            MessageBox.Show(
+                $"Codex was updated, but Script Loader could not restart the updated app.{Environment.NewLine}{Environment.NewLine}{JsonlLogger.Redact(exception.Message)}",
+                "Codex Script Loader",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            ExitThread();
+        }
     }
 
     private void Post(Action action)

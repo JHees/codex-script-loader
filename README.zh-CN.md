@@ -6,7 +6,7 @@
 
 **打开 Codex 调试入口，加载用户脚本，并自动管理注入、重载与清理。**
 
-[![Version](https://img.shields.io/badge/version-0.5.8-f97316)](https://github.com/JHees/codex-script-loader)
+[![Version](https://img.shields.io/badge/version-0.5.9-f97316)](https://github.com/JHees/codex-script-loader)
 [![Windows](https://img.shields.io/badge/Windows-11-0078d4?logo=windows11)](#系统要求)
 [![macOS](https://img.shields.io/badge/macOS-未测试-999999?logo=apple)](#平台支持)
 [![.NET](https://img.shields.io/badge/.NET-10-512bd4?logo=dotnet)](global.json)
@@ -28,7 +28,7 @@ Windows 使用无控制台、无托盘图标的原生 .NET 10 后台宿主，是
 | 调试模式启动 | 打开 Codex 本地调试入口，为 renderer 脚本提供运行环境。 |
 | 用户自定义脚本 | 从 Loader 数据目录加载 `manifest.json + index.js` 脚本包。 |
 | 全自动生命周期 | 自动验证、注入、重载、替换并清理当前及未来 renderer 中的脚本。 |
-| Windows 原生宿主 | 在后台随 Codex 运行，并在受管 Codex 退出后自动结束。 |
+| Windows 原生宿主 | 在后台随 Codex 运行，应用内更新重启后自动恢复受管会话，普通关闭 Codex 后自动结束。 |
 | macOS runtime | 发现 `Codex.app`，通过 Node.js 提供相同的 CDP 与脚本流程；当前未测试。 |
 | 诊断与重载 | Windows 再次启动同一 EXE 可打开诊断；`--reload` 原位替换脚本。 |
 | Loader 在线升级 | 启动后检查稳定版 GitHub Release，并在不重启 Codex 的情况下切换已校验宿主。 |
@@ -71,12 +71,12 @@ build/
 ├── app/active.json
 ├── app/previous.json
 ├── app/update-manifest.json
-├── app/versions/0.5.8/win-x64/               # 完整 Loader 宿主
-├── CodexScriptLoader-0.5.8-windows-x64-setup.exe
-├── CodexScriptLoader-0.5.8-windows-x64-setup.exe.sha256
-├── CodexScriptLoader-0.5.8-windows-x64.zip
-├── CodexScriptLoader-0.5.8-windows-x64.zip.sha256
-└── CodexScriptLoader-0.5.8-x64.spdx.json
+├── app/versions/0.5.9/win-x64/               # 完整 Loader 宿主
+├── CodexScriptLoader-0.5.9-windows-x64-setup.exe
+├── CodexScriptLoader-0.5.9-windows-x64-setup.exe.sha256
+├── CodexScriptLoader-0.5.9-windows-x64.zip
+├── CodexScriptLoader-0.5.9-windows-x64.zip.sha256
+└── CodexScriptLoader-0.5.9-x64.spdx.json
 ```
 
 ### macOS live runtime（尚未测试）
@@ -90,6 +90,8 @@ node src/cli.mjs run --live
 macOS runtime 会发现 `Codex.app`，以随机 loopback CDP 端口启动它，加载相同格式的脚本包，并在终端中持续监督本次会话。数据目录为 `~/Library/Application Support/codex-script-loader`。
 
 ### Windows 运行流程
+
+Codex 在应用内安装新版本并自动重启时，Loader 会检测包版本变化，用新的随机 CDP 端口重新受管启动新版 Codex，并重新注入已启用插件；普通关闭 Codex 仍会让 Loader 自动退出。
 
 再次启动 Loader EXE 会打开诊断窗口。如需在不刷新、不聚焦 Codex 的情况下重载脚本，执行：
 

@@ -9,9 +9,15 @@ using CodexScriptLoader.Interop;
 
 namespace CodexScriptLoader.Windows;
 
+internal enum ManagedCodexExitReason
+{
+    Closed,
+    PackageUpdated,
+}
+
 internal sealed class LiveSupervisor : IAsyncDisposable
 {
-    public const string Version = "0.5.8";
+    public const string Version = "0.5.9";
     private static readonly TimeSpan GracefulRestartShutdownTimeout = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan ForcedRestartShutdownTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan PackageExitPollInterval = TimeSpan.FromMilliseconds(250);
@@ -49,7 +55,7 @@ internal sealed class LiveSupervisor : IAsyncDisposable
 
     public event Action<DiagnosticSnapshot>? StateChanged;
 
-    public event Action? ManagedCodexExited;
+    public event Action<ManagedCodexExitReason>? ManagedCodexExited;
 
     public Func<bool, CancellationToken, Task<string?>>? PackagePickerAsync { get; set; }
 
@@ -823,10 +829,8 @@ internal sealed class LiveSupervisor : IAsyncDisposable
                 if (targets.Count == 0)
                 {
                     missingTicks++;
-                    if (missingTicks >= 5)
+                    if (TryNotifyManagedCodexExit(missingTicks))
                     {
-                        logger.Info("managed-codex-exited");
-                        ManagedCodexExited?.Invoke();
                         return;
                     }
                 }
@@ -847,15 +851,64 @@ internal sealed class LiveSupervisor : IAsyncDisposable
             catch (Exception exception) when (exception is HttpRequestException or WebSocketException or InvalidOperationException)
             {
                 missingTicks++;
-                if (missingTicks >= 5)
+                if (TryNotifyManagedCodexExit(missingTicks, exception))
                 {
-                    logger.Warn("managed-codex-unreachable", new { message = JsonlLogger.Redact(exception.Message) });
-                    ManagedCodexExited?.Invoke();
                     return;
                 }
             }
         }
     }
+
+    private bool TryNotifyManagedCodexExit(int missingTicks, Exception? connectionError = null)
+    {
+        if (package is not null)
+        {
+            try
+            {
+                var installed = PackageDiscovery.DiscoverCodexForCurrentUser();
+                if (IsPackageUpgrade(package, installed))
+                {
+                    logger.Info("codex-package-update-detected", new
+                    {
+                        previousPackage = package.PackageFullName,
+                        previousVersion = package.Version.ToString(),
+                        installedPackage = installed.PackageFullName,
+                        installedVersion = installed.Version.ToString(),
+                    });
+                    ManagedCodexExited?.Invoke(ManagedCodexExitReason.PackageUpdated);
+                    return true;
+                }
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
+            {
+                if (missingTicks >= 5)
+                {
+                    logger.Warn("codex-package-update-detection-failed", new { message = JsonlLogger.Redact(exception.Message) });
+                }
+            }
+        }
+
+        if (missingTicks < 5)
+        {
+            return false;
+        }
+
+        if (connectionError is null)
+        {
+            logger.Info("managed-codex-exited");
+        }
+        else
+        {
+            logger.Warn("managed-codex-unreachable", new { message = JsonlLogger.Redact(connectionError.Message) });
+        }
+
+        ManagedCodexExited?.Invoke(ManagedCodexExitReason.Closed);
+        return true;
+    }
+
+    internal static bool IsPackageUpgrade(CodexPackageIdentity current, CodexPackageIdentity installed) =>
+        string.Equals(current.PackageFamilyName, installed.PackageFamilyName, StringComparison.OrdinalIgnoreCase) &&
+        installed.Version > current.Version;
 
     private void SetState(LoaderState state, string? error)
     {

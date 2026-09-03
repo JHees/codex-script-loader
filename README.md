@@ -6,7 +6,7 @@
 
 **Open Codex for user scripts, with automatic injection, reload, and cleanup.**
 
-[![Version](https://img.shields.io/badge/version-0.5.8-f97316)](https://github.com/JHees/codex-script-loader)
+[![Version](https://img.shields.io/badge/version-0.5.9-f97316)](https://github.com/JHees/codex-script-loader)
 [![Windows](https://img.shields.io/badge/Windows-11-0078d4?logo=windows11)](#requirements)
 [![macOS](https://img.shields.io/badge/macOS-untested-999999?logo=apple)](#platform-support)
 [![.NET](https://img.shields.io/badge/.NET-10-512bd4?logo=dotnet)](global.json)
@@ -28,7 +28,7 @@ Windows uses the native .NET 10 background host with no console or tray icon and
 | Debug-enabled launch | Opens Codex with a local debugging endpoint ready for renderer scripts. |
 | User scripts | Loads `manifest.json + index.js` packages from the Loader data directory. |
 | Automatic lifecycle | Validates, injects, reloads, replaces, and cleans up scripts across renderer documents. |
-| Native Windows host | Runs quietly with Codex and exits when the Codex instance it launched closes. |
+| Native Windows host | Runs quietly with Codex, recovers a managed session after an in-app Codex update restart, and exits after an ordinary Codex close. |
 | macOS runtime | Discovers `Codex.app` and provides the same managed CDP/script flow through Node.js; currently untested. |
 | Diagnostics and reload | Starting a second Windows instance opens diagnostics; `--reload` replaces scripts in place. |
 | Online host updates | Checks the stable GitHub Release after startup and switches verified Loader hosts without restarting Codex. |
@@ -71,12 +71,12 @@ build/
 ├── app/active.json
 ├── app/previous.json
 ├── app/update-manifest.json
-├── app/versions/0.5.8/win-x64/               # complete Loader host
-├── CodexScriptLoader-0.5.8-windows-x64-setup.exe
-├── CodexScriptLoader-0.5.8-windows-x64-setup.exe.sha256
-├── CodexScriptLoader-0.5.8-windows-x64.zip
-├── CodexScriptLoader-0.5.8-windows-x64.zip.sha256
-└── CodexScriptLoader-0.5.8-x64.spdx.json
+├── app/versions/0.5.9/win-x64/               # complete Loader host
+├── CodexScriptLoader-0.5.9-windows-x64-setup.exe
+├── CodexScriptLoader-0.5.9-windows-x64-setup.exe.sha256
+├── CodexScriptLoader-0.5.9-windows-x64.zip
+├── CodexScriptLoader-0.5.9-windows-x64.zip.sha256
+└── CodexScriptLoader-0.5.9-x64.spdx.json
 ```
 
 The setup executable at the top of `build` is the normal local installation entry. The `build\app` directory is packaging payload, not the recommended launch path. The installer keeps scripts and settings under `%LOCALAPPDATA%\CodexScriptLoader` when upgrading or uninstalling.
@@ -98,7 +98,8 @@ The macOS runtime discovers `Codex.app`, starts it with a random loopback CDP po
 3. It activates Codex with a random loopback CDP port.
 4. It verifies the listener PID, package family, and exact renderer URL before injection.
 5. Enabled renderer plugins start through the same manifest and lifecycle contract.
-6. When the managed Codex process exits, the Loader releases its connections and exits automatically.
+6. If Codex installs a newer package and restarts from its in-app update flow, the Loader detects the version change, relaunches that package with a fresh random CDP endpoint, and reinjects enabled plugins.
+7. After an ordinary managed Codex close, the Loader releases its connections and exits automatically.
 
 Start the Loader executable a second time to open diagnostics. To reload installed scripts without focusing or refreshing Codex, run the same compatible executable as a second instance:
 

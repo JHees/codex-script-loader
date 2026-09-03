@@ -50,5 +50,9 @@
   degrade the Loader.
 - Restart closes and reactivates only the Codex instance managed by the Loader;
   it keeps the Loader process and settings architecture intact.
+- When an in-app Codex update replaces the installed package and restarts Codex,
+  the Windows host detects the higher package version, restores a managed CDP
+  launch, and reinjects enabled plugins. An ordinary Codex close still exits the
+  Loader.
 - The Loader itself adds no floating action button; the example badge remains
   disabled unless a user explicitly enables it from the example settings page.

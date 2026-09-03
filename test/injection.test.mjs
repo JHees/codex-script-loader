@@ -89,7 +89,7 @@ test("settings API is permission-gated and owned by the loader host", () => {
   assert.equal(typeof context.__settingsApi.registerPage, "function");
   assert.equal(typeof context.__settingsApi.register, "function");
   assert.equal(context.__processKind, "renderer");
-  assert.equal(context.__codexScriptLoader.settingsHost.snapshot().version, "0.5.8");
+  assert.equal(context.__codexScriptLoader.settingsHost.snapshot().version, "0.5.9");
 
   const withoutPermission = { ...descriptor({ id: "test.no-settings", source: "globalThis.__settingsWithoutPermission = api.settings;" }), permissions: [] };
   vm.runInContext(buildInjectionSource([withoutPermission]), context);
