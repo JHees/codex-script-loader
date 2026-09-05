@@ -1,7 +1,7 @@
 using System.IO.Pipes;
-using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
+using System.Text.Json;
 using CodexScriptLoader.Core;
 
 namespace CodexScriptLoader.Windows;
@@ -28,20 +28,24 @@ internal sealed class SingleInstanceCoordinator : IAsyncDisposable
 
     public event Action<string>? CommandReceived;
 
-    public static SingleInstanceCoordinator Create(LoaderPaths paths)
+    public Func<HostCommandRequest, CancellationToken, Task<JsonElement>>? HostCommandReceived { get; set; }
+
+    public static SingleInstanceCoordinator Create(LoaderPaths paths, string? pipeNameOverride = null)
     {
         paths.EnsureDirectories();
         var sid = WindowsIdentity.GetCurrent().User?.Value
             ?? throw new InvalidOperationException("Current Windows user SID is unavailable.");
-        var suffix = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(sid)))[..24];
-        return new SingleInstanceCoordinator(paths.InstanceLockPath, $"CodexScriptLoader.v0.3.{suffix}", TryOpenLock(paths.InstanceLockPath));
+        return new SingleInstanceCoordinator(paths.InstanceLockPath, pipeNameOverride ?? HostCommandProtocol.PipeNameForUserSid(sid), TryOpenLock(paths.InstanceLockPath));
     }
 
     public void StartServer()
     {
         if (!IsPrimary || serverTask is not null) return;
-        serverLifetime = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
-        serverTask = Task.Run(() => ServerLoopAsync(serverLifetime.Token));
+        var cancellation = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+        serverLifetime = cancellation;
+        // A waiting plugin must not monopolize the legacy management channel.
+        // Keep a bounded number of independent connections, all owned by this lifetime.
+        serverTask = Task.WhenAll(Enumerable.Range(0, 4).Select(_ => Task.Run(() => ServerLoopAsync(cancellation.Token))));
     }
 
     public async Task<bool> TryAcquireAsync(TimeSpan timeout, CancellationToken cancellationToken)
@@ -96,6 +100,22 @@ internal sealed class SingleInstanceCoordinator : IAsyncDisposable
         await writer.WriteLineAsync(command.AsMemory(), cancellationToken).ConfigureAwait(false);
     }
 
+    public async Task<HostCommandResponse> SendHostCommandAsync(HostCommandRequest request, CancellationToken cancellationToken)
+    {
+        HostCommandProtocol.ValidateRequest(request);
+        var requestBytes = HostCommandProtocol.SerializeBounded(request);
+        await using var client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+        await client.ConnectAsync(2000, cancellationToken).ConfigureAwait(false);
+        await client.WriteAsync(requestBytes, cancellationToken).ConfigureAwait(false);
+        await client.WriteAsync("\n"u8.ToArray(), cancellationToken).ConfigureAwait(false);
+        await client.FlushAsync(cancellationToken).ConfigureAwait(false);
+        var responseLine = await HostCommandProtocol.ReadBoundedUtf8Async(client, stopAtNewline: true, cancellationToken).ConfigureAwait(false);
+        if (responseLine.Length == 0) throw new IOException("Loader closed the host command pipe without a response.");
+
+        return JsonSerializer.Deserialize<HostCommandResponse>(responseLine, HostCommandProtocol.JsonOptions)
+            ?? throw new InvalidDataException("Host command response is empty.");
+    }
+
     private static FileStream? TryOpenLock(string path)
     {
         try
@@ -117,23 +137,100 @@ internal sealed class SingleInstanceCoordinator : IAsyncDisposable
     {
         while (!cancellationToken.IsCancellationRequested)
         {
-            await using var server = new NamedPipeServerStream(pipeName, PipeDirection.In, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+            await using var server = new NamedPipeServerStream(pipeName, PipeDirection.InOut, NamedPipeServerStream.MaxAllowedServerInstances, PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
             try
             {
                 await server.WaitForConnectionAsync(cancellationToken).ConfigureAwait(false);
-                using var reader = new StreamReader(server, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, leaveOpen: true);
-                var command = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
-                if (command is "ShowStatus" or "ReloadScripts") CommandReceived?.Invoke(command);
+                using var readTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                readTimeout.CancelAfter(TimeSpan.FromSeconds(5));
+                string command;
+                try
+                {
+                    command = await HostCommandProtocol.ReadBoundedUtf8Async(server, stopAtNewline: true, readTimeout.Token).ConfigureAwait(false);
+                }
+                catch (Exception exception) when (exception is InvalidDataException or DecoderFallbackException)
+                {
+                    var failure = HostCommandProtocol.SerializeBounded(Failure("unknown", "INVALID_REQUEST", "Command must be valid UTF-8 and no larger than 64 KiB."));
+                    await server.WriteAsync(failure, readTimeout.Token).ConfigureAwait(false);
+                    await server.WriteAsync("\n"u8.ToArray(), readTimeout.Token).ConfigureAwait(false);
+                    continue;
+                }
+                if (command is "ShowStatus" or "ReloadScripts")
+                {
+                    CommandReceived?.Invoke(command);
+                    continue;
+                }
+
+                if (command.Length == 0) continue;
+                var response = await HandleHostCommandAsync(command, cancellationToken).ConfigureAwait(false);
+                var responseBytes = HostCommandProtocol.SerializeBounded(response);
+                using var writeTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                writeTimeout.CancelAfter(TimeSpan.FromSeconds(5));
+                await server.WriteAsync(responseBytes, writeTimeout.Token).ConfigureAwait(false);
+                await server.WriteAsync("\n"u8.ToArray(), writeTimeout.Token).ConfigureAwait(false);
+                await server.FlushAsync(writeTimeout.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 break;
+            }
+            catch (OperationCanceledException)
+            {
+                // A client that never finishes its input loses only its own connection.
             }
             catch (IOException)
             {
             }
         }
     }
+
+    private async Task<HostCommandResponse> HandleHostCommandAsync(string line, CancellationToken cancellationToken)
+    {
+        var requestId = "unknown";
+        try
+        {
+            if (Encoding.UTF8.GetByteCount(line) > HostCommandProtocol.MaximumMessageBytes)
+            {
+                throw new InvalidDataException("Host command request exceeds 64 KiB.");
+            }
+
+            var request = JsonSerializer.Deserialize<HostCommandRequest>(line, HostCommandProtocol.JsonOptions)
+                ?? throw new InvalidDataException("Host command request is empty.");
+            HostCommandProtocol.ValidateRequest(request);
+            requestId = request.RequestId;
+            var handler = HostCommandReceived ?? throw new HostCommandException("COMMAND_UNAVAILABLE", "Plugin host commands are unavailable.");
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(HostCommandProtocol.InvocationTimeout);
+            var result = await handler(request, timeout.Token).WaitAsync(timeout.Token).ConfigureAwait(false);
+            var response = new HostCommandResponse(HostCommandProtocol.Version, request.RequestId, true, result, null);
+            try { HostCommandProtocol.SerializeBounded(response); }
+            catch (InvalidDataException) { return Failure(requestId, "RESULT_TOO_LARGE", "Plugin host command result exceeds 64 KiB."); }
+            return response;
+        }
+        catch (HostCommandException exception)
+        {
+            return Failure(requestId, exception.Code, exception.Message);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return Failure(requestId, "COMMAND_TIMEOUT", "Plugin host command timed out.");
+        }
+        catch (InvalidDataException exception)
+        {
+            return Failure(requestId, "INVALID_REQUEST", exception.Message);
+        }
+        catch (JsonException)
+        {
+            return Failure(requestId, "INVALID_REQUEST", "Host command request is not valid JSON.");
+        }
+        catch (Exception)
+        {
+            return Failure(requestId, "COMMAND_FAILED", "Plugin host command failed.");
+        }
+    }
+
+    private static HostCommandResponse Failure(string requestId, string code, string message) =>
+        new(HostCommandProtocol.Version, requestId, false, null, new HostCommandError(code, message));
 
     private async Task StopServerAsync()
     {
@@ -146,6 +243,7 @@ internal sealed class SingleInstanceCoordinator : IAsyncDisposable
         {
             try { await task.ConfigureAwait(false); }
             catch (OperationCanceledException) { }
+            catch (IOException) { }
         }
 
         cancellation?.Dispose();

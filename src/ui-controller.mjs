@@ -19,6 +19,7 @@ const COMMANDS = new Set([
   "inspect_script_text",
   "install_script",
   "install_script_text",
+  "preview_plugin_github",
   "list_quarantined",
   "remove_script",
   "restore_quarantined",
@@ -61,6 +62,7 @@ export class UiController {
       case "inspect_script_text": return this.inspectScriptText(payload);
       case "install_script": return this.registry.install(payload.sourcePath, payload.options || {});
       case "install_script_text": return this.registry.installSourceText(payload, payload.options || {});
+      case "preview_plugin_github": throw new Error("GitHub plugin installation requires the native Windows Loader");
       case "list_quarantined": return this.registry.listQuarantined();
       case "remove_script": return this.registry.quarantineScript(payload.id, { mode: payload.mode || "quarantine" });
       case "restore_quarantined": return this.registry.restoreQuarantined(payload.key);
@@ -99,7 +101,7 @@ export class UiController {
 
   getUpdateStatus() {
     return {
-      currentVersion: "0.5.9",
+      currentVersion: "0.5.10",
       availableVersion: null,
       state: "idle",
       lastCheckedAt: null,

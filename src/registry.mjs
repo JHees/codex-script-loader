@@ -160,6 +160,7 @@ export class ScriptRegistry {
       }
 
       const target = assertWithinDirectory(this.layout.scriptsRoot, path.join(this.layout.scriptsRoot, descriptor.id), "script install target");
+      if (descriptor.agentSkill) throw new Error("bundled agent skills require the native Windows Loader installer");
       if (await exists(target)) {
         if (overwrite) throw new Error(`script overwrite is not supported; quarantine the installed script first: ${descriptor.id}`);
         throw new Error(`script already installed: ${descriptor.id}`);

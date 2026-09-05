@@ -57,7 +57,11 @@ public sealed record ScriptDescriptor(
     string? SettingsPageId,
     string? SettingsPageTitle,
     PluginUpdateDescriptor? Update,
-    PageCompanionDescriptor? PageCompanion = null);
+    PageCompanionDescriptor? PageCompanion = null,
+    HostCommandsDescriptor? HostCommands = null,
+    string? AgentSkill = null);
+
+public sealed record HostCommandsDescriptor(IReadOnlyList<string> Operations);
 
 public sealed record PageCompanionDescriptor(
     string Id,
@@ -146,7 +150,9 @@ public sealed record PluginSnapshot(
     string? Documentation,
     string? DocumentationExcerpt,
     bool Legacy,
-    PluginUpdateSnapshot? Update);
+    PluginUpdateSnapshot? Update,
+    string? AgentSkill = null,
+    string? AgentSkillStatus = null);
 
 public sealed record PluginInstallPreview(
     string Token,
@@ -159,7 +165,13 @@ public sealed record PluginInstallPreview(
     string SettingsMode,
     string? SettingsPageTitle,
     string? DocumentationExcerpt,
-    bool Legacy);
+    bool Legacy,
+    string? AgentSkill = null,
+    string? ReplacesVersion = null,
+    string? SourceUrl = null,
+    string? ArchiveSha256 = null);
+
+public sealed record PluginReleasePackage(string Repository, string Version, string AssetName, string Sha256);
 
 public sealed record PluginOperationResult(
     string Mode,

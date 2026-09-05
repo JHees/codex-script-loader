@@ -2,9 +2,32 @@
 
 Codex Script Loader is a small renderer-plugin sidecar. It does not modify the
 Microsoft Store package, `app.asar`, Codex authentication, model providers, MCP
-configuration, skills, projects, or conversations.
+configuration, existing user skills, projects, or conversations. An optional
+schema-v2 package can expose its own bundled skill through a Loader-managed
+entry in the current user's skill discovery directory.
+
+## Bundled skill ownership
+
+A native plugin package may declare one `agentSkill` with the `agent-skills`
+permission. The skill source stays inside that package; a Windows directory
+junction exposes it under the user's `.agents/skills` directory. There is no
+second content copy or separate skill installer. Package installation, enable,
+disable, update, rollback, quarantine, and restore also manage this owned entry.
+An ownership ledger and exact target checks protect unrelated user content.
+Startup recovery uses the existing package update journal before reconciling
+links; explicit reload also reconciles effective enabled state. See
+[the package contract](PLUGIN_SPEC.md#optional-bundled-agent-skill-schema-v2-native-windows).
 
 ## Runtime
+
+GitHub URL installation is a native Settings entry into the existing package
+installer, not a second registry. A fixed public GitHub Release metadata request
+discovers ZIP/checksum pairs; bounded HTTPS downloads and SHA-256 verification
+precede a normal pending-package preview. The manifest must match the requested
+release identity. Confirmation uses the same replacement and rollback path as
+local ZIP installation, including bundled skill ownership. New installations
+are registered with the existing per-plugin updater without enabling automatic
+updates. Node parity exposes a clear native-host requirement for this command.
 
 1. The native Windows host discovers and activates the official Microsoft Store
    Codex package with a random loopback-only CDP port.

@@ -6,7 +6,7 @@
 
 **打开 Codex 调试入口，加载用户脚本，并自动管理注入、重载与清理。**
 
-[![Version](https://img.shields.io/badge/version-0.5.9-f97316)](https://github.com/JHees/codex-script-loader)
+[![Version](https://img.shields.io/badge/version-0.5.10-f97316)](https://github.com/JHees/codex-script-loader)
 [![Windows](https://img.shields.io/badge/Windows-11-0078d4?logo=windows11)](#系统要求)
 [![macOS](https://img.shields.io/badge/macOS-未测试-999999?logo=apple)](#平台支持)
 [![.NET](https://img.shields.io/badge/.NET-10-512bd4?logo=dotnet)](global.json)
@@ -27,6 +27,7 @@ Windows 使用无控制台、无托盘图标的原生 .NET 10 后台宿主，是
 | --- | --- |
 | 调试模式启动 | 打开 Codex 本地调试入口，为 renderer 脚本提供运行环境。 |
 | 用户自定义脚本 | 从 Loader 数据目录加载 `manifest.json + index.js` 脚本包。 |
+| 随包 skill（源码新增能力） | Windows 原生 schema-v2 插件可一次安装 renderer 与 skill，统一启停、更新、回滚和移除；需要包含该能力的宿主构建。 |
 | 全自动生命周期 | 自动验证、注入、重载、替换并清理当前及未来 renderer 中的脚本。 |
 | Windows 原生宿主 | 在后台随 Codex 运行，应用内更新重启后自动恢复受管会话，普通关闭 Codex 后自动结束。 |
 | macOS runtime | 发现 `Codex.app`，通过 Node.js 提供相同的 CDP 与脚本流程；当前未测试。 |
@@ -54,6 +55,8 @@ Windows 使用无控制台、无托盘图标的原生 .NET 10 后台宿主，是
 
 0.5.3 新增默认关闭、逐插件启用的 GitHub Release 更新。声明更新源的第三方插件会被独立扫描，通过相同的受限传输下载，经强制 `.sha256` 校验后以事务方式替换并原位重载。Loader 自有的示例插件仍随 Loader 打包，不进入第三方更新流程。
 
+0.5.10 新增 **从 GitHub 安装**、已校验的同 ID 插件替换、插件附带 Skill 的一包安装，以及按操作白名单调用 renderer 插件的原生命令客户端。标准安装可沿用在线宿主更新，无需重新手工安装；启动器与接管协议保持不变。插件自动更新仍需单独开启。新增的 GitHub 安装入口仅使用公开 Release API 发现安装资产，不读取 GitHub 登录凭据。
+
 ### 从源码构建
 
 ```powershell
@@ -71,12 +74,12 @@ build/
 ├── app/active.json
 ├── app/previous.json
 ├── app/update-manifest.json
-├── app/versions/0.5.9/win-x64/               # 完整 Loader 宿主
-├── CodexScriptLoader-0.5.9-windows-x64-setup.exe
-├── CodexScriptLoader-0.5.9-windows-x64-setup.exe.sha256
-├── CodexScriptLoader-0.5.9-windows-x64.zip
-├── CodexScriptLoader-0.5.9-windows-x64.zip.sha256
-└── CodexScriptLoader-0.5.9-x64.spdx.json
+├── app/versions/0.5.10/win-x64/               # 完整 Loader 宿主
+├── CodexScriptLoader-0.5.10-windows-x64-setup.exe
+├── CodexScriptLoader-0.5.10-windows-x64-setup.exe.sha256
+├── CodexScriptLoader-0.5.10-windows-x64.zip
+├── CodexScriptLoader-0.5.10-windows-x64.zip.sha256
+└── CodexScriptLoader-0.5.10-x64.spdx.json
 ```
 
 ### macOS live runtime（尚未测试）
@@ -120,6 +123,10 @@ Windows 宿主通过官方包 API 启动 Codex，使用随机 loopback CDP 端�
 ## 脚本包
 
 已安装插件统一在 **Codex 设置 → Script-Loader → 设置** 中管理。该页面展示实时状态，支持启用/禁用、单个或全部重载、本地文件夹/ZIP 安装、隔离与恢复、检查更新，以及受控的 Codex 重启。声明了设置页的插件会直接列在“设置”入口下方。
+
+原生 Windows Loader 还提供 **从 GitHub 安装**：粘贴公开仓库地址、`releases/latest`、`releases/tag/v1.2.3` 或正式 Release 的 ZIP 下载链接即可。它使用无需登录的 GitHub Release API 发现资产，通过系统 `curl.exe` 下载 ZIP 和同名 `.sha256`，核对哈希、包内版本、更新仓库和资产名，再显示插件权限与安装确认。多个合格 ZIP 会先让你选择；源码归档、私有仓库和预发布版不受支持。下载/校验最长等待 120 秒，失败不会自动重试，也不会删除现有插件。
+
+从本地安装迁移到 GitHub 安装时，**不必先卸载**：同 ID 包会显示替换确认，沿用原启用状态，并在安装失败时回滚。安装来源本身不决定更新能力，包内的 `update` 声明才是事实来源；安装成功后可在该插件菜单开启“自动更新”，默认仍为关闭。声明了 `agentSkill` 的插件会在同一次启用安装中提供附带 Skill，无须再手动安装第二份。GitHub 链接安装仅在原生宿主中实现，Node 开发宿主会明确提示不支持。
 
 第三方包可以选择声明自己的公开 GitHub Release 更新源。原生 Windows 宿主会在首次进入健康状态后扫描一次，也可从设置页手动检查；逐插件自动替换默认关闭。更新必须来自稳定的 `vMAJOR.MINOR.PATCH` Release，并同时提供版本化 ZIP 与同名 `.sha256`。新增权限或检测到本地修改时必须确认；插件已禁用或没有可用 renderer 时不会替换。此功能不建立远程市场，也不要求 Loader 仓库同步第三方源码、版本或发布流程。
 

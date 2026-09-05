@@ -17,7 +17,8 @@ internal enum ManagedCodexExitReason
 
 internal sealed class LiveSupervisor : IAsyncDisposable
 {
-    public const string Version = "0.5.9";
+    public const string Version = "0.5.10";
+    private const string TrustedInputPermission = "trusted-input";
     private static readonly TimeSpan GracefulRestartShutdownTimeout = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan ForcedRestartShutdownTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan PackageExitPollInterval = TimeSpan.FromMilliseconds(250);
@@ -25,6 +26,8 @@ internal sealed class LiveSupervisor : IAsyncDisposable
     private readonly LoaderPaths paths;
     private readonly JsonlLogger logger;
     private readonly SemaphoreSlim operation = new(1, 1);
+    private readonly SemaphoreSlim hostInvocation = new(1, 1);
+    private CancellationTokenSource? activeHostCommand;
     private readonly CancellationTokenSource lifetime = new();
     private readonly DateTimeOffset startedAt = DateTimeOffset.UtcNow;
     private ScriptRegistry? registry;
@@ -61,6 +64,194 @@ internal sealed class LiveSupervisor : IAsyncDisposable
 
     public OnlineUpdateManager? UpdateManager { get; set; }
 
+    public async Task<JsonElement> InvokeHostCommandAsync(HostCommandRequest request, CancellationToken cancellationToken)
+    {
+        if (!await hostInvocation.WaitAsync(0, cancellationToken).ConfigureAwait(false))
+            throw new HostCommandException("COMMAND_BUSY", "A plugin host command is already in progress.");
+        using var lease = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+        CdpSession? commandSession = null;
+        try
+        {
+            ScriptDescriptor descriptor;
+            string expression;
+            await operation.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var activeRegistry = registry ?? throw new HostCommandException("COMMAND_UNAVAILABLE", "Managed renderer runtime is not ready.");
+                var activeClient = client ?? throw new HostCommandException("COMMAND_UNAVAILABLE", "Managed renderer runtime is not ready.");
+                var plan = await activeRegistry.BuildPlanAsync(force: false, cancellationToken).ConfigureAwait(false);
+                descriptor = plan.Scripts.SingleOrDefault(candidate => string.Equals(candidate.Id, request.PluginId, StringComparison.Ordinal))
+                    ?? throw new HostCommandException("PLUGIN_NOT_FOUND", "The requested plugin is not enabled.");
+                if (descriptor.HostCommands is null || !descriptor.HostCommands.Operations.Contains(request.Operation, StringComparer.Ordinal))
+                {
+                    throw new HostCommandException("OPERATION_NOT_ALLOWED", "The requested plugin operation is not allowed.");
+                }
+
+                if (!scripts.Any(script => string.Equals(script.Id, request.PluginId, StringComparison.Ordinal) && script.LifecycleResult == "running"))
+                {
+                    throw new HostCommandException("PLUGIN_NOT_RUNNING", "The requested plugin is not running.");
+                }
+
+                var targets = await activeClient.GetCodexTargetsAsync(cancellationToken).ConfigureAwait(false);
+                if (targets.Count != 1)
+                {
+                    throw new HostCommandException("RENDERER_UNAVAILABLE", "Exactly one managed Codex renderer is required.");
+                }
+
+                expression = BuildHostCommandExpression(request.PluginId, request.Operation, request.Payload);
+                commandSession = await CdpSession.ConnectAsync(new Uri(targets[0].WebSocketDebuggerUrl), cancellationToken).ConfigureAwait(false);
+                activeHostCommand = lease;
+            }
+            finally { operation.Release(); }
+
+            var session = commandSession;
+            using var invocationTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lease.Token);
+            invocationTimeout.CancelAfter(HostCommandProtocol.InvocationTimeout);
+            var invocationToken = invocationTimeout.Token;
+            await session.SendAsync("Runtime.enable", cancellationToken: invocationToken).ConfigureAwait(false);
+
+            async Task<JsonElement> EvaluateAsync(CancellationToken token)
+            {
+                var evaluation = await session.SendAsync(
+                    "Runtime.evaluate",
+                    new { expression, awaitPromise = true, returnByValue = true },
+                    token,
+                    HostCommandProtocol.InvocationTimeout).ConfigureAwait(false);
+                if (evaluation.TryGetProperty("exceptionDetails", out _))
+                {
+                    throw new HostCommandException("PLUGIN_COMMAND_FAILED", "The renderer plugin rejected the host command.");
+                }
+                if (!evaluation.TryGetProperty("result", out var result) || !result.TryGetProperty("value", out var value))
+                {
+                    throw new HostCommandException("INVALID_PLUGIN_RESULT", "The renderer plugin returned no serializable JSON result.");
+                }
+                return value.Clone();
+            }
+
+            async Task PressEnterAsync(CancellationToken token)
+            {
+                var key = new
+                {
+                    key = "Enter",
+                    code = "Enter",
+                    text = "\r",
+                    unmodifiedText = "\r",
+                    windowsVirtualKeyCode = 13,
+                    nativeVirtualKeyCode = 13,
+                };
+                await session.SendAsync("Input.dispatchKeyEvent", new { type = "keyDown", key.key, key.code, key.text, key.unmodifiedText, key.windowsVirtualKeyCode, key.nativeVirtualKeyCode }, token).ConfigureAwait(false);
+                await session.SendAsync("Input.dispatchKeyEvent", new { type = "keyUp", key.key, key.code, windowsVirtualKeyCode = 13, nativeVirtualKeyCode = 13 }, token).ConfigureAwait(false);
+            }
+
+            var result = await ResolveHostCommandResultAsync(
+                EvaluateAsync,
+                PressEnterAsync,
+                descriptor.Permissions.Contains(TrustedInputPermission, StringComparer.Ordinal),
+                invocationToken).ConfigureAwait(false);
+            lease.Token.ThrowIfCancellationRequested();
+            return result;
+        }
+        catch (OperationCanceledException) when (lease.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            throw new HostCommandException("SESSION_LOST", "The renderer runtime changed during the plugin command.");
+        }
+        finally
+        {
+            await operation.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+            try { if (ReferenceEquals(activeHostCommand, lease)) activeHostCommand = null; }
+            finally { operation.Release(); }
+            try { if (commandSession is not null) await commandSession.DisposeAsync().ConfigureAwait(false); }
+            finally { hostInvocation.Release(); }
+        }
+    }
+
+    internal static async Task<JsonElement> ResolveHostCommandResultAsync(
+        Func<CancellationToken, Task<JsonElement>> evaluateAsync,
+        Func<CancellationToken, Task> pressEnterAsync,
+        bool allowTrustedInput,
+        CancellationToken cancellationToken)
+    {
+        var hostActions = 0;
+        while (true)
+        {
+            var pluginResult = ReadPluginResult(await evaluateAsync(cancellationToken).ConfigureAwait(false));
+            if (!IsTrustedEnterRequest(pluginResult)) return pluginResult;
+            if (!allowTrustedInput)
+            {
+                throw new HostCommandException("HOST_ACTION_DENIED", "The plugin did not declare the trusted-input permission.");
+            }
+            if (hostActions >= 1)
+            {
+                throw new HostCommandException("HOST_ACTION_LIMIT", "A plugin command may request trusted Enter only once.");
+            }
+            hostActions += 1;
+            await pressEnterAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private static JsonElement ReadPluginResult(JsonElement value)
+    {
+        if (value.ValueKind != JsonValueKind.Object || !value.TryGetProperty("ok", out var pluginOk) || pluginOk.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+        {
+            throw new HostCommandException("INVALID_PLUGIN_RESULT", "The renderer plugin returned an invalid command envelope.");
+        }
+        if (!pluginOk.GetBoolean())
+        {
+            var error = value.TryGetProperty("error", out var pluginError) && pluginError.ValueKind == JsonValueKind.Object ? pluginError : default;
+            var code = error.ValueKind == JsonValueKind.Object && error.TryGetProperty("code", out var codeElement) ? codeElement.GetString() : null;
+            var message = error.ValueKind == JsonValueKind.Object && error.TryGetProperty("message", out var messageElement) ? messageElement.GetString() : null;
+            throw new HostCommandException(
+                !string.IsNullOrWhiteSpace(code) && code.Length <= 64 && code.All(character => char.IsAsciiLetterUpper(character) || char.IsAsciiDigit(character) || character == '_') ? code : "PLUGIN_COMMAND_FAILED",
+                !string.IsNullOrWhiteSpace(message) && message.Length <= 512 && message.All(character => !char.IsControl(character)) ? message : "The renderer plugin rejected the host command.");
+        }
+        if (!value.TryGetProperty("result", out var pluginResult))
+        {
+            throw new HostCommandException("INVALID_PLUGIN_RESULT", "The renderer plugin command envelope has no result.");
+        }
+        var clone = pluginResult.Clone();
+        if (System.Text.Encoding.UTF8.GetByteCount(clone.GetRawText()) > HostCommandProtocol.MaximumMessageBytes)
+        {
+            throw new HostCommandException("RESULT_TOO_LARGE", "The renderer plugin result exceeds 64 KiB.");
+        }
+        return clone;
+    }
+
+    private static bool IsTrustedEnterRequest(JsonElement pluginResult)
+    {
+        if (pluginResult.ValueKind != JsonValueKind.Object || !pluginResult.TryGetProperty("$loaderHostAction", out var action)) return false;
+        if (pluginResult.EnumerateObject().Count() != 1
+            || action.ValueKind != JsonValueKind.Object
+            || action.EnumerateObject().Count() != 2
+            || !action.TryGetProperty("version", out var version)
+            || version.ValueKind != JsonValueKind.Number
+            || !version.TryGetInt32(out var versionNumber)
+            || versionNumber != 1
+            || !action.TryGetProperty("type", out var type)
+            || type.ValueKind != JsonValueKind.String
+            || !string.Equals(type.GetString(), "press-enter", StringComparison.Ordinal))
+        {
+            throw new HostCommandException("INVALID_PLUGIN_RESULT", "The renderer plugin returned an invalid host action request.");
+        }
+        return true;
+    }
+
+    internal static string BuildHostCommandExpression(string pluginId, string hostOperation, JsonElement payload) => $$"""
+        (async () => {
+          const record = globalThis.__codexScriptLoader?.scripts?.[{{JsonSerializer.Serialize(pluginId)}}];
+          if (!record || record.status !== "running" || typeof record.invokeHostCommand !== "function") {
+            throw new Error("PLUGIN_NOT_RUNNING");
+          }
+          try {
+            const result = await record.invokeHostCommand({{JsonSerializer.Serialize(hostOperation)}}, {{payload.GetRawText()}});
+            return { version: 1, ok: true, result };
+          } catch (error) {
+            const code = typeof error?.code === "string" ? error.code : "PLUGIN_COMMAND_FAILED";
+            const message = typeof error?.message === "string" ? error.message : "The renderer plugin rejected the host command.";
+            return { version: 1, ok: false, error: { code, message } };
+          }
+        })()
+        """;
+
     public DiagnosticSnapshot Snapshot => new(
         Version,
         State,
@@ -90,7 +281,7 @@ internal sealed class LiveSupervisor : IAsyncDisposable
 
             var settingsHost = Path.Combine(AppContext.BaseDirectory, "bundled", "settings-host.mjs");
             var bundledExample = Path.Combine(AppContext.BaseDirectory, "bundled", "example-ui-plugin");
-            registry = new ScriptRegistry(paths, settingsHost);
+            registry = new ScriptRegistry(paths, settingsHost, UserSkillRoot(), DirectoryJunction.Create);
             await registry.InitializeAsync(cancellationToken).ConfigureAwait(false);
             await registry.EnsureBundledScriptAsync(bundledExample, cancellationToken).ConfigureAwait(false);
             await InitializePluginUpdateManagerAsync(cancellationToken).ConfigureAwait(false);
@@ -168,7 +359,7 @@ internal sealed class LiveSupervisor : IAsyncDisposable
 
             var settingsHost = Path.Combine(AppContext.BaseDirectory, "bundled", "settings-host.mjs");
             var bundledExample = Path.Combine(AppContext.BaseDirectory, "bundled", "example-ui-plugin");
-            registry = new ScriptRegistry(paths, settingsHost);
+            registry = new ScriptRegistry(paths, settingsHost, UserSkillRoot(), DirectoryJunction.Create);
             await registry.InitializeAsync(cancellationToken).ConfigureAwait(false);
             await registry.EnsureBundledScriptAsync(bundledExample, cancellationToken).ConfigureAwait(false);
             await InitializePluginUpdateManagerAsync(cancellationToken).ConfigureAwait(false);
@@ -282,9 +473,11 @@ internal sealed class LiveSupervisor : IAsyncDisposable
 
     public async Task ReloadAsync(IReadOnlySet<string>? forceIds, CancellationToken cancellationToken)
     {
+        if (registry is not null) await registry.ReconcileSkillEntriesAsync(cancellationToken).ConfigureAwait(false);
         await operation.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            activeHostCommand?.Cancel();
             if (client is null || registry is null || injector is null || bridge is null)
             {
                 throw new InvalidOperationException("Managed runtime is not ready.");
@@ -371,6 +564,7 @@ internal sealed class LiveSupervisor : IAsyncDisposable
         await operation.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            activeHostCommand?.Cancel();
             if (client is null || injector is null || package is null)
             {
                 return true;
@@ -564,12 +758,24 @@ internal sealed class LiveSupervisor : IAsyncDisposable
                 : await registry.StagePackageAsync(source, archive, cancellationToken).ConfigureAwait(false);
         }
 
+        if (command == "preview_plugin_github")
+        {
+            var url = RequiredPayloadText(payload, "url", 2048);
+            var asset = payload.TryGetProperty("asset", out _) ? RequiredPayloadText(payload, "asset", 164) : null;
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetime.Token);
+            return await new GitHubPluginInstaller(paths, registry, new CurlUpdateTransport()).PreviewAsync(url, asset, timeout.Token).ConfigureAwait(false);
+        }
+
         if (command == "install_plugin")
         {
             var token = RequiredPayloadText(payload, "token", 64);
             var enabled = RequiredPayloadBoolean(payload, "enabled");
-            var plugin = await registry.InstallPendingAsync(token, enabled, cancellationToken).ConfigureAwait(false);
-            if (enabled) await ReloadAsync(new HashSet<string>(StringComparer.Ordinal), cancellationToken).ConfigureAwait(false);
+            var plugin = await registry.InstallPendingAsync(token, enabled, cancellationToken, ReloadAndVerifyPluginAsync).ConfigureAwait(false);
+            if (pluginUpdateManager is not null)
+            {
+                try { await pluginUpdateManager.RecordInstallationAsync(plugin.Id, CancellationToken.None).ConfigureAwait(false); }
+                catch (Exception exception) { logger.Warn("plugin-install-update-state-failed", new { pluginId = plugin.Id, message = JsonlLogger.Redact(exception.Message) }); }
+            }
             return plugin;
         }
 
@@ -974,6 +1180,7 @@ internal sealed class LiveSupervisor : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         lifetime.Cancel();
+        await hostInvocation.WaitAsync().ConfigureAwait(false);
         await StopMonitorAsync().ConfigureAwait(false);
 
         if (bridge is not null)
@@ -991,8 +1198,11 @@ internal sealed class LiveSupervisor : IAsyncDisposable
 
         client?.Dispose();
         operation.Dispose();
+        hostInvocation.Dispose();
         lifetime.Dispose();
     }
+
+    private static string UserSkillRoot() => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".agents", "skills");
 
     private async Task DisposeBridgeAndTransportAsync()
     {

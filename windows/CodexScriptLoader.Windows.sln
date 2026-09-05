@@ -8,6 +8,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CodexScriptLoader.Core", "s
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CodexScriptLoader.Windows", "src\CodexScriptLoader.Windows\CodexScriptLoader.Windows.csproj", "{C5AFB884-7BAA-40E6-8321-04B0A3AAB174}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CodexScriptLoader.Command", "src\CodexScriptLoader.Command\CodexScriptLoader.Command.csproj", "{E82552DF-F156-4E86-8C96-D8C28C32E100}"
+EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CodexScriptLoader.Launcher", "src\CodexScriptLoader.Launcher\CodexScriptLoader.Launcher.csproj", "{6D8B5E54-819A-4BE6-B077-E328E5ACCFB7}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ActivationProbe", "tools\ActivationProbe\ActivationProbe.csproj", "{16193192-B6E7-42E8-805D-D00F3A73D4A1}"
@@ -36,6 +38,10 @@ Global
 		{C5AFB884-7BAA-40E6-8321-04B0A3AAB174}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{C5AFB884-7BAA-40E6-8321-04B0A3AAB174}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{C5AFB884-7BAA-40E6-8321-04B0A3AAB174}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E82552DF-F156-4E86-8C96-D8C28C32E100}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E82552DF-F156-4E86-8C96-D8C28C32E100}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E82552DF-F156-4E86-8C96-D8C28C32E100}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E82552DF-F156-4E86-8C96-D8C28C32E100}.Release|Any CPU.Build.0 = Release|Any CPU
 		{6D8B5E54-819A-4BE6-B077-E328E5ACCFB7}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{6D8B5E54-819A-4BE6-B077-E328E5ACCFB7}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{6D8B5E54-819A-4BE6-B077-E328E5ACCFB7}.Release|Any CPU.ActiveCfg = Release|Any CPU

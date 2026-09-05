@@ -15,7 +15,7 @@ public sealed partial class ScriptRegistry
         IReadOnlyDictionary<string, ScriptLoadResult>? runtimeById = null,
         CancellationToken cancellationToken = default)
     {
-        await ReloadConfigAsync(cancellationToken).ConfigureAwait(false);
+        var config = await ReadConfigAsync(cancellationToken).ConfigureAwait(false);
         var result = new List<PluginSnapshot>();
         foreach (var directory in Directory.EnumerateDirectories(paths.ScriptsRoot).OrderBy(value => value, StringComparer.OrdinalIgnoreCase))
         {
@@ -23,8 +23,8 @@ public sealed partial class ScriptRegistry
             try
             {
                 var descriptor = await LoadDescriptorAsync(directory, cancellationToken).ConfigureAwait(false);
-                var enabled = !enabledOverrides.TryGetValue(descriptor.Id, out var overrideEnabled) || overrideEnabled;
-                var effectiveEnabled = globalEnabled && !safeMode && enabled;
+                var enabled = !config.Overrides.TryGetValue(descriptor.Id, out var overrideEnabled) || overrideEnabled;
+                var effectiveEnabled = config.GlobalEnabled && !config.SafeMode && enabled;
                 ScriptLoadResult? runtime = null;
                 runtimeById?.TryGetValue(descriptor.Id, out runtime);
                 var status = !effectiveEnabled
@@ -53,7 +53,9 @@ public sealed partial class ScriptRegistry
                     descriptor.Documentation,
                     documentation,
                     legacy,
-                    null));
+                    null,
+                    descriptor.AgentSkill,
+                    skillLinks?.Status(descriptor) ?? (descriptor.AgentSkill is null ? "none" : "unavailable")));
             }
             catch (Exception exception) when (exception is IOException or JsonException or InvalidDataException or UnauthorizedAccessException)
             {
@@ -94,17 +96,21 @@ public sealed partial class ScriptRegistry
         {
             await ReloadConfigAsync(cancellationToken).ConfigureAwait(false);
             var directory = paths.EnsureWithin(paths.ScriptsRoot, Path.Combine(paths.ScriptsRoot, id), "Installed script");
-            _ = await LoadDescriptorAsync(directory, cancellationToken).ConfigureAwait(false);
+            var descriptor = await LoadDescriptorAsync(directory, cancellationToken).ConfigureAwait(false);
             var hadPrevious = enabledOverrides.TryGetValue(id, out var previous);
+            var previousEnabled = !hadPrevious || previous;
             enabledOverrides[id] = enabled;
             try
             {
+                if (configInvalid) throw new InvalidDataException("Loader configuration is invalid; refusing to overwrite it.");
+                await SyncSkillAsync(descriptor, enabled && globalEnabled && !safeMode, cancellationToken).ConfigureAwait(false);
                 await SaveConfigAsync(cancellationToken).ConfigureAwait(false);
             }
             catch
             {
                 if (hadPrevious) enabledOverrides[id] = previous;
                 else enabledOverrides.Remove(id);
+                await SyncSkillAsync(descriptor, previousEnabled && globalEnabled && !safeMode, CancellationToken.None).ConfigureAwait(false);
                 throw;
             }
 
@@ -117,7 +123,7 @@ public sealed partial class ScriptRegistry
         }
     }
 
-    public async Task<PluginInstallPreview> StagePackageAsync(string sourcePath, bool archive, CancellationToken cancellationToken = default)
+    public async Task<PluginInstallPreview> StagePackageAsync(string sourcePath, bool archive, CancellationToken cancellationToken = default, PluginReleasePackage? release = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sourcePath);
         await registryMutation.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -142,19 +148,23 @@ public sealed partial class ScriptRegistry
 
                 var packageRoot = FindPackageRoot(stageRoot);
                 var descriptor = await LoadDescriptorAsync(packageRoot, cancellationToken).ConfigureAwait(false);
+                if (release is not null && (descriptor.Version != release.Version || descriptor.Update is not { } update ||
+                    !string.Equals(update.Repository, release.Repository, StringComparison.OrdinalIgnoreCase) ||
+                    update.Asset.Replace("{version}", release.Version, StringComparison.Ordinal) != release.AssetName))
+                    throw new InvalidDataException("Plugin manifest version and update source must match the selected GitHub Release.");
+                await CheckSkillAsync(descriptor, cancellationToken).ConfigureAwait(false);
                 if (bundledIds.Contains(descriptor.Id))
                 {
                     throw new InvalidOperationException("Bundled plugins cannot be replaced from the settings page.");
                 }
 
                 var installed = paths.EnsureWithin(paths.ScriptsRoot, Path.Combine(paths.ScriptsRoot, descriptor.Id), "Installed plugin target");
-                if (Directory.Exists(installed) || File.Exists(installed))
-                {
-                    throw new IOException($"Plugin is already installed: {descriptor.Id}.");
-                }
+                if (File.Exists(installed)) throw new IOException("Plugin destination is not a directory.");
+                var previousDescriptor = Directory.Exists(installed) ? await LoadDescriptorAsync(installed, cancellationToken).ConfigureAwait(false) : null;
+                var installedFingerprint = previousDescriptor is null ? null : await ComputeDirectoryFingerprintAsync(installed, cancellationToken).ConfigureAwait(false);
 
                 var documentation = await ResolveDocumentationAsync(descriptor, cancellationToken).ConfigureAwait(false);
-                var pending = new PendingPackage(token, stageRoot, packageRoot, descriptor, DateTimeOffset.UtcNow);
+                var pending = new PendingPackage(token, stageRoot, packageRoot, descriptor, DateTimeOffset.UtcNow, installedFingerprint);
                 pendingPackages[token] = pending;
                 return new PluginInstallPreview(
                     token,
@@ -167,7 +177,11 @@ public sealed partial class ScriptRegistry
                     descriptor.SettingsMode,
                     descriptor.SettingsPageTitle,
                     documentation,
-                    descriptor.SettingsMode == "legacy" || descriptor.Documentation is null);
+                    descriptor.SettingsMode == "legacy" || descriptor.Documentation is null,
+                    descriptor.AgentSkill,
+                    previousDescriptor?.Version,
+                    release is null ? null : $"https://github.com/{release.Repository}/releases/tag/v{release.Version}",
+                    release?.Sha256);
             }
             catch
             {
@@ -181,8 +195,25 @@ public sealed partial class ScriptRegistry
         }
     }
 
-    public async Task<PluginSnapshot> InstallPendingAsync(string token, bool enabled, CancellationToken cancellationToken = default)
+    public async Task<PluginSnapshot> InstallPendingAsync(string token, bool enabled, CancellationToken cancellationToken = default,
+        Func<string, CancellationToken, Task>? activate = null)
     {
+        PendingPackage? replacement;
+        await registryMutation.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try { replacement = pendingPackages.TryGetValue(token, out var candidate) && candidate.InstalledFingerprint is not null ? candidate : null; }
+        finally { registryMutation.Release(); }
+        if (replacement is not null)
+        {
+            async Task ActivateAsync(CancellationToken ct)
+            {
+                // Replacement preserves the installed enable state; it is not a second install.
+                var current = (await ListPluginsAsync(cancellationToken: ct).ConfigureAwait(false)).Single(item => item.Id == replacement.Descriptor.Id);
+                if (current.Enabled && !safeMode && globalEnabled && activate is not null) await activate(current.Id, ct).ConfigureAwait(false);
+            }
+            await ApplyPendingUpdateAsync(token, replacement.InstalledFingerprint!, ActivateAsync, ActivateAsync, cancellationToken).ConfigureAwait(false);
+            return (await ListPluginsAsync(cancellationToken: cancellationToken).ConfigureAwait(false)).Single(item => item.Id == replacement.Descriptor.Id);
+        }
+
         await registryMutation.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -198,18 +229,30 @@ public sealed partial class ScriptRegistry
             }
 
             await ReloadConfigAsync(cancellationToken).ConfigureAwait(false);
-            Directory.Move(pending.PackageRoot, target);
+            if (configInvalid) throw new InvalidDataException("Loader configuration is invalid; refusing to install a plugin.");
             var hadPrevious = enabledOverrides.TryGetValue(pending.Descriptor.Id, out var previous);
             enabledOverrides[pending.Descriptor.Id] = enabled;
+            var moved = false;
+            var saved = false;
             try
             {
                 await SaveConfigAsync(cancellationToken).ConfigureAwait(false);
+                saved = true;
+                Directory.Move(pending.PackageRoot, target);
+                moved = true;
+                await SyncSkillAsync(pending.Descriptor, enabled && globalEnabled && !safeMode, cancellationToken).ConfigureAwait(false);
+                if (enabled && globalEnabled && !safeMode && activate is not null) await activate(pending.Descriptor.Id, cancellationToken).ConfigureAwait(false);
             }
             catch
             {
-                Directory.Move(target, pending.PackageRoot);
+                if (moved)
+                {
+                    await SyncSkillAsync(pending.Descriptor, false, CancellationToken.None).ConfigureAwait(false);
+                    Directory.Move(target, pending.PackageRoot);
+                }
                 if (hadPrevious) enabledOverrides[pending.Descriptor.Id] = previous;
                 else enabledOverrides.Remove(pending.Descriptor.Id);
+                if (saved) await SaveConfigAsync(CancellationToken.None).ConfigureAwait(false);
                 throw;
             }
             finally
@@ -242,12 +285,10 @@ public sealed partial class ScriptRegistry
 
     private async Task SaveConfigAsync(CancellationToken cancellationToken)
     {
-        var temporary = paths.EnsureWithin(paths.DataRoot, $"{paths.ConfigPath}.tmp-{Environment.ProcessId}-{Guid.NewGuid():N}", "Config temporary file");
+        if (configInvalid) throw new InvalidDataException("Loader configuration is invalid; refusing to overwrite it.");
         var scripts = enabledOverrides.OrderBy(item => item.Key, StringComparer.Ordinal)
             .ToDictionary(item => item.Key, item => new { enabled = item.Value }, StringComparer.Ordinal);
-        var json = JsonSerializer.Serialize(new { schemaVersion = 1, globalEnabled, safeMode, scripts }, new JsonSerializerOptions { WriteIndented = true });
-        await File.WriteAllTextAsync(temporary, json + Environment.NewLine, new UTF8Encoding(false), cancellationToken).ConfigureAwait(false);
-        File.Move(temporary, paths.ConfigPath, overwrite: true);
+        await AtomicJsonFile.WriteAsync(paths.ConfigPath, new { schemaVersion = 1, globalEnabled, safeMode, scripts }, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<string?> ResolveDocumentationAsync(ScriptDescriptor descriptor, CancellationToken cancellationToken)
@@ -379,5 +420,5 @@ public sealed partial class ScriptRegistry
         }
     }
 
-    private sealed record PendingPackage(string Token, string StageRoot, string PackageRoot, ScriptDescriptor Descriptor, DateTimeOffset CreatedAt);
+    private sealed record PendingPackage(string Token, string StageRoot, string PackageRoot, ScriptDescriptor Descriptor, DateTimeOffset CreatedAt, string? InstalledFingerprint = null);
 }

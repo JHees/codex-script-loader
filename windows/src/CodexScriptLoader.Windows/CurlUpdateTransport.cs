@@ -18,7 +18,7 @@ internal interface IUpdateTransport
         CancellationToken cancellationToken);
 }
 
-internal sealed class CurlUpdateTransport : IUpdateTransport
+internal sealed class CurlUpdateTransport : IUpdateTransport, IGitHubPluginInstallTransport
 {
     private const string Repository = "JHees/codex-script-loader";
     private const string MarkerUrl = "CODEX_URL=";
@@ -38,6 +38,27 @@ internal sealed class CurlUpdateTransport : IUpdateTransport
 
     public async Task<GitHubReleaseInfo> ResolveLatestReleaseAsync(CancellationToken cancellationToken)
         => await ResolveLatestReleaseAsync(Repository, cancellationToken).ConfigureAwait(false);
+
+    public async Task<string> ReadReleaseMetadataAsync(string repository, string? tag, CancellationToken cancellationToken)
+    {
+        // Only this fixed REST route uses api.github.com; asset download permissions stay unchanged.
+        var link = GitHubPluginLink.Parse($"https://github.com/{repository}" + (tag is null ? string.Empty : $"/releases/tag/{tag}"));
+        var route = link.Tag is null ? "latest" : "tags/" + link.Tag;
+        var start = CreateStartInfo();
+        AddCommonArguments(start);
+        start.ArgumentList.Add("--max-redirs");
+        start.ArgumentList.Add("0");
+        start.ArgumentList.Add("--max-filesize");
+        start.ArgumentList.Add("1048576");
+        start.ArgumentList.Add("--header");
+        start.ArgumentList.Add("Accept: application/vnd.github+json");
+        start.ArgumentList.Add("--header");
+        start.ArgumentList.Add("X-GitHub-Api-Version: 2022-11-28");
+        start.ArgumentList.Add($"https://api.github.com/repos/{link.Repository}/releases/{route}");
+        var result = await RunAsync(start, null, 0, null, cancellationToken).ConfigureAwait(false);
+        if (System.Text.Encoding.UTF8.GetByteCount(result.StandardOutput) > 1048576) throw new InvalidDataException("GitHub Release metadata exceeds 1 MiB.");
+        return result.StandardOutput;
+    }
 
     internal async Task<GitHubReleaseInfo> ResolveLatestReleaseAsync(string repository, CancellationToken cancellationToken)
     {

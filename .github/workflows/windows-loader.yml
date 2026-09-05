@@ -38,6 +38,16 @@ jobs:
           global-json-file: global.json
           cache: true
           cache-dependency-path: "windows/**/packages.lock.json"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Check and test shared renderer and Node contracts
+        shell: pwsh
+        run: |
+          npm run check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Install pinned NSIS
         shell: pwsh
         run: choco install nsis --version=3.12.0 -y --no-progress
@@ -50,6 +60,20 @@ jobs:
           [xml]$buildProps = Get-Content -LiteralPath Directory.Build.props -Raw
           $propsVersion = [string]$buildProps.Project.PropertyGroup.Version
           if ($propsVersion -ne $productVersion) { throw "Directory.Build.props version $propsVersion does not match $productVersion." }
+          foreach ($field in @('AssemblyVersion', 'FileVersion')) {
+            if ([string]$buildProps.Project.PropertyGroup.$field -ne "$productVersion.0") { throw "$field does not match $productVersion." }
+          }
+          if ([string]$buildProps.Project.PropertyGroup.InformationalVersion -ne $productVersion) { throw "InformationalVersion does not match $productVersion." }
+          $versionContracts = @{
+            'windows/src/CodexScriptLoader.Windows/LiveSupervisor.cs' = 'public const string Version = "{0}";'
+            'windows/src/CodexScriptLoader.Core/InjectionSourceBuilder.cs' = 'runtime.runtimeVersion = "{0}";'
+            'src/settings-host.mjs' = 'const SETTINGS_HOST_VERSION = "{0}";'
+            'src/ui-controller.mjs' = 'currentVersion: "{0}"'
+            'windows/src/CodexScriptLoader.Windows/app.manifest' = 'assemblyIdentity version="{0}.0"'
+          }
+          foreach ($path in $versionContracts.Keys) {
+            if (-not (Get-Content -LiteralPath $path -Raw).Contains(($versionContracts[$path] -f $productVersion))) { throw "Version mismatch in $path." }
+          }
 
           [xml]$windowsProject = Get-Content -LiteralPath windows/src/CodexScriptLoader.Windows/CodexScriptLoader.Windows.csproj -Raw
           $applicationVersion = [string]$windowsProject.Project.PropertyGroup.ApplicationVersion

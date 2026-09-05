@@ -1,5 +1,5 @@
 import path from "node:path";
-import { lstat, readFile, realpath } from "node:fs/promises";
+import { lstat, readFile, readdir, realpath } from "node:fs/promises";
 import { assertWithinDirectory, safeScriptIdFromName } from "./paths.mjs";
 import { integrityLabel, sha256Text } from "./hash.mjs";
 
@@ -56,7 +56,7 @@ export function validateManifest(input, scriptDirectory) {
   if (!ID_PATTERN.test(id)) throw new Error(`invalid script id: ${id || "<empty>"}`);
 
   const schemaVersion = Number(input.schemaVersion ?? 1);
-  if (schemaVersion !== 1) throw new Error(`unsupported manifest schemaVersion: ${input.schemaVersion}`);
+  if (![1, 2].includes(schemaVersion)) throw new Error(`unsupported manifest schemaVersion: ${input.schemaVersion}`);
 
   const entry = String(input.main || input.entry || "index.js");
   if (!entry || entry.length > 240 || /[\u0000-\u001f\u007f]/u.test(entry) || path.isAbsolute(entry)) throw new Error("manifest entry must be a safe relative path");
@@ -70,6 +70,12 @@ export function validateManifest(input, scriptDirectory) {
   if (input.permissions !== undefined && !Array.isArray(input.permissions)) throw new Error("manifest permissions must be an array");
   const permissions = (input.permissions || []).map(permission => boundedText(permission, "", "permission", 64));
   if (permissions.length > 32) throw new Error("manifest declares too many permissions");
+  const agentSkill = input.agentSkill === undefined ? null : input.agentSkill;
+  if (input.agentSkill !== undefined) {
+    if (schemaVersion !== 2 || !permissions.includes("agent-skills")) throw new Error("agentSkill requires schemaVersion 2 and the agent-skills permission");
+    if (typeof agentSkill !== "string" || !/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/u.test(agentSkill) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/iu.test(agentSkill)) throw new Error("agentSkill must be a safe lowercase skill name of 1-64 characters");
+  }
+  const hostCommands = validateHostCommands(input.hostCommands);
   const pageCompanion = validatePageCompanion(input.pageCompanion, scriptDirectory, permissions);
   const integrity = input.integrity == null ? null : String(input.integrity);
   if (integrity !== null && !/^sha256-[a-f0-9]{64}$/u.test(integrity)) throw new Error("manifest integrity must be a sha256 hex label");
@@ -123,6 +129,7 @@ export function validateManifest(input, scriptDirectory) {
     runAt,
     lifecycleGlobal,
     permissions,
+    agentSkill,
     integrity,
     documentation,
     documentationPath,
@@ -130,9 +137,20 @@ export function validateManifest(input, scriptDirectory) {
     settingsPageId,
     settingsPageTitle,
     update,
+    hostCommands,
     pageCompanion,
     raw: input
   };
+}
+
+function validateHostCommands(input) {
+  if (input === undefined) return null;
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("manifest hostCommands must be an object");
+  if (!Array.isArray(input.operations) || input.operations.length === 0 || input.operations.length > 16) throw new Error("manifest hostCommands operations must contain 1-16 items");
+  const operations = [...new Set(input.operations.map(operation => boundedText(operation, "", "hostCommands operation", 64)))];
+  if (operations.length !== input.operations.length) throw new Error("manifest hostCommands operations are duplicated");
+  if (operations.some(operation => !PAGE_COMPANION_OPERATION_PATTERN.test(operation))) throw new Error("manifest hostCommands operations are invalid");
+  return Object.freeze({ operations });
 }
 
 function validatePageCompanion(input, scriptDirectory, permissions) {
@@ -169,6 +187,7 @@ export async function loadScriptDescriptor(scriptDirectory) {
   if (!manifestInfo.isFile() || manifestInfo.isSymbolicLink() || manifestInfo.size > MAX_MANIFEST_BYTES) throw new Error("script manifest must be a regular file no larger than 64 KiB");
   const raw = JSON.parse(await readFile(manifestPath, "utf8"));
   const manifest = validateManifest(raw, directory);
+  if (manifest.agentSkill) await validateBundledSkill(directory, manifest.agentSkill);
   const entryInfo = await lstat(manifest.entryPath);
   if (!entryInfo.isFile() || entryInfo.isSymbolicLink()) throw new Error("script entry must be a regular file");
   if (entryInfo.size > MAX_SOURCE_BYTES) throw new Error(`script source exceeds ${MAX_SOURCE_BYTES} bytes`);
@@ -200,4 +219,31 @@ export async function loadScriptDescriptor(scriptDirectory) {
     throw new Error(`integrity mismatch for ${manifest.id}`);
   }
   return { ...manifest, entryPath: canonicalEntryPath, source, fingerprint, pageCompanion, manifestPath, directory };
+}
+
+async function validateBundledSkill(directory, name) {
+  const skills = path.join(directory, "skills");
+  const root = path.join(skills, name);
+  for (const folder of [skills, root]) {
+    const info = await lstat(folder);
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("bundled skill directories must not be links");
+  }
+  let count = 0;
+  let bytes = 0;
+  const pending = [root];
+  while (pending.length) {
+    const current = pending.pop();
+    for (const entry of await readdir(current, { withFileTypes: true })) {
+      const target = path.join(current, entry.name);
+      const info = await lstat(target);
+      if (info.isSymbolicLink()) throw new Error("bundled skills cannot contain links");
+      if (info.isDirectory()) { pending.push(target); continue; }
+      bytes += info.size;
+      if (++count > 128 || bytes > 1024 * 1024) throw new Error("bundled skill exceeds 128 files or 1 MiB");
+    }
+  }
+  const entry = path.join(root, "SKILL.md");
+  if ((await lstat(entry)).size > 64 * 1024) throw new Error("bundled SKILL.md exceeds 64 KiB");
+  const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/u.exec(await readFile(entry, "utf8"));
+  if (!frontmatter || !new RegExp(`^name: *${name} *\\r?$`, "m").test(frontmatter[1]) || !/^description: *\S/mu.test(frontmatter[1])) throw new Error("bundled skill frontmatter requires its declared unquoted name and description");
 }

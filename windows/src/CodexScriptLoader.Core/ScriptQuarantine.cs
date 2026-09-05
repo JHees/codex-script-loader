@@ -12,6 +12,13 @@ public sealed partial class ScriptRegistry
 
     public async Task<QuarantineRecord> QuarantineAsync(string id, CancellationToken cancellationToken = default)
     {
+        await registryMutation.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try { return await QuarantineCoreAsync(id, cancellationToken).ConfigureAwait(false); }
+        finally { registryMutation.Release(); }
+    }
+
+    private async Task<QuarantineRecord> QuarantineCoreAsync(string id, CancellationToken cancellationToken)
+    {
         if (!ScriptIdRegex().IsMatch(id))
         {
             throw new ArgumentException("Invalid script id.", nameof(id));
@@ -58,6 +65,7 @@ public sealed partial class ScriptRegistry
             }, new JsonSerializerOptions { WriteIndented = true });
             await File.WriteAllTextAsync(temporaryMetadata, json + Environment.NewLine, new UTF8Encoding(false), cancellationToken).ConfigureAwait(false);
             File.Move(temporaryMetadata, metadataPath);
+            await SyncSkillAsync(descriptor, false, cancellationToken).ConfigureAwait(false);
             Directory.Move(source, scriptTarget);
             moved = true;
             return record;
@@ -67,6 +75,7 @@ public sealed partial class ScriptRegistry
             if (!moved && Directory.Exists(entry))
             {
                 Directory.Delete(entry, recursive: true);
+                await SyncSkillAsync(descriptor, record.Enabled && globalEnabled && !safeMode, CancellationToken.None).ConfigureAwait(false);
             }
         }
     }
@@ -97,6 +106,13 @@ public sealed partial class ScriptRegistry
 
     public async Task<QuarantineRecord> RestoreQuarantinedAsync(string key, CancellationToken cancellationToken = default)
     {
+        await registryMutation.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try { return await RestoreQuarantinedCoreAsync(key, cancellationToken).ConfigureAwait(false); }
+        finally { registryMutation.Release(); }
+    }
+
+    private async Task<QuarantineRecord> RestoreQuarantinedCoreAsync(string key, CancellationToken cancellationToken)
+    {
         var record = await ReadQuarantineAsync(key, cancellationToken).ConfigureAwait(false);
         var entry = paths.EnsureWithin(paths.QuarantineRoot, Path.Combine(paths.QuarantineRoot, key), "Quarantine entry");
         var source = paths.EnsureWithin(entry, Path.Combine(entry, QuarantineScriptDirectory), "Quarantined script");
@@ -106,7 +122,20 @@ public sealed partial class ScriptRegistry
             throw new IOException($"Restore conflict: script is already installed: {record.ScriptId}.");
         }
 
+        await ReloadConfigAsync(cancellationToken).ConfigureAwait(false);
+        var descriptor = await LoadDescriptorAsync(source, cancellationToken).ConfigureAwait(false);
+        await CheckSkillAsync(descriptor, cancellationToken).ConfigureAwait(false);
         Directory.Move(source, target);
+        try
+        {
+            await SyncSkillAsync(descriptor, globalEnabled && !safeMode && (!enabledOverrides.TryGetValue(record.ScriptId, out var enabled) || enabled), cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            await SyncSkillAsync(descriptor, false, CancellationToken.None).ConfigureAwait(false);
+            Directory.Move(target, source);
+            throw;
+        }
         try
         {
             Directory.Delete(entry, recursive: true);

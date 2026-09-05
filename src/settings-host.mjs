@@ -1,4 +1,4 @@
-const SETTINGS_HOST_VERSION = "0.5.9";
+const SETTINGS_HOST_VERSION = "0.5.10";
 
 /*
  * Renderer-only settings host inspired by b-nnett/codex-plusplus.
@@ -338,6 +338,13 @@ function installSettingsHost(version) {
         plugins: "插件",
         pluginsDescription: "添加、启用、重载和移除本地 renderer 插件。",
         addArchive: "安装插件 ZIP",
+        addGitHub: "从 GitHub 安装",
+        githubUrl: "GitHub 仓库或 Release 链接",
+        githubHelp: "粘贴公开仓库、正式 Release 或 Release ZIP 链接。Loader 会下载并校验 ZIP 和同名 SHA-256 文件，然后显示权限供你确认。请仅安装你信任的发布者提供的插件。",
+        githubContinue: "获取安装包",
+        githubAsset: "选择插件 ZIP",
+        githubAssetHelp: "此 Release 包含多个安装包，请选择要安装的插件。",
+        githubSource: "发布来源",
         reloadAll: "重载插件",
         checkPluginUpdates: "检查插件更新",
         pluginAutoUpdate: "自动更新",
@@ -392,6 +399,10 @@ function installSettingsHost(version) {
         installTitle: "安装插件",
         installEnabled: "安装并启用",
         installDisabled: "仅安装",
+        replacePackage: "替换并更新（保留启用状态）",
+        replaceNotice(version) { return `将替换已安装版本 ${version}，包含本地修改；失败时回滚。`; },
+        bundledSkill(name) { return `随包 skill：${name}，与插件一起管理，无需另行安装。`; },
+        skillState(name, status) { return `随包 skill ${name} · ${{ linked: "已就绪", inactive: "未启用", conflict: "存在冲突", unavailable: "宿主不支持" }[status] || status}`; },
         cancel: "取消",
         permissions: "权限",
         settingsSupport: "设置页面",
@@ -487,6 +498,13 @@ function installSettingsHost(version) {
       plugins: "Plugins",
       pluginsDescription: "Add, enable, reload, and remove local renderer plugins.",
       addArchive: "Install plugin ZIP",
+      addGitHub: "Install from GitHub",
+      githubUrl: "GitHub repository or Release link",
+      githubHelp: "Paste a public repository, stable Release, or Release ZIP link. Loader will download and verify the ZIP and its SHA-256 file, then ask you to confirm permissions. Only install plugins from publishers you trust.",
+      githubContinue: "Get package",
+      githubAsset: "Choose plugin ZIP",
+      githubAssetHelp: "This Release contains multiple packages. Choose the plugin to install.",
+      githubSource: "Release source",
       reloadAll: "Reload plugins",
       checkPluginUpdates: "Check plugin updates",
       pluginAutoUpdate: "Automatic update",
@@ -541,6 +559,10 @@ function installSettingsHost(version) {
       installTitle: "Install plugin",
       installEnabled: "Install and enable",
       installDisabled: "Install only",
+      replacePackage: "Replace and update (keep enable state)",
+      replaceNotice(version) { return `Replaces installed version ${version}, including local edits. Failure rolls back.`; },
+      bundledSkill(name) { return `Bundled skill: ${name}. Managed with the plugin; no separate installation.`; },
+      skillState(name, status) { return `Bundled skill ${name} · ${status}`; },
       cancel: "Cancel",
       permissions: "Permissions",
       settingsSupport: "Settings",
@@ -714,6 +736,7 @@ function installSettingsHost(version) {
   function renderLoaderPage(root) {
     const labels = loaderLabels();
     let disposed = false;
+    const openDialogs = new Set();
     let connected = false;
     let busy = false;
     let plugins = [];
@@ -788,9 +811,10 @@ function installSettingsHost(version) {
     const pluginHeaderActions = document.createElement("div");
     pluginHeaderActions.className = "flex flex-wrap items-center justify-end gap-2";
     const addArchiveButton = actionButton(labels.addArchive, { primary: true });
+    const addGitHubButton = actionButton(labels.addGitHub);
     const reloadAllButton = actionButton(labels.reloadAll);
     const checkPluginUpdatesButton = actionButton(labels.checkPluginUpdates);
-    pluginHeaderActions.append(checkPluginUpdatesButton, reloadAllButton, addArchiveButton);
+    pluginHeaderActions.append(checkPluginUpdatesButton, reloadAllButton, addGitHubButton, addArchiveButton);
     pluginsHeaderRow.appendChild(pluginHeaderActions);
     const pluginDescription = document.createElement("div");
     pluginDescription.className = "text-sm text-secondary";
@@ -841,7 +865,7 @@ function installSettingsHost(version) {
     function setBusy(next, message = "") {
       busy = next;
       feedback.textContent = message;
-      for (const button of [checkPluginUpdatesButton, addArchiveButton, reloadAllButton, restartButton]) button.disabled = next || !connected;
+      for (const button of [checkPluginUpdatesButton, addArchiveButton, addGitHubButton, reloadAllButton, restartButton]) button.disabled = next || !connected;
       renderPlugins();
     }
 
@@ -1110,6 +1134,12 @@ function installSettingsHost(version) {
         const repositoryAddress = repository ? `github.com/${repository}` : "—";
         meta.textContent = `${author} · ${repositoryAddress} · ${labels.version} ${plugin.version} · ${labels.statusLabel(plugin.status)}${plugin.legacy ? ` · ${labels.legacy}` : ""}`;
         info.append(titleRow, meta);
+        if (plugin.agentSkill) {
+          const skillStatus = document.createElement("div");
+          skillStatus.className = "truncate text-xs text-secondary";
+          skillStatus.textContent = labels.skillState(plugin.agentSkill, plugin.agentSkillStatus || "unavailable");
+          info.appendChild(skillStatus);
+        }
         const updateView = pluginUpdatePanel(plugin);
         info.appendChild(updateView.summary);
         if (plugin.error) {
@@ -1217,17 +1247,44 @@ function installSettingsHost(version) {
       }
     }
 
+    async function previewGitHubPlugin() {
+      const url = await showDialog({
+        title: labels.addGitHub, body: labels.githubHelp,
+        input: { label: labels.githubUrl, placeholder: "https://github.com/owner/repository" },
+        buttons: [{ label: labels.cancel, value: null }, { label: labels.githubContinue, readInput: true, primary: true }],
+      });
+      if (!url || disposed) return null;
+      feedback.textContent = labels.githubContinue + "…";
+      let result = await requestBridge("preview_plugin_github", { url });
+      if (!result.preview && !disposed) {
+        const asset = await showDialog({
+          title: labels.githubAsset, body: labels.githubAssetHelp,
+          input: { label: labels.githubAsset, options: result.assets },
+          buttons: [{ label: labels.cancel, value: null }, { label: labels.githubContinue, readInput: true, primary: true }],
+        });
+        if (!asset || disposed) return null;
+        // Pin the selection to the displayed release even if latest changes meanwhile.
+        result = await requestBridge("preview_plugin_github", { url: result.releaseUrl, asset });
+      }
+      return result.preview;
+    }
+
     async function addPlugin(command) {
       if (busy) return;
       setBusy(true);
       try {
-        const preview = await requestBridge(command, {});
-        if (preview?.cancelled) return;
+        const preview = command === "preview_plugin_github" ? await previewGitHubPlugin() : await requestBridge(command, {});
+        if (!preview || preview.cancelled) { feedback.textContent = ""; return; }
+        if (disposed) { await requestBridge("cancel_plugin_install", { token: preview.token }); return; }
         const settingsText = preview.settingsMode === "page" ? labels.settingsPage : preview.settingsMode === "none" ? labels.settingsNone : labels.settingsLegacy;
-        const body = [preview.description || preview.id, `${labels.version}: ${preview.version}`, `${labels.permissions}: ${(preview.permissions || []).join(", ") || labels.none}`, `${labels.settingsSupport}: ${settingsText}`, preview.documentationExcerpt || ""].filter(Boolean).join("\n\n");
-        const choice = await showDialog({ title: `${labels.installTitle}: ${preview.name}`, body, buttons: [{ label: labels.cancel, value: "cancel" }, { label: labels.installDisabled, value: "disabled" }, { label: labels.installEnabled, value: "enabled", primary: true }] });
+        const body = [preview.description || preview.id, `${labels.version}: ${preview.version}`, preview.sourceUrl ? `${labels.githubSource}: ${preview.sourceUrl}` : "", preview.archiveSha256 ? `SHA-256: ${preview.archiveSha256}` : "", preview.replacesVersion ? labels.replaceNotice(preview.replacesVersion) : "", `${labels.permissions}: ${(preview.permissions || []).join(", ") || labels.none}`, preview.agentSkill ? labels.bundledSkill(preview.agentSkill) : "", `${labels.settingsSupport}: ${settingsText}`, preview.documentationExcerpt || ""].filter(Boolean).join("\n\n");
+        const buttons = preview.replacesVersion
+          ? [{ label: labels.cancel, value: "cancel" }, { label: labels.replacePackage, value: "replace", primary: true }]
+          : [{ label: labels.cancel, value: "cancel" }, { label: labels.installDisabled, value: "disabled" }, { label: labels.installEnabled, value: "enabled", primary: true }];
+        const choice = await showDialog({ title: `${labels.installTitle}: ${preview.name}`, body, buttons });
         if (choice === "cancel" || !choice) {
           await requestBridge("cancel_plugin_install", { token: preview.token });
+          feedback.textContent = "";
           return;
         }
         await requestBridge("install_plugin", { token: preview.token, enabled: choice === "enabled" });
@@ -1240,7 +1297,7 @@ function installSettingsHost(version) {
       }
     }
 
-    function showDialog({ title, body, buttons }) {
+    function showDialog({ title, body, buttons, input }) {
       return new Promise((resolve) => {
         const previouslyFocused = document.activeElement;
         const overlay = document.createElement("div");
@@ -1258,8 +1315,32 @@ function installSettingsHost(version) {
         heading.textContent = title;
         const content = document.createElement("div");
         content.className = "text-token-description-foreground";
-        content.style.cssText = "margin-top:12px;white-space:pre-wrap;font-size:13px;line-height:1.55;";
+        content.style.cssText = "margin-top:12px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;line-height:1.55;";
         content.textContent = body;
+        let field = null;
+        let fieldLabel = null;
+        if (input) {
+          fieldLabel = document.createElement("label");
+          fieldLabel.style.cssText = "display:block;margin-top:16px;font-size:13px;";
+          fieldLabel.textContent = input.label;
+          field = document.createElement(input.options ? "select" : "input");
+          field.setAttribute("aria-label", input.label);
+          field.style.cssText = "box-sizing:border-box;display:block;width:100%;margin-top:8px;padding:10px;border:1px solid var(--color-border-default,#888);border-radius:8px;color:var(--color-text-primary,inherit);background:var(--color-background-primary,#fff);";
+          if (input.options) {
+            for (const value of input.options) {
+              const option = document.createElement("option");
+              option.value = value; option.textContent = value;
+              field.appendChild(option);
+            }
+          } else {
+            field.type = "url";
+            field.maxLength = 2048;
+            field.placeholder = input.placeholder || "";
+            field.autocomplete = "off";
+            field.spellcheck = false;
+          }
+          fieldLabel.appendChild(field);
+        }
         const actions = document.createElement("div");
         actions.className = "flex flex-wrap items-center justify-end gap-2";
         actions.style.marginTop = "22px";
@@ -1267,10 +1348,13 @@ function installSettingsHost(version) {
         const finish = (value) => {
           if (finished) return;
           finished = true;
+          openDialogs.delete(cancelDialog);
           overlay.remove();
-          if (previouslyFocused instanceof HTMLElement && previouslyFocused.isConnected) previouslyFocused.focus();
+          if (!disposed && previouslyFocused instanceof HTMLElement && previouslyFocused.isConnected) previouslyFocused.focus();
           resolve(value);
         };
+        const cancelDialog = () => finish(null);
+        openDialogs.add(cancelDialog);
         const onKeyDown = (event) => {
           if (event.key !== "Escape") return;
           event.preventDefault();
@@ -1279,15 +1363,23 @@ function installSettingsHost(version) {
         for (const spec of buttons) {
           const button = actionButton(spec.label, { danger: Boolean(spec.danger) });
           if (spec.primary) button.style.background = "var(--color-accent-blue,#2f9bf4)", button.style.color = "white";
-          button.addEventListener("click", () => finish(spec.value));
+          button.addEventListener("click", () => {
+            if (spec.readInput && !field.value.trim()) { field.focus(); return; }
+            finish(spec.readInput ? field.value.trim() : spec.value);
+          });
+          if (spec.readInput) field.addEventListener("keydown", (event) => {
+            if (event.key === "Enter") { event.preventDefault(); button.click(); }
+          });
           actions.appendChild(button);
         }
-        dialog.append(heading, content, actions);
+        dialog.append(heading, content);
+        if (fieldLabel) dialog.appendChild(fieldLabel);
+        dialog.appendChild(actions);
         overlay.appendChild(dialog);
         overlay.addEventListener("click", (event) => { if (event.target === overlay) finish(null); });
         overlay.addEventListener("keydown", onKeyDown, true);
         document.body.appendChild(overlay);
-        actions.lastElementChild?.focus();
+        (field || actions.lastElementChild)?.focus();
       });
     }
 
@@ -1338,7 +1430,7 @@ function installSettingsHost(version) {
         feedback.textContent = String(error?.message || error || labels.sidecarUnavailable);
         renderPlugins();
       }
-      for (const button of [checkPluginUpdatesButton, addArchiveButton, reloadAllButton, restartButton]) button.disabled = busy || !connected;
+      for (const button of [checkPluginUpdatesButton, addArchiveButton, addGitHubButton, reloadAllButton, restartButton]) button.disabled = busy || !connected;
     }
 
     checkPluginUpdatesButton.addEventListener("click", async () => {
@@ -1358,6 +1450,7 @@ function installSettingsHost(version) {
       }
     });
     addArchiveButton.addEventListener("click", () => addPlugin("pick_plugin_archive"));
+    addGitHubButton.addEventListener("click", () => addPlugin("preview_plugin_github"));
     reloadAllButton.addEventListener("click", async () => {
       if (busy) return;
       setBusy(true, labels.reloadingStatus);
@@ -1423,6 +1516,7 @@ function installSettingsHost(version) {
     scheduleUpdateRefresh(1000);
     return () => {
       disposed = true;
+      for (const cancelDialog of openDialogs) cancelDialog();
       if (updateRefreshTimer) clearTimeout(updateRefreshTimer);
       updateRefreshTimer = 0;
       if (pluginUpdateRefreshTimer) clearTimeout(pluginUpdateRefreshTimer);

@@ -31,6 +31,7 @@ internal sealed class LoaderApplicationContext : ApplicationContext
         supervisor.ManagedCodexExited += reason => Post(() => HandleManagedCodexExit(reason));
         supervisor.PackagePickerAsync = PickPluginPackageAsync;
         instance.CommandReceived += command => Post(() => HandleInstanceCommand(command));
+        instance.HostCommandReceived = supervisor.InvokeHostCommandAsync;
         if (candidate is null) instance.StartServer();
         dispatcher.BeginInvoke(async () => await StartAsync());
     }

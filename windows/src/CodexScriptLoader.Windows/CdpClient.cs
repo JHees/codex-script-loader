@@ -121,7 +121,11 @@ internal sealed class CdpSession : IAsyncDisposable
         }
     }
 
-    public async Task<JsonElement> SendAsync(string method, object? parameters = null, CancellationToken cancellationToken = default)
+    public async Task<JsonElement> SendAsync(
+        string method,
+        object? parameters = null,
+        CancellationToken cancellationToken = default,
+        TimeSpan? commandTimeout = null)
     {
         if (socket.State != WebSocketState.Open)
         {
@@ -136,7 +140,7 @@ internal sealed class CdpSession : IAsyncDisposable
         }
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetime.Token);
-        timeout.CancelAfter(TimeSpan.FromSeconds(8));
+        timeout.CancelAfter(commandTimeout ?? TimeSpan.FromSeconds(8));
         using var registration = timeout.Token.Register(() => completion.TrySetCanceled(timeout.Token));
         try
         {

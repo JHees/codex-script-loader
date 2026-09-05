@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>CodexScriptLoader.Command</AssemblyName>
+    <RootNamespace>CodexScriptLoader.Command</RootNamespace>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>false</PublishSingleFile>
+    <PublishReadyToRun>false</PublishReadyToRun>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\CodexScriptLoader.Core\CodexScriptLoader.Core.csproj" />
+  </ItemGroup>
+</Project>

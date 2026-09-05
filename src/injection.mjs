@@ -22,6 +22,7 @@ export function wrapScript(descriptor, { force = false } = {}) {
   const fingerprint = JSON.stringify(descriptor.fingerprint);
   const lifecycleGlobal = descriptor.lifecycleGlobal ? JSON.stringify(descriptor.lifecycleGlobal) : "null";
   const permissions = JSON.stringify(descriptor.permissions || []);
+  const hostOperations = JSON.stringify(descriptor.hostCommands?.operations || []);
   const manifest = JSON.stringify({
     id: descriptor.id,
     name: descriptor.name,
@@ -31,6 +32,7 @@ export function wrapScript(descriptor, { force = false } = {}) {
     permissions: descriptor.permissions || [],
     scope: descriptor.scope || "renderer",
     documentation: descriptor.documentation || null,
+    hostCommands: descriptor.hostCommands || null,
     settings: descriptor.settingsMode === "legacy" ? null : {
       mode: descriptor.settingsMode,
       pageId: descriptor.settingsPageId,
@@ -49,6 +51,7 @@ export function wrapScript(descriptor, { force = false } = {}) {
   runtime.scripts[${id}] = record;
   try {
     const permissionSet = new Set(${permissions});
+    const hostCommandSet = new Set(${hostOperations});
     const settingsPrefix = "codex-script-loader:${descriptor.id}:";
     const disposers = [];
     const manifest = Object.freeze(${manifest});
@@ -177,6 +180,13 @@ export function wrapScript(descriptor, { force = false } = {}) {
     const moduleValue = module.exports;
     let startResult = null;
     if (moduleValue && typeof moduleValue.start === "function") startResult = moduleValue.start(api, { reason: previous ? "reload" : "enable" });
+    if (hostCommandSet.size) {
+      if (!moduleValue || typeof moduleValue.invokeHostCommand !== "function") throw new Error("Declared hostCommands require invokeHostCommand");
+      record.invokeHostCommand = (operation, payload = {}) => {
+        if (!hostCommandSet.has(operation)) throw new Error("HOST_COMMAND_NOT_ALLOWED");
+        return moduleValue.invokeHostCommand(operation, payload);
+      };
+    }
     const exportedStop = moduleValue && typeof moduleValue.stop === "function" ? context => moduleValue.stop(context) : typeof startResult === "function" ? startResult : startResult && typeof startResult.stop === "function" ? context => startResult.stop(context) : null;
     const lifecycleValue = ${lifecycleGlobal} ? globalThis[${lifecycleGlobal}] : null;
     const lifecycleStop = !exportedStop && lifecycleValue && typeof lifecycleValue.stop === "function" ? () => {

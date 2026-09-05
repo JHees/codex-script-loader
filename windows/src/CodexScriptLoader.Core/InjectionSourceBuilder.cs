@@ -78,6 +78,7 @@ public static class InjectionSourceBuilder
         var integrity = JsonSerializer.Serialize($"sha256-{descriptor.Fingerprint}");
         var lifecycle = descriptor.LifecycleGlobal is null ? "null" : JsonSerializer.Serialize(descriptor.LifecycleGlobal);
         var permissions = JsonSerializer.Serialize(descriptor.Permissions);
+        var hostOperations = JsonSerializer.Serialize(descriptor.HostCommands?.Operations ?? []);
         var manifest = JsonSerializer.Serialize(new
         {
             id = descriptor.Id,
@@ -88,6 +89,10 @@ public static class InjectionSourceBuilder
             permissions = descriptor.Permissions,
             scope = descriptor.Scope,
             documentation = descriptor.Documentation,
+            hostCommands = descriptor.HostCommands is null ? null : new
+            {
+                operations = descriptor.HostCommands.Operations,
+            },
             settings = descriptor.SettingsMode == "legacy" ? null : new
             {
                 mode = descriptor.SettingsMode,
@@ -114,6 +119,7 @@ public static class InjectionSourceBuilder
           runtime.scripts[{{id}}] = record;
           try {
             const permissionSet = new Set({{permissions}});
+            const hostCommandSet = new Set({{hostOperations}});
             const settingsPrefix = "codex-script-loader:{{descriptor.Id}}:";
             const disposers = [];
             const manifest = Object.freeze({{manifest}});
@@ -191,6 +197,13 @@ public static class InjectionSourceBuilder
             const moduleValue = module.exports;
             let startResult = null;
             if (moduleValue && typeof moduleValue.start === "function") startResult = moduleValue.start(api, { reason: previous ? "reload" : "enable" });
+            if (hostCommandSet.size) {
+              if (!moduleValue || typeof moduleValue.invokeHostCommand !== "function") throw new Error("Declared hostCommands require invokeHostCommand");
+              record.invokeHostCommand = (operation, payload = {}) => {
+                if (!hostCommandSet.has(operation)) throw new Error("HOST_COMMAND_NOT_ALLOWED");
+                return moduleValue.invokeHostCommand(operation, payload);
+              };
+            }
             const exportedStop = moduleValue && typeof moduleValue.stop === "function" ? (context) => moduleValue.stop(context) : typeof startResult === "function" ? startResult : startResult && typeof startResult.stop === "function" ? (context) => startResult.stop(context) : null;
             const lifecycleValue = {{lifecycle}} ? globalThis[{{lifecycle}}] : null;
             const lifecycleStop = !exportedStop && lifecycleValue && typeof lifecycleValue.stop === "function" ? () => { try { lifecycleValue.stop(); } finally { if (globalThis[{{lifecycle}}] === lifecycleValue) delete globalThis[{{lifecycle}}]; } } : null;
@@ -214,7 +227,7 @@ public static class InjectionSourceBuilder
     (() => {
       const existing = globalThis.__codexScriptLoader;
       const runtime = existing && typeof existing === "object" ? existing : {};
-      runtime.runtimeVersion = "0.5.9";
+      runtime.runtimeVersion = "0.5.10";
       runtime.documentId = runtime.documentId || Math.random().toString(36).slice(2);
       runtime.scripts = runtime.scripts || Object.create(null);
       runtime.errors = Array.isArray(runtime.errors) ? runtime.errors.slice(-100) : [];

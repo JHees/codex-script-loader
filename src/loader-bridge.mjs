@@ -5,6 +5,7 @@ const BRIDGE_GLOBAL = "__codexScriptLoaderHostBridge";
 const ALLOWED_COMMANDS = new Set([
   "get_app_status", "list_plugins", "set_plugin_enabled", "reload_scripts", "reload_plugins",
   "pick_plugin_folder", "pick_plugin_archive", "install_plugin", "cancel_plugin_install",
+  "preview_plugin_github",
   "remove_plugin", "list_quarantined", "restore_plugin", "restart_codex",
   "get_update_status", "set_auto_update", "check_for_updates", "start_update", "cancel_update",
   "check_plugin_updates", "set_plugin_auto_update", "start_plugin_update", "confirm_plugin_update", "cancel_plugin_update",
@@ -50,7 +51,8 @@ function installBridgeClient(bindingName, globalName, requestTimeoutMs) {
       if (disposed) return Promise.reject(new Error("Loader sidecar is not connected"));
       const id = `${Date.now().toString(36)}-${(nextId++).toString(36)}`;
       return new Promise((resolve, reject) => {
-        const timeoutMs = command === "page_companion_invoke" ? Math.max(requestTimeoutMs, 300000) : requestTimeoutMs;
+        const timeoutMs = command === "page_companion_invoke" ? Math.max(requestTimeoutMs, 300000)
+          : command === "preview_plugin_github" ? Math.max(requestTimeoutMs, 150000) : requestTimeoutMs;
         const timer = setTimeout(() => {
           pending.delete(id);
           reject(new Error("Loader request timed out"));

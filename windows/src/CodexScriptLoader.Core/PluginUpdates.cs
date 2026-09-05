@@ -49,6 +49,7 @@ public sealed partial class ScriptRegistry
                 await ExtractArchiveAsync(archivePath, stageRoot, cancellationToken).ConfigureAwait(false);
                 var packageRoot = FindPackageRoot(stageRoot);
                 var candidate = await LoadDescriptorAsync(packageRoot, cancellationToken).ConfigureAwait(false);
+                await CheckSkillAsync(candidate, cancellationToken).ConfigureAwait(false);
                 if (!string.Equals(candidate.Id, expectedId, StringComparison.Ordinal) ||
                     !string.Equals(candidate.Version, expectedVersion, StringComparison.Ordinal) ||
                     candidate.Update != expectedUpdate)
@@ -85,6 +86,8 @@ public sealed partial class ScriptRegistry
         await registryMutation.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            await ReloadConfigAsync(cancellationToken).ConfigureAwait(false);
+            if (configInvalid) throw new InvalidDataException("Loader configuration is invalid; refusing to update a plugin.");
             if (!pendingPackages.Remove(token, out var pending))
             {
                 throw new PluginUpdateStateChangedException("Plugin update preview expired.");
@@ -96,6 +99,7 @@ public sealed partial class ScriptRegistry
             }
 
             var target = paths.EnsureWithin(paths.ScriptsRoot, Path.Combine(paths.ScriptsRoot, pending.Descriptor.Id), "Plugin update target");
+            var previousDescriptor = await LoadDescriptorAsync(target, cancellationToken).ConfigureAwait(false);
             var actualFingerprint = await ComputeDirectoryFingerprintAsync(target, cancellationToken).ConfigureAwait(false);
             if (!string.Equals(actualFingerprint, expectedInstalledFingerprint, StringComparison.Ordinal))
             {
@@ -115,6 +119,7 @@ public sealed partial class ScriptRegistry
                 Directory.Move(pending.PackageRoot, target);
                 transaction = transaction with { State = "candidate-installed" };
                 await AtomicJsonFile.WriteAsync(paths.PluginUpdateTransactionPath, transaction, cancellationToken).ConfigureAwait(false);
+                await SyncSkillAsync(pending.Descriptor, globalEnabled && !safeMode && (!enabledOverrides.TryGetValue(pending.Descriptor.Id, out var enabled) || enabled), cancellationToken).ConfigureAwait(false);
                 candidateActivationAttempted = true;
                 await activateCandidate(cancellationToken).ConfigureAwait(false);
                 transaction = transaction with { State = "committed" };
@@ -143,6 +148,7 @@ public sealed partial class ScriptRegistry
                 Exception? restoreException = null;
                 try
                 {
+                    await SyncSkillAsync(previousDescriptor, globalEnabled && !safeMode && (!enabledOverrides.TryGetValue(previousDescriptor.Id, out var enabled) || enabled), CancellationToken.None).ConfigureAwait(false);
                     if (candidateActivationAttempted) await restorePreviousRuntime(CancellationToken.None).ConfigureAwait(false);
                 }
                 catch (Exception exception) { restoreException = exception; }

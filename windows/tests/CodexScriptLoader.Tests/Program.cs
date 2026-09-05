@@ -11,7 +11,7 @@ using CodexScriptLoader.Windows;
 
 namespace CodexScriptLoader.Tests;
 
-internal static class Program
+internal static partial class Program
 {
     private static int passed;
 
@@ -20,7 +20,13 @@ internal static class Program
         var testRoot = Path.Combine(Path.GetTempPath(), $"codex-loader-tests-{Guid.NewGuid():N}");
         try
         {
+            await TestRuntimeRegressionsAsync(testRoot);
+            await TestGitHubPluginInstallAsync(testRoot);
+            await TestHostCommandReloadAsync(testRoot);
+            await TestBundledSkillInstallAsync(testRoot);
             await TestDescriptorAndInjectionAsync(testRoot);
+            await TestHostCommandPipeRoundTripAsync(testRoot);
+            await TestTrustedInputHostCommandAsync();
             await TestLoopbackTransportBoundariesAsync();
             await TestNativeTransportBindingRollbackAsync();
             await TestNativeTransportConnectionMessageBeforeCloseAsync();
@@ -57,9 +63,90 @@ internal static class Program
         {
             if (Directory.Exists(testRoot))
             {
+                RemoveTestLinks(testRoot);
                 Directory.Delete(testRoot, recursive: true);
             }
         }
+    }
+
+    private static void RemoveTestLinks(string directory)
+    {
+        foreach (var entry in new DirectoryInfo(directory).EnumerateFileSystemInfos())
+        {
+            if (entry.Attributes.HasFlag(FileAttributes.ReparsePoint))
+            {
+                if (entry is DirectoryInfo) Directory.Delete(entry.FullName, recursive: false);
+                else File.Delete(entry.FullName);
+            }
+            else if (entry is DirectoryInfo child) RemoveTestLinks(child.FullName);
+        }
+    }
+
+    private static async Task TestTrustedInputHostCommandAsync()
+    {
+        var evaluations = new Queue<JsonElement>(
+        [
+            JsonSerializer.SerializeToElement(new { ok = true, result = new Dictionary<string, object> { ["$loaderHostAction"] = new { version = 1, type = "press-enter" } } }),
+            JsonSerializer.SerializeToElement(new { ok = true, result = new { completed = true } }),
+        ]);
+        var evaluationCalls = 0;
+        var presses = 0;
+        var result = await LiveSupervisor.ResolveHostCommandResultAsync(
+            _ => { evaluationCalls += 1; return Task.FromResult(evaluations.Dequeue()); },
+            _ => { presses += 1; return Task.CompletedTask; },
+            allowTrustedInput: true,
+            CancellationToken.None);
+
+        Equal(2, evaluationCalls, "Trusted input resumes the same plugin command exactly once");
+        Equal(1, presses, "Trusted input dispatches Enter exactly once");
+        True(result.TryGetProperty("completed", out var completed) && completed.GetBoolean(), "Trusted input resumes the same plugin command and returns its result");
+
+        var denied = false;
+        try
+        {
+            await LiveSupervisor.ResolveHostCommandResultAsync(
+                _ => Task.FromResult(JsonSerializer.SerializeToElement(new { ok = true, result = new Dictionary<string, object> { ["$loaderHostAction"] = new { version = 1, type = "press-enter" } } })),
+                _ => Task.CompletedTask,
+                allowTrustedInput: false,
+                CancellationToken.None);
+        }
+        catch (HostCommandException exception)
+        {
+            denied = exception.Code == "HOST_ACTION_DENIED";
+        }
+        True(denied, "Trusted input is denied without the manifest permission");
+
+        var repeatedPresses = 0;
+        var repeated = false;
+        try
+        {
+            await LiveSupervisor.ResolveHostCommandResultAsync(
+                _ => Task.FromResult(JsonSerializer.SerializeToElement(new { ok = true, result = new Dictionary<string, object> { ["$loaderHostAction"] = new { version = 1, type = "press-enter" } } })),
+                _ => { repeatedPresses += 1; return Task.CompletedTask; },
+                allowTrustedInput: true,
+                CancellationToken.None);
+        }
+        catch (HostCommandException exception)
+        {
+            repeated = exception.Code == "HOST_ACTION_LIMIT";
+        }
+        True(repeated, "Trusted input rejects a second Enter request in one command");
+        Equal(1, repeatedPresses, "Trusted input never dispatches more than one Enter per command");
+
+        var malformed = false;
+        try
+        {
+            await LiveSupervisor.ResolveHostCommandResultAsync(
+                _ => Task.FromResult(JsonSerializer.SerializeToElement(new { ok = true, result = new Dictionary<string, object> { ["$loaderHostAction"] = new { version = 1, type = "press-enter", key = "Escape" } } })),
+                _ => Task.CompletedTask,
+                allowTrustedInput: true,
+                CancellationToken.None);
+        }
+        catch (HostCommandException exception)
+        {
+            malformed = exception.Code == "INVALID_PLUGIN_RESULT";
+        }
+        True(malformed, "Trusted input rejects host action fields beyond the fixed Enter directive");
     }
 
     private static void TestCodexPackageUpgradeClassification()
@@ -92,7 +179,7 @@ internal static class Program
         var plan = await registry.BuildPlanAsync(force: true);
         Equal(1, plan.Scripts.Count, "Bundled script count");
         Equal("dev.codex-script-loader.example-ui", plan.Scripts[0].Id, "Bundled script id");
-        True(plan.Source.Contains("runtime.runtimeVersion = \"0.5.9\"", StringComparison.Ordinal), "Runtime version source");
+        True(plan.Source.Contains("runtime.runtimeVersion = \"0.5.10\"", StringComparison.Ordinal), "Runtime version source");
         True(plan.Source.Contains("__codexScriptLoaderExampleUi", StringComparison.Ordinal), "Lifecycle source");
         True(plan.Source.Contains("installSettingsHost", StringComparison.Ordinal), "Settings host source");
         True(plan.Source.Contains("sha256-" + plan.Scripts[0].Fingerprint, StringComparison.Ordinal), "Integrity source");
@@ -127,6 +214,30 @@ internal static class Program
             await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "fixtures", "settings-host.mjs")),
             force: false);
         True(transportInjection.Contains("permissionSet.has(\"loopback-websocket\")", StringComparison.Ordinal), "Native injection gates loopback transport API by permission");
+        var hostCommandPaths = LoaderPaths.FromRoot(Path.Combine(testRoot, "host-command-manifest"));
+        await CreateTestPluginAsync(hostCommandPaths, "local.host-command");
+        var hostCommandDirectory = Path.Combine(hostCommandPaths.ScriptsRoot, "local.host-command");
+        var hostCommandManifestPath = Path.Combine(hostCommandDirectory, "manifest.json");
+        var hostCommandManifest = JsonNode.Parse(await File.ReadAllTextAsync(hostCommandManifestPath))!.AsObject();
+        hostCommandManifest["permissions"] = new JsonArray("dom", "trusted-input");
+        hostCommandManifest["hostCommands"] = new JsonObject { ["operations"] = new JsonArray("exchange", "finish") };
+        await File.WriteAllTextAsync(hostCommandManifestPath, hostCommandManifest.ToJsonString());
+        await File.WriteAllTextAsync(Path.Combine(hostCommandDirectory, "index.js"), "module.exports = { invokeHostCommand(operation, payload) { return { operation, payload }; } };\n");
+        var hostCommandDescriptor = await ScriptRegistry.LoadDescriptorAsync(hostCommandDirectory);
+        True(hostCommandDescriptor.HostCommands?.Operations.SequenceEqual(["exchange", "finish"], StringComparer.Ordinal) is true, "Native manifest preserves the host command operation allowlist");
+        True(hostCommandDescriptor.Permissions.Contains("trusted-input", StringComparer.Ordinal), "Native manifest preserves the trusted-input permission");
+        var hostCommandInjection = InjectionSourceBuilder.Build(
+            [hostCommandDescriptor],
+            await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "fixtures", "settings-host.mjs")),
+            force: false);
+        True(hostCommandInjection.Contains("record.invokeHostCommand", StringComparison.Ordinal), "Native injection exposes one host command invocation interface");
+        True(hostCommandInjection.Contains("\"hostCommands\":{\"operations\":[\"exchange\",\"finish\"]}", StringComparison.Ordinal), "Native renderer manifest preserves camel-case host command operations");
+        var fixedHostExpression = LiveSupervisor.BuildHostCommandExpression("local.host-command", "exchange", JsonSerializer.SerializeToElement(new { value = 42 }));
+        True(fixedHostExpression.Contains("record.invokeHostCommand", StringComparison.Ordinal), "Native host command reaches only the fixed plugin invocation seam");
+        True(!fixedHostExpression.Contains("Runtime.evaluate", StringComparison.Ordinal), "Native host command payload cannot choose a CDP method");
+        hostCommandManifest["hostCommands"]!["operations"] = new JsonArray("exchange", "exchange");
+        await File.WriteAllTextAsync(hostCommandManifestPath, hostCommandManifest.ToJsonString());
+        await ThrowsAsync<InvalidDataException>(() => ScriptRegistry.LoadDescriptorAsync(hostCommandDirectory), "Native manifest rejects duplicate host command operations");
         var companionPaths = LoaderPaths.FromRoot(Path.Combine(testRoot, "page-companion-manifest"));
         await CreateTestPluginAsync(companionPaths, "local.page-companion", permissions: ["browser-page-companion"]);
         var companionDirectory = Path.Combine(companionPaths.ScriptsRoot, "local.page-companion");
@@ -921,7 +1032,7 @@ internal static class Program
 
     private static async Task TestOnlineUpdatePipelineAsync(string testRoot)
     {
-        const string nextVersion = "0.5.10";
+        const string nextVersion = "0.5.11";
         var fixtureRoot = Path.Combine(testRoot, "online-update");
         var installRoot = Path.Combine(fixtureRoot, "install");
         var currentHostRoot = Path.Combine(installRoot, "versions", LiveSupervisor.Version, "win-x64");
@@ -990,6 +1101,52 @@ internal static class Program
         await first.ReleaseOwnershipAsync();
         True(await candidate.TryAcquireAsync(TimeSpan.FromSeconds(2), CancellationToken.None), "Candidate acquires released instance lock");
         True(candidate.IsPrimary, "Candidate becomes primary after lock transfer");
+    }
+
+    private static async Task TestHostCommandPipeRoundTripAsync(string testRoot)
+    {
+        var paths = LoaderPaths.FromRoot(Path.Combine(testRoot, "host-command-pipe"));
+        var pipeName = $"CodexScriptLoader.Tests.{Guid.NewGuid():N}";
+        await using var server = SingleInstanceCoordinator.Create(paths, pipeName);
+        True(server.IsPrimary, "Host command pipe server owns the current-user instance");
+        server.HostCommandReceived = (request, _) => Task.FromResult(JsonSerializer.SerializeToElement(new
+        {
+            request.PluginId,
+            request.Operation,
+            value = request.Payload.GetProperty("value").GetInt32(),
+        }));
+        var legacyCommand = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        server.CommandReceived += command => legacyCommand.TrySetResult(command);
+        server.StartServer();
+
+        await using var client = SingleInstanceCoordinator.Create(paths, pipeName);
+        await client.SendCommandAsync("ReloadScripts", CancellationToken.None);
+        Equal("ReloadScripts", await legacyCommand.Task.WaitAsync(TimeSpan.FromSeconds(2)), "Legacy reload command remains compatible with the request-response pipe");
+        var response = await client.SendHostCommandAsync(new HostCommandRequest(
+            Version: 1,
+            RequestId: "request-1",
+            Command: "plugin_invoke",
+            PluginId: "local.host-command",
+            Operation: "exchange",
+            Payload: JsonSerializer.SerializeToElement(new { value = 42 })), CancellationToken.None);
+
+        True(response.Ok, "Host command pipe returns a successful structured response");
+        Equal("request-1", response.RequestId, "Host command pipe correlates the response id");
+        Equal(42, response.Result!.Value.GetProperty("value").GetInt32(), "Host command pipe preserves a bounded JSON payload");
+        await ThrowsAsync<InvalidDataException>(() => client.SendHostCommandAsync(new HostCommandRequest(
+            1,
+            "request-2",
+            "Runtime.evaluate",
+            "local.host-command",
+            "exchange",
+            JsonSerializer.SerializeToElement(new { })), CancellationToken.None), "Host command pipe does not expose arbitrary CDP methods");
+        await ThrowsAsync<InvalidDataException>(() => client.SendHostCommandAsync(new HostCommandRequest(
+            1,
+            "request-3",
+            "plugin_invoke",
+            "local.host-command",
+            "exchange",
+            JsonSerializer.SerializeToElement(new { content = new string('x', HostCommandProtocol.MaximumMessageBytes) })), CancellationToken.None), "Host command pipe rejects requests over 64 KiB");
     }
 
     private sealed class FixtureUpdateTransport(GitHubReleaseInfo release, IReadOnlyDictionary<string, byte[]> responses) : IUpdateTransport

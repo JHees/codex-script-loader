@@ -3,7 +3,7 @@ param(
   [ValidateSet("win-x64", "win-arm64")]
   [string]$RuntimeIdentifier = "win-x64",
   [ValidatePattern("^\d+\.\d+\.\d+$")]
-  [string]$Version = "0.5.9",
+  [string]$Version = "0.5.10",
   [string]$NsisPath,
   [string]$CertificatePath,
   [string]$CertificatePassword,
@@ -123,6 +123,12 @@ New-Item -ItemType Directory -Path $launcherPublishRoot -Force | Out-Null
   -p:PublishSingleFile=false -p:PublishReadyToRun=false -p:DebugType=embedded -o $hostPublishRoot
 if ($LASTEXITCODE -ne 0) { throw "Loader host publish failed" }
 
+& $dotnet publish (Join-Path $repositoryRoot "windows\src\CodexScriptLoader.Command\CodexScriptLoader.Command.csproj") `
+  -c Release -r $RuntimeIdentifier --self-contained true --configfile (Join-Path $repositoryRoot "NuGet.Config") `
+  -m:1 -p:BuildInParallel=false -p:UseSharedCompilation=false `
+  -p:PublishSingleFile=false -p:PublishReadyToRun=false -p:DebugType=embedded -o $hostPublishRoot
+if ($LASTEXITCODE -ne 0) { throw "Loader command client publish failed" }
+
 & $dotnet publish (Join-Path $repositoryRoot "windows\src\CodexScriptLoader.Launcher\CodexScriptLoader.Launcher.csproj") `
   -c Release -r $RuntimeIdentifier --self-contained true --configfile (Join-Path $repositoryRoot "NuGet.Config") `
   -m:1 -p:BuildInParallel=false -p:UseSharedCompilation=false -p:PublishAot=true -p:StripSymbols=true -o $launcherPublishRoot
@@ -149,6 +155,8 @@ if ($CertificatePath) {
     "CodexScriptLoader.exe",
     "versions\$Version\$RuntimeIdentifier\CodexScriptLoader.exe",
     "versions\$Version\$RuntimeIdentifier\CodexScriptLoader.dll",
+    "versions\$Version\$RuntimeIdentifier\CodexScriptLoader.Command.exe",
+    "versions\$Version\$RuntimeIdentifier\CodexScriptLoader.Command.dll",
     "versions\$Version\$RuntimeIdentifier\CodexScriptLoader.Core.dll",
     "versions\$Version\$RuntimeIdentifier\CodexScriptLoader.Interop.dll")) {
     Invoke-Sign (Join-Path $publishRoot $relativePath) $signTool

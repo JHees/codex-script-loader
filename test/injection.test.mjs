@@ -68,6 +68,24 @@ test("module lifecycle receives the scoped API and disposes on reload", () => {
   assert.equal(context.__moduleStops, 1);
 });
 
+test("declared host commands expose one module invocation interface", async () => {
+  const context = vm.createContext({ console });
+  const script = {
+    ...descriptor({ id: "test.host-command", source: "module.exports = { invokeHostCommand(operation, payload) { return Promise.resolve({ operation, payload }); } };" }),
+    hostCommands: { operations: ["exchange", "finish"] },
+  };
+  vm.runInContext(buildInjectionSource([script]), context);
+  const record = context.__codexScriptLoader.scripts[script.id];
+  assert.equal(typeof record.invokeHostCommand, "function");
+  assert.deepEqual(JSON.parse(JSON.stringify(await record.invokeHostCommand("exchange", { bounded: true }))), {
+    operation: "exchange",
+    payload: { bounded: true },
+  });
+
+  vm.runInContext(buildInjectionSource([descriptor({ id: "test.no-host-command", source: "module.exports = { invokeHostCommand() {} };" })]), context);
+  assert.equal(context.__codexScriptLoader.scripts["test.no-host-command"].invokeHostCommand, undefined);
+});
+
 test("host-only update metadata is not exposed through renderer api.manifest", () => {
   const context = vm.createContext({ console });
   const script = {
@@ -89,7 +107,7 @@ test("settings API is permission-gated and owned by the loader host", () => {
   assert.equal(typeof context.__settingsApi.registerPage, "function");
   assert.equal(typeof context.__settingsApi.register, "function");
   assert.equal(context.__processKind, "renderer");
-  assert.equal(context.__codexScriptLoader.settingsHost.snapshot().version, "0.5.9");
+  assert.equal(context.__codexScriptLoader.settingsHost.snapshot().version, "0.5.10");
 
   const withoutPermission = { ...descriptor({ id: "test.no-settings", source: "globalThis.__settingsWithoutPermission = api.settings;" }), permissions: [] };
   vm.runInContext(buildInjectionSource([withoutPermission]), context);

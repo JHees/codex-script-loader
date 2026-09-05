@@ -124,6 +124,34 @@ internal sealed class PluginUpdateManager : IAsyncDisposable
         if (changed || !File.Exists(paths.PluginUpdatePreferencesPath)) await SavePreferencesAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    public async Task RecordInstallationAsync(string id, CancellationToken cancellationToken)
+    {
+        // An explicit, confirmed installation establishes a new local-change baseline.
+        // Do not disturb a concurrently running update; its fingerprint check will arbitrate.
+        if (IsActiveOrPending(SnapshotFor(id).State)) return;
+        var descriptor = await ScriptRegistry.LoadDescriptorAsync(Path.Combine(paths.ScriptsRoot, id), cancellationToken).ConfigureAwait(false);
+        var fingerprint = await registry.ComputePackageFingerprintAsync(id, cancellationToken).ConfigureAwait(false);
+        await preferencesGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (IsActiveOrPending(SnapshotFor(id).State)) return;
+            if (descriptor.Update is null)
+            {
+                preferences.Plugins.Remove(id);
+                snapshots.TryRemove(id, out _);
+            }
+            else
+            {
+                var automatic = preferences.Plugins.TryGetValue(id, out var previous) && previous.Automatic;
+                preferences.Plugins[id] = new PluginUpdatePreference(automatic, fingerprint);
+                SetSnapshot(new PluginUpdateSnapshot(id, true, automatic, PluginUpdateStage.Idle));
+            }
+            releases.TryRemove(id, out _);
+            await SavePreferencesAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally { preferencesGate.Release(); }
+    }
+
     public async Task<IReadOnlyList<PluginUpdateSnapshot>> CheckAsync(IReadOnlySet<string>? ids, CancellationToken cancellationToken)
     {
         var plugins = await registry.ListPluginsAsync(cancellationToken: cancellationToken).ConfigureAwait(false);

@@ -49,6 +49,44 @@ function Test-LoaderPe([byte[]]$Bytes) {
   if ($machine -ne $expectedMachine) { throw "Loader PE machine is 0x$($machine.ToString('x4')), expected 0x$($expectedMachine.ToString('x4'))." }
 }
 
+function Test-StandaloneCommandClient([string]$CommandPath) {
+  $emptyDotnetRoot = Join-Path $resolvedRoot ".verify-empty-dotnet-$PID"
+  if (Test-Path -LiteralPath $emptyDotnetRoot) { throw "Command verification directory already exists: $emptyDotnetRoot" }
+  New-Item -ItemType Directory -Path $emptyDotnetRoot | Out-Null
+  $process = $null
+  try {
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $CommandPath
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardInput = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    foreach ($argument in @("plugin", "invoke", "--id", "package.verify", "--operation", "exchange")) {
+      $startInfo.ArgumentList.Add($argument)
+    }
+    $startInfo.Environment["DOTNET_ROOT"] = $emptyDotnetRoot
+    $startInfo.Environment["DOTNET_ROOT_X64"] = $emptyDotnetRoot
+    $startInfo.Environment["DOTNET_MULTILEVEL_LOOKUP"] = "0"
+    $process = [Diagnostics.Process]::Start($startInfo)
+    $process.StandardInput.WriteLine("[]")
+    $process.StandardInput.Close()
+    if (-not $process.WaitForExit(10000)) { throw "Packaged command client did not exit within 10 seconds." }
+    $stdout = $process.StandardOutput.ReadToEnd().Trim()
+    $stderr = $process.StandardError.ReadToEnd().Trim()
+    if ($process.ExitCode -ne 2) {
+      throw "Packaged command client is not standalone or returned the wrong exit code: exit=$($process.ExitCode) stderr=$stderr"
+    }
+    try { $response = $stdout | ConvertFrom-Json -ErrorAction Stop } catch { throw "Packaged command client did not emit JSON: $stdout" }
+    if ($response.version -ne 1 -or $response.ok -ne $false -or $response.error.code -ne "INVALID_REQUEST") {
+      throw "Packaged command client returned an unexpected response: $stdout"
+    }
+  } finally {
+    if ($null -ne $process) { $process.Dispose() }
+    Remove-Item -LiteralPath $emptyDotnetRoot -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
+
 $appFiles = @(Get-ChildItem -LiteralPath $appRoot -File -Recurse | Sort-Object FullName)
 $appPrefix = [IO.Path]::GetFullPath($appRoot).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
 $appHashes = [ordered]@{}
@@ -71,6 +109,8 @@ foreach ($required in @(
   "update-manifest.json",
   "$hostRelative/CodexScriptLoader.exe",
   "$hostRelative/CodexScriptLoader.dll",
+  "$hostRelative/CodexScriptLoader.Command.exe",
+  "$hostRelative/CodexScriptLoader.Command.dll",
   "$hostRelative/CodexScriptLoader.Core.dll",
   "$hostRelative/CodexScriptLoader.Interop.dll",
   "$hostRelative/coreclr.dll",
@@ -85,6 +125,14 @@ foreach ($required in @(
 Test-LoaderPe $loaderBytes
 [byte[]]$hostBytes = [IO.File]::ReadAllBytes((Join-Path $hostRoot "CodexScriptLoader.exe"))
 Test-LoaderPe $hostBytes
+$commandRuntime = Get-Content -LiteralPath (Join-Path $hostRoot "CodexScriptLoader.Command.runtimeconfig.json") -Raw -Encoding utf8 | ConvertFrom-Json
+if ($null -ne $commandRuntime.runtimeOptions.framework -or @($commandRuntime.runtimeOptions.includedFrameworks).Count -eq 0) {
+  throw "Packaged command client is framework-dependent instead of self-contained."
+}
+$processArchitecture = [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString().ToLowerInvariant()
+if ($processArchitecture -eq $Architecture) {
+  Test-StandaloneCommandClient (Join-Path $hostRoot "CodexScriptLoader.Command.exe")
+}
 
 $active = Get-Content -LiteralPath (Join-Path $appRoot "active.json") -Raw -Encoding utf8 | ConvertFrom-Json
 if ($active.schemaVersion -ne 1 -or $active.version -ne $Version -or $active.rid -ne $rid -or $active.entryPoint -ne "CodexScriptLoader.exe" -or $active.launcherProtocol -ne 1 -or $active.handoffProtocol -ne 1) {
@@ -157,6 +205,8 @@ if ($RequireSignature) {
     (Join-Path $appRoot "CodexScriptLoader.exe"),
     (Join-Path $hostRoot "CodexScriptLoader.exe"),
     (Join-Path $hostRoot "CodexScriptLoader.dll"),
+    (Join-Path $hostRoot "CodexScriptLoader.Command.exe"),
+    (Join-Path $hostRoot "CodexScriptLoader.Command.dll"),
     (Join-Path $hostRoot "CodexScriptLoader.Core.dll"),
     (Join-Path $hostRoot "CodexScriptLoader.Interop.dll")
   )) {

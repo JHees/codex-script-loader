@@ -166,6 +166,7 @@ internal sealed class LoaderHostBridge : IAsyncDisposable
                 "reload_plugins" or
                 "pick_plugin_folder" or
                 "pick_plugin_archive" or
+                "preview_plugin_github" or
                 "install_plugin" or
                 "cancel_plugin_install" or
                 "remove_plugin" or
@@ -203,14 +204,16 @@ internal sealed class LoaderHostBridge : IAsyncDisposable
             var result = await dispatch(command!, payloadElement.Clone(), CancellationToken.None).ConfigureAwait(false);
             response = new { id = requestId, ok = true, result };
         }
-        catch (Exception exception) when (exception is InvalidDataException or JsonException or InvalidOperationException or IOException or UnauthorizedAccessException or ArgumentException or KeyNotFoundException)
+        catch (Exception exception) when (exception is InvalidDataException or JsonException or InvalidOperationException or IOException or UnauthorizedAccessException or ArgumentException or KeyNotFoundException or HttpRequestException or OperationCanceledException)
         {
             if (requestId is null)
             {
                 return;
             }
 
-            response = new { id = requestId, ok = false, error = CodexScriptLoader.Core.JsonlLogger.Redact(exception.Message) };
+            response = new { id = requestId, ok = false, error = exception is OperationCanceledException
+                ? "Loader operation timed out or was cancelled. No automatic retry was performed."
+                : CodexScriptLoader.Core.JsonlLogger.Redact(exception.Message) };
         }
 
         if (!sessions.TryGetValue(targetId, out var state))
@@ -297,6 +300,7 @@ internal sealed class LoaderHostBridge : IAsyncDisposable
           return new Promise((resolve, reject) => {
             const timeoutMs = command === "pick_plugin_folder" || command === "pick_plugin_archive" || command === "page_companion_invoke"
               ? pickerTimeoutMs
+              : command === "preview_plugin_github" ? 150000
               : command === "get_app_status" || command === "list_plugins" || command === "list_quarantined" || command === "get_update_status"
                 ? requestTimeoutMs
                 : mutationTimeoutMs;

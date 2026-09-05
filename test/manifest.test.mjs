@@ -29,9 +29,35 @@ test("manifest accepts a safe lifecycle global and rejects property paths", () =
   assert.throws(() => validateManifest({ id: "test.valid", lifecycleGlobal: "window.bad" }, root), /lifecycleGlobal/);
   assert.throws(() => validateManifest({ id: "test.valid", lifecycleGlobal: "bad-name" }, root), /lifecycleGlobal/);
   assert.throws(() => validateManifest({ id: "test.valid", lifecycleGlobal: "" }, root), /lifecycleGlobal/);
-  assert.throws(() => validateManifest({ id: "test.valid", schemaVersion: 2 }, root), /schemaVersion/);
+  assert.throws(() => validateManifest({ id: "test.valid", schemaVersion: 3 }, root), /schemaVersion/);
   assert.throws(() => validateManifest({ id: "test.valid", permissions: "dom" }, root), /permissions/);
   assert.throws(() => validateManifest({ id: "test.valid", integrity: "sha256-bad" }, root), /integrity/);
+});
+
+test("bundled skill declaration requires the new schema and explicit permission", () => {
+  const root = "C:/loader/scripts/test";
+  const declaration = { id: "test.skill", schemaVersion: 2, agentSkill: "loader-example", permissions: ["agent-skills"] };
+  assert.equal(validateManifest(declaration, root).agentSkill, "loader-example");
+  assert.throws(() => validateManifest({ ...declaration, schemaVersion: 1 }, root), /schemaVersion 2/);
+  assert.throws(() => validateManifest({ ...declaration, permissions: [] }, root), /agent-skills/);
+  for (const name of ["../escape", "CON", "con", "", "a".repeat(65), null])
+    assert.throws(() => validateManifest({ ...declaration, agentSkill: name }, root), /agentSkill/);
+});
+
+test("manifest exposes only a bounded host command allowlist", () => {
+  const root = "C:/loader/scripts/test";
+  const manifest = validateManifest({
+    id: "test.host-commands",
+    permissions: ["dom", "trusted-input"],
+    hostCommands: { operations: ["exchange", "finish"] },
+  }, root);
+  assert.deepEqual(manifest.permissions, ["dom", "trusted-input"]);
+  assert.deepEqual(manifest.hostCommands, { operations: ["exchange", "finish"] });
+  assert.equal(validateManifest({ id: "test.no-host-commands" }, root).hostCommands, null);
+  assert.throws(() => validateManifest({ id: "test.bad", hostCommands: { operations: [] } }, root), /hostCommands operations/);
+  assert.throws(() => validateManifest({ id: "test.bad", hostCommands: { operations: ["exchange", "exchange"] } }, root), /duplicated/);
+  assert.throws(() => validateManifest({ id: "test.bad", hostCommands: { operations: ["Runtime.evaluate"] } }, root), /invalid/);
+  assert.throws(() => validateManifest({ id: "test.bad", hostCommands: { operations: Array.from({ length: 17 }, (_, index) => `op_${index}`) } }, root), /1-16/);
 });
 
 test("manifest exposes a validated GitHub Release update interface", () => {

@@ -6,7 +6,7 @@
 
 **Open Codex for user scripts, with automatic injection, reload, and cleanup.**
 
-[![Version](https://img.shields.io/badge/version-0.5.9-f97316)](https://github.com/JHees/codex-script-loader)
+[![Version](https://img.shields.io/badge/version-0.5.10-f97316)](https://github.com/JHees/codex-script-loader)
 [![Windows](https://img.shields.io/badge/Windows-11-0078d4?logo=windows11)](#requirements)
 [![macOS](https://img.shields.io/badge/macOS-untested-999999?logo=apple)](#platform-support)
 [![.NET](https://img.shields.io/badge/.NET-10-512bd4?logo=dotnet)](global.json)
@@ -27,6 +27,7 @@ Windows uses the native .NET 10 background host with no console or tray icon and
 | --- | --- |
 | Debug-enabled launch | Opens Codex with a local debugging endpoint ready for renderer scripts. |
 | User scripts | Loads `manifest.json + index.js` packages from the Loader data directory. |
+| Bundled skills (new source capability) | Native schema-v2 packages can install renderer and skill together, with shared enable, update, rollback, and removal. Requires a host built with this capability. |
 | Automatic lifecycle | Validates, injects, reloads, replaces, and cleans up scripts across renderer documents. |
 | Native Windows host | Runs quietly with Codex, recovers a managed session after an in-app Codex update restart, and exits after an ordinary Codex close. |
 | macOS runtime | Discovers `Codex.app` and provides the same managed CDP/script flow through Node.js; currently untested. |
@@ -54,6 +55,13 @@ Version 0.5.2 isolates update errors inside the update card and uses the Windows
 
 Version 0.5.3 adds opt-in, per-plugin GitHub Release updates. Update-aware third-party plugins are scanned independently, downloaded through the same restricted transport, verified against a required `.sha256` asset, replaced transactionally, and reloaded in place. The Loader-owned example plugin remains bundled and is not part of the third-party update flow.
 
+Version 0.5.10 adds **Install from GitHub**, verified same-ID package replacement,
+single-package optional agent Skills, and an allowlisted native command client
+for renderer plugins. Existing standard installations can use the normal online
+host update; launcher/handoff protocols are unchanged. Plugin automatic updates
+remain opt-in. The new GitHub installation entry uses the public Releases API
+only to discover package assets and does not read GitHub credentials.
+
 ### Build from source
 
 ```powershell
@@ -71,12 +79,12 @@ build/
 ├── app/active.json
 ├── app/previous.json
 ├── app/update-manifest.json
-├── app/versions/0.5.9/win-x64/               # complete Loader host
-├── CodexScriptLoader-0.5.9-windows-x64-setup.exe
-├── CodexScriptLoader-0.5.9-windows-x64-setup.exe.sha256
-├── CodexScriptLoader-0.5.9-windows-x64.zip
-├── CodexScriptLoader-0.5.9-windows-x64.zip.sha256
-└── CodexScriptLoader-0.5.9-x64.spdx.json
+├── app/versions/0.5.10/win-x64/               # complete Loader host
+├── CodexScriptLoader-0.5.10-windows-x64-setup.exe
+├── CodexScriptLoader-0.5.10-windows-x64-setup.exe.sha256
+├── CodexScriptLoader-0.5.10-windows-x64.zip
+├── CodexScriptLoader-0.5.10-windows-x64.zip.sha256
+└── CodexScriptLoader-0.5.10-x64.spdx.json
 ```
 
 The setup executable at the top of `build` is the normal local installation entry. The `build\app` directory is packaging payload, not the recommended launch path. The installer keeps scripts and settings under `%LOCALAPPDATA%\CodexScriptLoader` when upgrading or uninstalling.
@@ -141,6 +149,10 @@ Online updates are fixed to the stable releases of `JHees/codex-script-loader`. 
 
 Installed plugins are managed under **Codex Settings → Script-Loader → Settings**. The page shows live status, supports enable/disable, targeted or full reload, local folder/ZIP installation, quarantine and restore, update checks, and a controlled Codex restart. Plugins that declare a settings page appear directly below the Settings entry.
 
+The native Windows Loader also offers **Install from GitHub**. Paste a public repository URL, `releases/latest`, `releases/tag/v1.2.3`, or a Release ZIP download link. It discovers assets through the unauthenticated GitHub Releases API, downloads the ZIP and matching `.sha256` with system `curl.exe`, verifies the hash and manifest version/repository/asset name, then asks you to confirm permissions and installation. Multiple eligible ZIPs require a selection. Source archives, private repositories, and prereleases are not supported. Download and verification have a 120-second deadline; failures do not trigger automatic retries or remove installed plugins.
+
+There is **no need to uninstall a local package first**: the same plugin ID uses a confirmed replacement, preserving its enabled state and rolling back installation failures. Update support comes from the package's `update` declaration, not its installation origin. After installing, opt in to automatic updates from that plugin's menu; the default remains off. Packages declaring `agentSkill` provide their bundled Skill as part of the same enabled installation, with no second manual install. GitHub installation is native-host-only; the Node development host reports that requirement explicitly.
+
 Third-party packages may optionally declare their own public GitHub Release source. The native Windows host scans those declarations once after becoming healthy and when requested from Settings. Per-plugin automatic replacement defaults to off. Updates require a stable `vMAJOR.MINOR.PATCH` Release, a versioned ZIP, and its exact same-name `.sha256` asset. Added permissions and local package changes require confirmation; disabled plugins and enabled plugins without a renderer are never replaced. This feature does not create a marketplace or couple third-party source and release work to the Loader repository.
 
 The complete authoring and lifecycle contract is documented in [`docs/PLUGIN_SPEC.md`](docs/PLUGIN_SPEC.md).
@@ -157,7 +169,8 @@ A renderer package contains `manifest.json` and an entry script:
   "main": "index.js",
   "scope": "renderer",
   "runAt": "document-end",
-  "permissions": ["dom", "local-storage", "settings"]
+  "permissions": ["dom", "local-storage", "settings"],
+  "hostCommands": { "operations": ["inspect"] }
 }
 ```
 
@@ -174,8 +187,20 @@ module.exports = {
 
     return () => page.unregister();
   },
+  invokeHostCommand(operation, payload) {
+    if (operation !== "inspect") throw new Error("Operation is not allowed");
+    return { value: payload.value };
+  },
 };
 ```
+
+### Optional renderer host commands (Windows)
+
+`CodexScriptLoader.Command.exe plugin invoke --id <plugin-id> --operation <operation>` reads one UTF-8 JSON object from stdin and writes one structured JSON envelope to stdout. The operation must appear in the enabled plugin's `hostCommands.operations` manifest allowlist. Payloads and results are limited to 64 KiB and a call may wait up to 120 seconds.
+
+The client uses the existing current-user Loader pipe. Loader selects only its verified `app://-/index.html` renderer and evaluates a fixed invocation wrapper; callers cannot supply a CDP endpoint, target, method, selector, or JavaScript source. The command client is shipped beside the native Windows host in the active version directory.
+
+A renderer plugin may additionally declare `trusted-input` and return the fixed `$loaderHostAction` `press-enter` directive from an allowlisted operation. Loader will press Enter once in its verified renderer session, then resume the same operation with the same payload. The caller cannot choose the key or request the action directly, and repeated or malformed action requests fail closed.
 
 ### Optional loopback WebSocket transport
 

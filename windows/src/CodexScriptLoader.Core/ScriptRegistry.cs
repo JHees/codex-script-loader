@@ -17,15 +17,37 @@ public sealed partial class ScriptRegistry
     private readonly HashSet<string> bundledIds = new(StringComparer.Ordinal);
     private bool safeMode;
     private bool globalEnabled = true;
+    private bool configInvalid;
+    private bool observedSafeMode;
     private Dictionary<string, bool> enabledOverrides = new(StringComparer.Ordinal);
+    private readonly BundledSkillLinks? skillLinks;
 
-    public ScriptRegistry(LoaderPaths paths, string settingsHostModulePath)
+    public ScriptRegistry(LoaderPaths paths, string settingsHostModulePath, string? userSkillRoot = null, Action<string, string>? createSkillLink = null)
     {
         this.paths = paths;
         this.settingsHostModulePath = Path.GetFullPath(settingsHostModulePath);
+        if (userSkillRoot is not null && createSkillLink is not null)
+            skillLinks = new BundledSkillLinks(paths, userSkillRoot, createSkillLink);
     }
 
-    public bool SafeMode => safeMode;
+    public bool SafeMode => observedSafeMode;
+
+    private async Task CheckSkillAsync(ScriptDescriptor descriptor, CancellationToken token)
+    {
+        if (descriptor.AgentSkill is null) return;
+        if (skillLinks is null) throw new InvalidOperationException("Bundled agent skills require a compatible native Windows Loader.");
+        await skillLinks.CheckAsync(descriptor.Id, descriptor.AgentSkill, token).ConfigureAwait(false);
+    }
+
+    private async Task SyncSkillAsync(ScriptDescriptor descriptor, bool enabled, CancellationToken token)
+    {
+        if (skillLinks is null)
+        {
+            if (enabled && descriptor.AgentSkill is not null) throw new InvalidOperationException("Bundled agent skills require a compatible native Windows Loader.");
+            return;
+        }
+        await skillLinks.SyncAsync(descriptor.Id, enabled ? descriptor.AgentSkill : null, token).ConfigureAwait(false);
+    }
 
     public LoaderPaths Paths => paths;
 
@@ -35,6 +57,26 @@ public sealed partial class ScriptRegistry
         await RecoverPendingPluginUpdateAsync(cancellationToken).ConfigureAwait(false);
         CleanupOrphanedPendingPackages();
         await ReloadConfigAsync(cancellationToken).ConfigureAwait(false);
+        await ReconcileSkillEntriesAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task ReconcileSkillEntriesAsync(CancellationToken cancellationToken = default)
+    {
+        // An install/update already synchronizes its skill under this lock before invoking reload.
+        // Do not wait here: activation callbacks re-enter the supervisor while holding that lock.
+        if (skillLinks is null || !await registryMutation.WaitAsync(0, cancellationToken).ConfigureAwait(false)) return;
+        try
+        {
+            await ReloadConfigAsync(cancellationToken).ConfigureAwait(false);
+            var desired = new List<ScriptDescriptor>();
+            foreach (var directory in Directory.EnumerateDirectories(paths.ScriptsRoot))
+            {
+                try { desired.Add(await LoadDescriptorAsync(directory, cancellationToken).ConfigureAwait(false)); }
+                catch (Exception exception) when (exception is IOException or InvalidDataException or JsonException or UnauthorizedAccessException) { }
+            }
+            await skillLinks.ReconcileAsync(desired, id => globalEnabled && !safeMode && (!enabledOverrides.TryGetValue(id, out var enabled) || enabled), cancellationToken).ConfigureAwait(false);
+        }
+        finally { registryMutation.Release(); }
     }
 
     public async Task EnsureBundledScriptAsync(string bundledDirectory, CancellationToken cancellationToken = default)
@@ -72,12 +114,25 @@ public sealed partial class ScriptRegistry
 
     public async Task ReloadConfigAsync(CancellationToken cancellationToken = default)
     {
-        safeMode = false;
-        globalEnabled = true;
-        enabledOverrides = new Dictionary<string, bool>(StringComparer.Ordinal);
+        var config = await ReadConfigAsync(cancellationToken).ConfigureAwait(false);
+        configInvalid = config.Invalid;
+        safeMode = config.SafeMode;
+        globalEnabled = config.GlobalEnabled;
+        enabledOverrides = config.Overrides;
+    }
+
+    private sealed record RegistryConfig(bool SafeMode, bool GlobalEnabled, bool Invalid, Dictionary<string, bool> Overrides);
+
+    private async Task<RegistryConfig> ReadConfigAsync(CancellationToken cancellationToken)
+    {
+        var configInvalid = false;
+        var safeMode = false;
+        var globalEnabled = true;
+        var enabledOverrides = new Dictionary<string, bool>(StringComparer.Ordinal);
         if (!File.Exists(paths.ConfigPath))
         {
-            return;
+            observedSafeMode = false;
+            return new(false, true, false, enabledOverrides);
         }
 
         try
@@ -131,10 +186,13 @@ public sealed partial class ScriptRegistry
                 }
             }
         }
-        catch (Exception exception) when (exception is JsonException or IOException or InvalidDataException or UnauthorizedAccessException)
+        catch (Exception exception) when (exception is JsonException or IOException or InvalidDataException or UnauthorizedAccessException or InvalidOperationException or FormatException or OverflowException)
         {
             safeMode = true;
+            configInvalid = true;
         }
+        observedSafeMode = safeMode;
+        return new(safeMode, globalEnabled, configInvalid, enabledOverrides);
     }
 
     public async Task<InjectionPlan> BuildPlanAsync(bool force, CancellationToken cancellationToken = default)
@@ -145,7 +203,7 @@ public sealed partial class ScriptRegistry
 
     public async Task<InjectionPlan> BuildPlanAsync(IReadOnlySet<string>? forceIds, CancellationToken cancellationToken = default)
     {
-        await ReloadConfigAsync(cancellationToken).ConfigureAwait(false);
+        var config = await ReadConfigAsync(cancellationToken).ConfigureAwait(false);
         var descriptors = new List<ScriptDescriptor>();
         foreach (var directory in Directory.EnumerateDirectories(paths.ScriptsRoot).OrderBy(value => value, StringComparer.OrdinalIgnoreCase))
         {
@@ -153,7 +211,7 @@ public sealed partial class ScriptRegistry
             try
             {
                 var descriptor = await LoadDescriptorAsync(directory, cancellationToken).ConfigureAwait(false);
-                if (globalEnabled && !safeMode && (!enabledOverrides.TryGetValue(descriptor.Id, out var enabled) || enabled))
+                if (config.GlobalEnabled && !config.SafeMode && (!config.Overrides.TryGetValue(descriptor.Id, out var enabled) || enabled))
                 {
                     descriptors.Add(descriptor);
                 }
@@ -170,10 +228,19 @@ public sealed partial class ScriptRegistry
                 descriptors,
                 settingsHost,
                 forceIds ?? descriptors.Select(descriptor => descriptor.Id).ToHashSet(StringComparer.Ordinal)),
-            safeMode);
+            config.SafeMode);
     }
 
     public static async Task<ScriptDescriptor> LoadDescriptorAsync(string scriptDirectory, CancellationToken cancellationToken = default)
+    {
+        try { return await LoadDescriptorCoreAsync(scriptDirectory, cancellationToken).ConfigureAwait(false); }
+        catch (Exception exception) when (exception is InvalidOperationException or FormatException or OverflowException or ArgumentException)
+        {
+            throw new InvalidDataException("Plugin manifest contains an invalid field type or path.", exception);
+        }
+    }
+
+    private static async Task<ScriptDescriptor> LoadDescriptorCoreAsync(string scriptDirectory, CancellationToken cancellationToken)
     {
         var directory = new DirectoryInfo(Path.GetFullPath(scriptDirectory));
         if (!directory.Exists || directory.Attributes.HasFlag(FileAttributes.ReparsePoint))
@@ -197,7 +264,7 @@ public sealed partial class ScriptRegistry
         }
 
         var schemaVersion = root.TryGetProperty("schemaVersion", out var schema) ? schema.GetInt32() : 1;
-        if (schemaVersion != 1)
+        if (schemaVersion is not (1 or 2))
         {
             throw new InvalidDataException("Unsupported manifest schema.");
         }
@@ -270,6 +337,35 @@ public sealed partial class ScriptRegistry
             {
                 throw new InvalidDataException("Manifest declares too many permissions.");
             }
+        }
+
+        string? agentSkill = null;
+        if (root.TryGetProperty("agentSkill", out var agentSkillElement))
+        {
+            agentSkill = agentSkillElement.GetString();
+            if (schemaVersion != 2 || !permissions.Contains("agent-skills", StringComparer.Ordinal))
+                throw new InvalidDataException("A bundled agentSkill requires schemaVersion 2 and the agent-skills permission.");
+            await BundledSkillLinks.ValidatePackageAsync(directory.FullName, agentSkill, cancellationToken).ConfigureAwait(false);
+        }
+
+        HostCommandsDescriptor? hostCommands = null;
+        if (root.TryGetProperty("hostCommands", out var hostCommandsElement))
+        {
+            if (hostCommandsElement.ValueKind != JsonValueKind.Object ||
+                !hostCommandsElement.TryGetProperty("operations", out var hostOperationsElement) ||
+                hostOperationsElement.ValueKind != JsonValueKind.Array ||
+                hostOperationsElement.GetArrayLength() is < 1 or > 16)
+            {
+                throw new InvalidDataException("Manifest hostCommands operations must contain 1-16 items.");
+            }
+
+            var hostOperations = hostOperationsElement.EnumerateArray().Select(item => ValidateText(item.GetString(), "hostCommands operation", 64, allowEmpty: false)).ToArray();
+            if (hostOperations.Distinct(StringComparer.Ordinal).Count() != hostOperations.Length || hostOperations.Any(operation => !PageCompanionOperationRegex().IsMatch(operation)))
+            {
+                throw new InvalidDataException("Manifest hostCommands operations are invalid or duplicated.");
+            }
+
+            hostCommands = new HostCommandsDescriptor(hostOperations);
         }
 
         PageCompanionDescriptor? pageCompanion = null;
@@ -413,7 +509,9 @@ public sealed partial class ScriptRegistry
             settingsPageId,
             settingsPageTitle,
             update,
-            pageCompanion);
+            pageCompanion,
+            hostCommands,
+            agentSkill);
     }
 
     private static string ValidateRelativePackagePath(string? value, string name)

@@ -6,6 +6,11 @@ import { writeFile } from "node:fs/promises";
 import { ScriptRegistry } from "../src/registry.mjs";
 import { UiController, listUiCommands } from "../src/ui-controller.mjs";
 
+test("GitHub installation reports the native host requirement in Node mode", async () => {
+  const controller = new UiController({ registry: {} });
+  await assert.rejects(controller.dispatch("preview_plugin_github", { url: "https://github.com/Example/plugin-repository" }), /native Windows Loader/);
+});
+
 test("UI controller exposes allowlisted commands and offline status", async () => {
   const root = await makeTempRoot();
   const source = await makeScript(path.join(root, "source"), { id: "test.ui" });
@@ -21,7 +26,7 @@ test("UI controller exposes allowlisted commands and offline status", async () =
   assert.ok(listUiCommands().includes("restore_quarantined"));
   assert.ok(listUiCommands().includes("get_update_status"));
   const update = await controller.dispatch("get_update_status");
-  assert.equal(update.currentVersion, "0.5.9");
+  assert.equal(update.currentVersion, "0.5.10");
   assert.equal(update.requiresInstaller, true);
   assert.equal(listUiCommands().includes("delete_script_permanently"), false);
   await assert.rejects(() => controller.dispatch("execute_script", { source: "danger" }), /unsupported loader command/);

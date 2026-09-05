@@ -73,6 +73,23 @@ test("bridge client correlates replies and times out without exposing another AP
   await assert.rejects(() => context[BRIDGE_GLOBAL].request("get_app_status", {}), /timed out/);
 });
 
+test("GitHub preview is allowlisted and gets a bounded download wait without retry", async () => {
+  const payload = { url: "https://github.com/Example/plugin-repository" };
+  assert.deepEqual(parseRequest(JSON.stringify({ version: 1, id: "github", command: "preview_plugin_github", payload })).payload, payload);
+  const waits = [];
+  const outbound = [];
+  const context = vm.createContext({
+    setTimeout(fn, ms) { waits.push(ms); return 1; }, clearTimeout() {},
+    __binding(text) { outbound.push(JSON.parse(text)); },
+  });
+  vm.runInContext(buildBridgeClientSource("__binding"), context);
+  const pending = context[BRIDGE_GLOBAL].request("preview_plugin_github", payload);
+  assert.equal(waits[0], 150000);
+  context[BRIDGE_GLOBAL].receive({ id: outbound[0].id, ok: false, error: "GitHub request failed" });
+  await assert.rejects(pending, /GitHub request failed/);
+  assert.equal(outbound.length, 1);
+});
+
 test("persistent bridge attaches to the exact renderer, dispatches and closes cleanly", async () => {
   const session = fakeSession();
   const dispatched = [];
