@@ -3,6 +3,43 @@ import assert from "node:assert/strict";
 import vm from "node:vm";
 import { buildInjectionSource } from "../src/injection.mjs";
 
+test("composer capability is opt-in and handles are revoked with the plugin", () => {
+  const context = vm.createContext({});
+  const source = "globalThis.__composerApi = api.composer; globalThis.__accessory = api.composer.registerAccessory({ id: 'example', render() {} }); globalThis.__testLifecycle = { stop() {} };";
+  vm.runInContext(buildInjectionSource([{ ...descriptor({ source }), permissions: ["composer"] }]), context);
+  assert.equal(typeof context.__composerApi?.registerAccessory, "function");
+  assert.deepEqual(Object.keys(context.__composerApi), ["registerAccessory"]);
+  assert.deepEqual(Object.keys(context.__accessory), ["getStatus", "getSubmission", "prepareSubmission", "prepareContext", "clearContext", "unregister"]);
+  assert.equal(context.__accessory.getStatus().available, false);
+  vm.runInContext(buildInjectionSource([]), context);
+  assert.equal(context.__accessory.getStatus().reason, "COMPOSER_STOPPED");
+  assert.equal(context.__accessory.getSubmission("owned-receipt").state, "stopped");
+  assert.throws(() => context.__accessory.prepareSubmission({}), { code: "COMPOSER_STOPPED" });
+  vm.runInContext(buildInjectionSource([descriptor({ source: "globalThis.__withoutComposer = api.composer; globalThis.__testLifecycle = { stop() {} };" })]), context);
+  assert.equal(context.__withoutComposer, undefined);
+});
+
+test("composer host replacement revokes retained handles", () => {
+  const context = vm.createContext({});
+  vm.runInContext(buildInjectionSource([{ ...descriptor({ source: "globalThis.__accessory = api.composer.registerAccessory({ id: 'example', render() {} }); globalThis.__testLifecycle = { stop() {} };" }), permissions: ["composer"] }]), context);
+  context.__codexScriptLoader.composerHost.stop();
+  assert.equal(context.__accessory.getStatus().reason, "COMPOSER_STOPPED");
+  assert.throws(() => context.__accessory.prepareContext({}), { code: "COMPOSER_STOPPED" });
+});
+
+test("retained composer API cannot register after plugin stop", () => {
+  const context = vm.createContext({});
+  vm.runInContext(buildInjectionSource([{ ...descriptor({ source: "globalThis.__capturedComposer = api.composer; globalThis.__testLifecycle = { stop() {} };" }), permissions: ["composer"] }]), context);
+  vm.runInContext(buildInjectionSource([]), context);
+  assert.throws(() => context.__capturedComposer.registerAccessory({ id: "late", render() {} }), /COMPOSER_STOPPED/);
+});
+
+test("failed startup disposes a composer registration even without an exported lifecycle", () => {
+  const context = vm.createContext({});
+  vm.runInContext(buildInjectionSource([{ ...descriptor({ source: "globalThis.__failedAccessory = api.composer.registerAccessory({ id: 'example', render() {} }); throw new Error('start failed');" }), permissions: ["composer"] }]), context);
+  assert.equal(context.__failedAccessory.getStatus().reason, "COMPOSER_STOPPED");
+});
+
 function descriptor({ id = "test.lifecycle", fingerprint = "a".repeat(64), source = "" } = {}) {
   return {
     id,
@@ -107,7 +144,7 @@ test("settings API is permission-gated and owned by the loader host", () => {
   assert.equal(typeof context.__settingsApi.registerPage, "function");
   assert.equal(typeof context.__settingsApi.register, "function");
   assert.equal(context.__processKind, "renderer");
-  assert.equal(context.__codexScriptLoader.settingsHost.snapshot().version, "0.5.10");
+  assert.equal(context.__codexScriptLoader.settingsHost.snapshot().version, "0.5.11");
 
   const withoutPermission = { ...descriptor({ id: "test.no-settings", source: "globalThis.__settingsWithoutPermission = api.settings;" }), permissions: [] };
   vm.runInContext(buildInjectionSource([withoutPermission]), context);
@@ -175,7 +212,7 @@ test("loopback socket opened asynchronously is still cleaned up when the plugin 
 test("settings host groups management and plugin pages under Script-Loader without refreshing Codex", () => {
   const source = buildInjectionSource([]);
   assert.match(source, /loaderGroup: "Script-Loader"/);
-  assert.match(source, /const implementationRevision = "0\.5\.6-native-plugin-list-metadata-tooltip-final"/);
+  assert.match(source, /const implementationRevision = "settings-page-navigation-1"/);
   assert.match(source, /current\?\.version === version && current\?\.implementationRevision === implementationRevision/);
   assert.match(source, /implementationRevision,/);
   assert.doesNotMatch(source, /tweaksGroup:/);

@@ -190,6 +190,104 @@ Plugins must not read `globalThis.__codexScriptLoader.activeApi` or other Loader
 - `api.events.on(...)`, which is automatically disposed with the plugin lifecycle
 - `api.settings.registerPage(...)` and `api.settings.register(...)` with the `settings` permission
 
+The handle returned by `api.settings.registerPage(...)` also supports `open(): Promise<void>` on compatible hosts. Call it from an explicit user action to navigate to this plugin's registered page inside the native system settings shell. It accepts no page ID, route, selector or script. It resolves after the page mounts; an unavailable/ambiguous native entry, timeout, concurrent navigation or revoked registration rejects with a stable `SETTINGS_*` error code. Repeated opens of the same page share the pending operation. Unregistering or stopping the host revokes pending and retained handles. Older hosts may omit `open`; feature-detect it and do not claim navigation succeeded or create an undisclosed separate settings UI.
+
+## Composer accessory, visible context and native receipts (candidate interface)
+
+The optional `composer` permission exposes `api.composer.registerAccessory`.
+This is a generic renderer interface, not a Chat client or a message-sending API.
+It requires a host built with the bundled `composer-host.mjs` resource; the product
+version has not been changed for this development work. Published hosts must not
+be assumed to support it because they have the same version number.
+
+```js
+const handle = api.composer.registerAccessory({
+  id: "workflow-control",
+  render(root, identity) {
+    // Render the plugin's own controls. Return a cleanup callback if needed.
+    return () => root.replaceChildren();
+  }
+});
+const state = handle.getStatus();
+if (state.available) {
+  // Call only in response to the user's choice to add visible context.
+  const owner = state.draftId
+    ? { draftId: state.draftId }
+    : { taskId: state.taskId, hostId: state.hostId };
+  const prepared = handle.prepareSubmission({
+    ...owner,
+    revision: "selection-1",
+    text: "Explain your assumptions before executing this task."
+  });
+  // Keep bindingId in this plugin instance. Only "accepted" confirms task ownership.
+  const receipt = handle.getSubmission(prepared.bindingId);
+}
+// handle.clearContext();
+// handle.unregister(); // Also called by Loader when the plugin stops.
+```
+
+The host locates the unique visible native task editor and its original composer
+controller. It skips tooltip wrappers and mounts immediately before the native
+model control in its verified flex row (after the context indicator when present).
+This uses semantic attributes and computed layout, not compressed class names or
+coordinates. The final candidate placement has not yet been visually accepted.
+An ambiguous editor, an inconsistent existing task, or
+an unsupported App shape returns `COMPOSER_UNAVAILABLE`. A native Codex editor
+without an existing task gets an instance-local `draftId`, not a guessed task ID.
+Only an accepted native request may resolve that draft to a host and task.
+
+`prepareContext` adds a visible paragraph through an editor transaction; it does
+not replace the user's document, focus the editor, simulate a key, click Send,
+register a submit handler, or replace App message preparation. Selection is mapped
+through the transaction. Context is limited to 8 KiB UTF-8, with a 1–128 character
+opaque revision. Repeating an unchanged active revision is idempotent; changing
+its text returns `CONTEXT_CONFLICT`. Updating to another revision replaces only
+the exact owned paragraph. Input-method composition returns `COMPOSER_COMPOSING`.
+An existing paragraph with the same plugin's context marker is not adopted by a
+new registration: preparation returns `CONTEXT_EXISTS` without editing it.
+
+The status `prepared` means the paragraph is in the draft, **not** that a message
+was submitted or accepted. When it disappears, status becomes `missing-or-edited`;
+the host never guesses whether the user cleared, undid, edited, queued, or sent
+it. A plugin must not describe preparation as an active workflow.
+
+`prepareSubmission` additionally creates an opaque, Markdown-safe binding ID and
+captures the App serializer's representation of the exact owned context. It does
+not duplicate the App's Markdown escaping rules. `getSubmission(bindingId)` is
+read-only and scoped to the accessory; it returns no prompt, reply, project data
+or credentials. The receiver passively observes the native outgoing request and
+matching incoming response without replacing preparation functions or resubmitting.
+One existing-task submission path has been checked against a real accepted turn;
+new-task, queued/steered, chunked-response and full UI acceptance remain pending.
+
+Receipt states distinguish `prepared`, `dispatched`, `accepted`, `rejected`,
+`context-mismatch`, `ambiguous`, `unrecognized-response`, `unknown` and `stopped`.
+Only `accepted` can be used as a confirmed binding; `dispatched` identifiers are
+unconfirmed candidates. Acceptance includes host/task, native request/turn IDs,
+and the native client user-message ID when supplied. Edited/duplicate context,
+another known task, a mismatched host response or an unrecognized result cannot
+produce acceptance. A definitely rejected request may be retried by the user;
+reusing an accepted context for another request is ambiguous. These receipts do
+not prove that tools ran or that a task completed, and confer no execution rights.
+
+The host never decodes or acknowledges App chunked messages a second time. An
+unobserved or unsupported response remains unconfirmed rather than falling back
+to editor clearing or a timer. Consumers must stop their dependent workflow when
+acceptance is unavailable. A maximum of 128 in-memory contexts is retained per
+accessory; there is no history recovery or durable receipt store.
+
+Navigation changes invalidate the mounted editor binding, not an already
+correlated native receipt. Cleanup removes only an
+unchanged, uniquely matching paragraph from the same editor/task; user-edited,
+duplicate, unmounted or actively composing input is left untouched. Such visible
+leftover text can be removed by the user. The interface exposes no draft-reading,
+raw editor, message-sending, model-changing or permission-changing functions.
+
+Only defaults should be persisted by consumers. Accessory handles and task
+binding are disposable, and cleanup is owned by Loader. See the disabled-by-default
+composer example in the bundled example plugin. Native model-call and full submit
+behavior still require explicit runtime acceptance before claiming readiness.
+
 ## Loopback WebSocket transport
 
 `loopback-websocket` is a narrowly scoped local-transport capability for plugins

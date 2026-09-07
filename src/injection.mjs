@@ -1,5 +1,6 @@
 import { integrityLabel } from "./hash.mjs";
 import { buildSettingsHostSource } from "./settings-host.mjs";
+import { buildComposerHostSource } from "./composer-host.mjs";
 
 export function buildBootstrapSource() {
   return `(() => {
@@ -49,11 +50,12 @@ export function wrapScript(descriptor, { force = false } = {}) {
   }
   const record = { id: ${id}, version: ${JSON.stringify(descriptor.version)}, fingerprint: ${fingerprint}, integrity: ${JSON.stringify(integrityLabel(descriptor.fingerprint))}, status: "loading", stop: null };
   runtime.scripts[${id}] = record;
+  const disposers = [];
+  let apiStopped = false;
   try {
     const permissionSet = new Set(${permissions});
     const hostCommandSet = new Set(${hostOperations});
     const settingsPrefix = "codex-script-loader:${descriptor.id}:";
-    const disposers = [];
     const manifest = Object.freeze(${manifest});
     const requirePermission = (permission) => {
       if (!permissionSet.has(permission)) throw new Error(permission + " permission is required");
@@ -121,6 +123,15 @@ export function wrapScript(descriptor, { force = false } = {}) {
       })
     };
     const apiExtensions = {};
+    if (permissionSet.has("composer")) apiExtensions.composer = Object.freeze({
+      registerAccessory: (spec) => {
+        if (apiStopped || runtime.scripts[${id}] !== record) throw new Error("COMPOSER_STOPPED");
+        if (!runtime.composerHost) throw new Error("COMPOSER_UNAVAILABLE");
+        const handle = runtime.composerHost.register(${id}, spec);
+        disposers.push(() => handle.unregister());
+        return handle;
+      }
+    });
     if (permissionSet.has("loopback-websocket")) apiExtensions.localTransport = Object.freeze({
         openWebSocket: (endpoint) => {
           const hostTransport = globalThis.__codexScriptLoaderLocalTransport;
@@ -194,6 +205,7 @@ export function wrapScript(descriptor, { force = false } = {}) {
       finally { if (globalThis[${lifecycleGlobal}] === lifecycleValue) delete globalThis[${lifecycleGlobal}]; }
     } : null;
     if (exportedStop || lifecycleStop || disposers.length) record.stop = (context = { reason: "cleanup" }) => {
+      apiStopped = true;
       try {
         if (exportedStop) exportedStop(context);
         else if (lifecycleStop) lifecycleStop();
@@ -202,6 +214,8 @@ export function wrapScript(descriptor, { force = false } = {}) {
     };
     record.status = "running";
   } catch (error) {
+    apiStopped = true;
+    for (const dispose of disposers.splice(0).reverse()) { try { dispose(); } catch {} }
     record.status = "failed";
     record.error = String(error && (error.stack || error.message) || error);
     if (${lifecycleGlobal}) {
@@ -247,7 +261,7 @@ export function buildRuntimeSnapshotSource() {
 export function buildInjectionSource(descriptors, { forceIds = [] } = {}) {
   if (!Array.isArray(forceIds)) throw new TypeError("forceIds must be an array");
   const forced = new Set(forceIds);
-  return [buildBootstrapSource(), buildSettingsHostSource(), buildLifecycleSyncSource(descriptors), ...descriptors.map(descriptor => wrapScript(descriptor, { force: forced.has(descriptor.id) })), buildRuntimeSnapshotSource()].join("\n");
+  return [buildBootstrapSource(), buildSettingsHostSource(), buildComposerHostSource(), buildLifecycleSyncSource(descriptors), ...descriptors.map(descriptor => wrapScript(descriptor, { force: forced.has(descriptor.id) })), buildRuntimeSnapshotSource()].join("\n");
 }
 
 export function summarizePlan(descriptors) {

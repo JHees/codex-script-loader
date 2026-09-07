@@ -24,6 +24,7 @@ internal static partial class Program
             await TestGitHubPluginInstallAsync(testRoot);
             await TestHostCommandReloadAsync(testRoot);
             await TestBundledSkillInstallAsync(testRoot);
+            await TestComposerInterfaceAsync(testRoot);
             await TestDescriptorAndInjectionAsync(testRoot);
             await TestHostCommandPipeRoundTripAsync(testRoot);
             await TestTrustedInputHostCommandAsync();
@@ -179,7 +180,7 @@ internal static partial class Program
         var plan = await registry.BuildPlanAsync(force: true);
         Equal(1, plan.Scripts.Count, "Bundled script count");
         Equal("dev.codex-script-loader.example-ui", plan.Scripts[0].Id, "Bundled script id");
-        True(plan.Source.Contains("runtime.runtimeVersion = \"0.5.10\"", StringComparison.Ordinal), "Runtime version source");
+        True(plan.Source.Contains("runtime.runtimeVersion = \"0.5.11\"", StringComparison.Ordinal), "Runtime version source");
         True(plan.Source.Contains("__codexScriptLoaderExampleUi", StringComparison.Ordinal), "Lifecycle source");
         True(plan.Source.Contains("installSettingsHost", StringComparison.Ordinal), "Settings host source");
         True(plan.Source.Contains("sha256-" + plan.Scripts[0].Fingerprint, StringComparison.Ordinal), "Integrity source");
@@ -1032,7 +1033,8 @@ internal static partial class Program
 
     private static async Task TestOnlineUpdatePipelineAsync(string testRoot)
     {
-        const string nextVersion = "0.5.11";
+        var currentVersion = Version.Parse(LiveSupervisor.Version);
+        var nextVersion = $"{currentVersion.Major}.{currentVersion.Minor}.{currentVersion.Build + 1}";
         var fixtureRoot = Path.Combine(testRoot, "online-update");
         var installRoot = Path.Combine(fixtureRoot, "install");
         var currentHostRoot = Path.Combine(installRoot, "versions", LiveSupervisor.Version, "win-x64");

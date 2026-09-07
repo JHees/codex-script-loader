@@ -16,7 +16,7 @@ test("bundled example satisfies the public plugin package contract", async () =>
   assert.equal(descriptor.lifecycleGlobal, "__codexScriptLoaderExampleUi");
   assert.equal(descriptor.settingsMode, "page");
   assert.equal(descriptor.documentation, "README.md");
-  assert.deepEqual(descriptor.permissions, ["dom", "local-storage", "settings"]);
+  assert.deepEqual(descriptor.permissions, ["dom", "local-storage", "settings", "composer"]);
   assert.doesNotMatch(descriptor.source, /https?:\/\//iu);
 
   const root = await makeTempRoot();

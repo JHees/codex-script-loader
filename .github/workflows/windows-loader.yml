@@ -10,6 +10,9 @@ on:
       - "windows/**"
       - "packages/example-ui-plugin/**"
       - "src/settings-host.mjs"
+      - "src/composer-host.mjs"
+      - "src/injection.mjs"
+      - "test/**"
       - "Directory.Build.props"
       - "global.json"
       - "NuGet.Config"
@@ -232,6 +235,8 @@ jobs:
           $arm64ZipHash = Get-PackageHash $arm64Zip
           @"
           ## Downloads
+
+          This release adds generic, permission-gated composer accessories, editable visible submission context, task-bound native submission receipts and settings-page navigation. Plugin failure and reload clean up registrations. The Loader-owned example demonstrates these interfaces; no third-party plugin is bundled or automatically installed.
 
           | Windows architecture | Installer | Portable |
           | --- | --- | --- |

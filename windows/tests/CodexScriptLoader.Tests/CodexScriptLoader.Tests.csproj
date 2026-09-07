@@ -16,5 +16,6 @@
     <Content Include="..\..\..\packages\example-ui-plugin\README.md" Link="fixtures\example-ui-plugin\README.md" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\..\packages\example-ui-plugin\LICENSE" Link="fixtures\example-ui-plugin\LICENSE" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\..\src\settings-host.mjs" Link="fixtures\settings-host.mjs" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\..\src\composer-host.mjs" Link="fixtures\composer-host.mjs" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

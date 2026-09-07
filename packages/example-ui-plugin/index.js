@@ -24,6 +24,32 @@
   }
 
   let pageHandle = null;
+  let composerHandle = null;
+
+  function enableComposerExample(enabled) {
+    composerHandle?.unregister();
+    composerHandle = null;
+    if (!enabled || !loaderApi.composer) return;
+    composerHandle = loaderApi.composer.registerAccessory({
+      id: "visible-context-example",
+      render(root, identity) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = "Example context";
+        button.title = "Add a visible example instruction to this draft. This does not send a message.";
+        button.addEventListener("click", () => {
+          try {
+            composerHandle.prepareContext({ ...identity, revision: "example-v1", text: "Explain your assumptions before executing this task." });
+            button.textContent = "Context prepared";
+          } catch {
+            button.textContent = "Context unavailable";
+          }
+        });
+        root.appendChild(button);
+        return () => root.replaceChildren();
+      },
+    });
+  }
 
   function ensureStyle() {
     if (document.getElementById(STYLE_ID)) return;
@@ -95,6 +121,14 @@
     labelText.textContent = "Show an example status badge";
     label.append(checkbox, labelText);
     section.append(heading, description, label);
+    const composerLabel = document.createElement("label");
+    const composerCheckbox = document.createElement("input");
+    composerCheckbox.type = "checkbox";
+    composerCheckbox.checked = composerHandle !== null;
+    composerCheckbox.disabled = !loaderApi.composer;
+    composerCheckbox.addEventListener("change", () => enableComposerExample(composerCheckbox.checked));
+    composerLabel.append(composerCheckbox, document.createTextNode("Show composer context example (off by default)"));
+    section.appendChild(composerLabel);
     root.appendChild(section);
 
     return () => {
@@ -117,6 +151,8 @@
     scriptLoadId,
     setBadgeEnabled,
     stop() {
+      composerHandle?.unregister();
+      composerHandle = null;
       pageHandle?.unregister?.();
       pageHandle = null;
       document.getElementById(BADGE_ID)?.remove();

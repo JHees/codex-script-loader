@@ -222,12 +222,17 @@ public sealed partial class ScriptRegistry
         }
 
         var settingsHost = await File.ReadAllTextAsync(settingsHostModulePath, Encoding.UTF8, cancellationToken).ConfigureAwait(false);
+        var composerPath = Path.Combine(Path.GetDirectoryName(settingsHostModulePath)!, "composer-host.mjs");
+        var composerHost = File.Exists(composerPath)
+            ? await File.ReadAllTextAsync(composerPath, Encoding.UTF8, cancellationToken).ConfigureAwait(false)
+            : null;
         return new InjectionPlan(
             descriptors,
             InjectionSourceBuilder.Build(
                 descriptors,
                 settingsHost,
-                forceIds ?? descriptors.Select(descriptor => descriptor.Id).ToHashSet(StringComparer.Ordinal)),
+                forceIds ?? descriptors.Select(descriptor => descriptor.Id).ToHashSet(StringComparer.Ordinal),
+                composerHost),
             config.SafeMode);
     }
 

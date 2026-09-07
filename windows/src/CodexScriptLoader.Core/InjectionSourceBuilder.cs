@@ -13,11 +13,12 @@ public static class InjectionSourceBuilder
         return Build(descriptors, settingsHostModule, forceIds);
     }
 
-    public static string Build(IReadOnlyList<ScriptDescriptor> descriptors, string settingsHostModule, IReadOnlySet<string> forceIds)
+    public static string Build(IReadOnlyList<ScriptDescriptor> descriptors, string settingsHostModule, IReadOnlySet<string> forceIds, string? composerHostModule = null)
     {
         var builder = new StringBuilder();
         builder.AppendLine(BootstrapSource);
         builder.AppendLine(ExtractSettingsHost(settingsHostModule));
+        if (composerHostModule is not null) builder.AppendLine(ExtractComposerHost(composerHostModule));
         builder.AppendLine(BuildLifecycleSync(descriptors));
         foreach (var descriptor in descriptors)
         {
@@ -26,6 +27,14 @@ public static class InjectionSourceBuilder
 
         builder.AppendLine(SnapshotSource);
         return builder.ToString();
+    }
+
+    private static string ExtractComposerHost(string module)
+    {
+        var start = module.IndexOf("function createSubmissionContext(adapter, pluginId)", StringComparison.Ordinal);
+        var end = module.IndexOf("\nexport function buildComposerHostSource()", StringComparison.Ordinal);
+        if (start < 0 || end <= start) throw new InvalidDataException("Bundled composer host module has an unsupported shape.");
+        return "(() => { " + module[start..end] + "\ninstallComposerHost(); })();";
     }
 
     private static string ExtractSettingsHost(string module)
@@ -117,11 +126,12 @@ public static class InjectionSourceBuilder
           }
           const record = { id: {{id}}, version: {{version}}, fingerprint: {{fingerprint}}, integrity: {{integrity}}, status: "loading", stop: null };
           runtime.scripts[{{id}}] = record;
+          const disposers = [];
+          let apiStopped = false;
           try {
             const permissionSet = new Set({{permissions}});
             const hostCommandSet = new Set({{hostOperations}});
             const settingsPrefix = "codex-script-loader:{{descriptor.Id}}:";
-            const disposers = [];
             const manifest = Object.freeze({{manifest}});
             const requirePermission = (permission) => { if (!permissionSet.has(permission)) throw new Error(permission + " permission is required"); };
             const storage = Object.freeze({
@@ -144,6 +154,15 @@ public static class InjectionSourceBuilder
               events: Object.freeze({ on: (target, type, listener, options) => { target.addEventListener(type, listener, options); const dispose = () => target.removeEventListener(type, listener, options); disposers.push(dispose); return dispose; } })
             };
             const apiExtensions = {};
+            if (permissionSet.has("composer")) apiExtensions.composer = Object.freeze({
+              registerAccessory: (spec) => {
+                if (apiStopped || runtime.scripts[{{id}}] !== record) throw new Error("COMPOSER_STOPPED");
+                if (!runtime.composerHost) throw new Error("COMPOSER_UNAVAILABLE");
+                const handle = runtime.composerHost.register({{id}}, spec);
+                disposers.push(() => handle.unregister());
+                return handle;
+              }
+            });
             if (permissionSet.has("loopback-websocket")) apiExtensions.localTransport = Object.freeze({
                 openWebSocket: (endpoint) => {
                   const hostTransport = globalThis.__codexScriptLoaderLocalTransport;
@@ -207,9 +226,11 @@ public static class InjectionSourceBuilder
             const exportedStop = moduleValue && typeof moduleValue.stop === "function" ? (context) => moduleValue.stop(context) : typeof startResult === "function" ? startResult : startResult && typeof startResult.stop === "function" ? (context) => startResult.stop(context) : null;
             const lifecycleValue = {{lifecycle}} ? globalThis[{{lifecycle}}] : null;
             const lifecycleStop = !exportedStop && lifecycleValue && typeof lifecycleValue.stop === "function" ? () => { try { lifecycleValue.stop(); } finally { if (globalThis[{{lifecycle}}] === lifecycleValue) delete globalThis[{{lifecycle}}]; } } : null;
-            if (exportedStop || lifecycleStop || disposers.length) record.stop = (context = { reason: "cleanup" }) => { try { if (exportedStop) exportedStop(context); else if (lifecycleStop) lifecycleStop(); } finally { for (const dispose of disposers.splice(0).reverse()) { try { dispose(); } catch {} } } };
+            if (exportedStop || lifecycleStop || disposers.length) record.stop = (context = { reason: "cleanup" }) => { apiStopped = true; try { if (exportedStop) exportedStop(context); else if (lifecycleStop) lifecycleStop(); } finally { for (const dispose of disposers.splice(0).reverse()) { try { dispose(); } catch {} } } };
             record.status = "running";
           } catch (error) {
+            apiStopped = true;
+            for (const dispose of disposers.splice(0).reverse()) { try { dispose(); } catch {} }
             record.status = "failed";
             record.error = String(error && (error.stack || error.message) || error);
             if ({{lifecycle}}) {
@@ -227,7 +248,7 @@ public static class InjectionSourceBuilder
     (() => {
       const existing = globalThis.__codexScriptLoader;
       const runtime = existing && typeof existing === "object" ? existing : {};
-      runtime.runtimeVersion = "0.5.10";
+      runtime.runtimeVersion = "0.5.11";
       runtime.documentId = runtime.documentId || Math.random().toString(36).slice(2);
       runtime.scripts = runtime.scripts || Object.create(null);
       runtime.errors = Array.isArray(runtime.errors) ? runtime.errors.slice(-100) : [];

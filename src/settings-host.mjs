@@ -1,4 +1,4 @@
-const SETTINGS_HOST_VERSION = "0.5.10";
+const SETTINGS_HOST_VERSION = "0.5.11";
 
 /*
  * Renderer-only settings host inspired by b-nnett/codex-plusplus.
@@ -11,7 +11,7 @@ function installSettingsHost(version) {
   // Using the approved mark as a mask keeps the sidebar icon aligned with
   // Codex's currentColor-based system settings icons in light and dark themes.
   const loaderBrandMask = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAYAAACNiR0NAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAEYSURBVDhP7dK9K4ZhFMfxj1LkJQMp5CULEjYZFH+ASZn8DwaDyWSRySSLyWgQk1UGYhIZDLIgWQwmyUtXnXJ39eh5PKN8l7vfOdc517nu3+GvUIs21OeJakmNrnCD1jxZLUd4w2ye+C018d3GA2ayfMX04hIDoQ9whjE0ZWfL0oNn7IZewCO6sYFrNGQ1P9KBJ+yEnsI7JkM34xgXaCnUlSS5eYu9Qmwd94WGibRGpzgp/OOSpGe8YLMQm48Ji7HEFu7KNUyM4BUroeuwhg8MRyxd8hkGVcR4FCyFTk9M06xiKHJzWU1ZkhmpcCImSUYt4jAaV8VgOLmPczSiMz/0G7owGnu3jOnYxapJ0/ShHf1hWNrTf775Amv8Ll/zMvAfAAAAAElFTkSuQmCC";
-  const implementationRevision = "0.5.6-native-plugin-list-metadata-tooltip-final";
+  const implementationRevision = "settings-page-navigation-1";
   const current = runtime.settingsHost;
   if (current?.version === version && current?.implementationRevision === implementationRevision) {
     current.start();
@@ -46,6 +46,8 @@ function installSettingsHost(version) {
   let activeTeardown = null;
   let managedPlugins = [];
   let managementRefreshTimer = 0;
+  let openingPage = null;
+  let stopped = false;
 
   const compact = (value) => String(value || "").replace(/\s+/g, " ").trim();
   const normalize = (value) => compact(value).toLocaleLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
@@ -1693,10 +1695,61 @@ function installSettingsHost(version) {
     }, 80);
   }
 
+  // A registered page handle can navigate only to itself, never to an arbitrary route.
+  function openRegisteredPage(entry) {
+    const failure = code => Object.assign(new Error(code), { code });
+    if (stopped || pages.get(entry.id) !== entry) return Promise.reject(failure("SETTINGS_PAGE_UNREGISTERED"));
+    if (openingPage) return openingPage.entry === entry ? openingPage.promise : Promise.reject(failure("SETTINGS_NAVIGATION_BUSY"));
+    let timer = 0, settled = false, clickedSettings = false, openedProfile = false;
+    let resolve, reject;
+    const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+    const finish = code => {
+      if (settled) return;
+      settled = true; clearTimeout(timer);
+      if (openingPage?.entry === entry) openingPage = null;
+      if (code) reject(failure(code)); else resolve();
+    };
+    openingPage = { entry, promise, cancel: () => finish("SETTINGS_PAGE_UNREGISTERED") };
+    const deadline = Date.now() + 5000;
+    const unique = selector => {
+      const nodes = [...document.querySelectorAll(selector)].filter(node => visibleBox(node) && !node.closest("[data-codex-loader-settings]"));
+      if (nodes.length > 1) throw failure("SETTINGS_NAVIGATION_AMBIGUOUS");
+      return nodes[0];
+    };
+    const tick = () => {
+      try {
+        if (stopped || pages.get(entry.id) !== entry) { finish("SETTINGS_PAGE_UNREGISTERED"); return; }
+        if (findSidebar()) {
+          sync(); activate(entry.id);
+          if (activeId === entry.id && panelHost?.isConnected) { finish(); return; }
+        } else if (!clickedSettings) {
+          const items = [...document.querySelectorAll('[role="menuitem"],button[aria-label="Settings"],button[aria-label="设置"]')]
+            .filter(node => visibleBox(node) && !node.closest("[data-codex-loader-settings]") && /^(settings|设置)(?:\s*(?:ctrl\s*\+\s*,|⌘\s*,))?$/i.test(compact(node.getAttribute("aria-label") || node.textContent)));
+          if (items.length > 1) throw failure("SETTINGS_NAVIGATION_AMBIGUOUS");
+          if (items.length === 1) { clickedSettings = true; items[0].click(); }
+          else if (!openedProfile) {
+            const profile = unique('button[aria-haspopup="menu"][aria-label="打开个人资料菜单"],button[aria-haspopup="menu"][aria-label="Open profile menu"]');
+            if (!profile || typeof PointerEvent !== "function") { finish("SETTINGS_NAVIGATION_UNAVAILABLE"); return; }
+            openedProfile = true;
+            if (profile.getAttribute("aria-expanded") !== "true") {
+              profile.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, button: 0, pointerType: "mouse" }));
+              profile.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, button: 0, pointerType: "mouse" }));
+            }
+          }
+        }
+        if (Date.now() >= deadline) { finish("SETTINGS_NAVIGATION_TIMEOUT"); return; }
+        timer = setTimeout(tick, 80);
+      } catch (error) { finish(/^SETTINGS_[A-Z_]+$/.test(error?.code) ? error.code : "SETTINGS_NAVIGATION_UNAVAILABLE"); }
+    };
+    tick();
+    return promise;
+  }
+
   const host = {
     version,
     implementationRevision,
     start() {
+      stopped = false;
       if (!observer) {
         observer = new MutationObserver(scheduleSync);
         observer.observe(document.documentElement, { childList: true, subtree: true });
@@ -1711,10 +1764,15 @@ function installSettingsHost(version) {
         throw new Error("settings page requires id, title and render(root)");
       }
       const id = `${ownerId}:${page.id}`;
-      pages.set(id, { ...page, id, ownerId, manifest });
+      const entry = { ...page, id, ownerId, manifest };
+      pages.set(id, entry);
       scheduleSync();
       if (pendingActiveId === id) setTimeout(() => activate(id), 100);
-      return { unregister() { pages.delete(id); if (activeId === id) { pendingActiveId = id; restoreNative(); } scheduleSync(); } };
+      return { open: () => openRegisteredPage(entry), unregister() {
+        if (openingPage?.entry === entry) openingPage.cancel();
+        if (pages.get(id) !== entry) return;
+        pages.delete(id); if (activeId === id) { pendingActiveId = id; restoreNative(); } scheduleSync();
+      } };
     },
     registerSection(ownerId, manifest, section) {
       if (!section || typeof section.id !== "string" || !section.id || typeof section.title !== "string" || !section.title || typeof section.render !== "function") {
@@ -1729,6 +1787,7 @@ function installSettingsHost(version) {
       return { version, builtinPageCount: 1, pageCount: pages.size, sectionCount: sections.size, activeId, mounted: Boolean(pagesGroup?.isConnected) };
     },
     stop() {
+      stopped = true; openingPage?.cancel();
       runtime.settingsUiState = { activeId: activeId || pendingActiveId, scrollTop: panelSurface?.scrollTop || 0 };
       observer?.disconnect();
       observer = null;

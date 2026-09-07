@@ -6,7 +6,7 @@
     <RootNamespace>CodexScriptLoader.Windows</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>..\..\branding\CodexScriptLoader.ico</ApplicationIcon>
-    <ApplicationVersion>0.5.10.0</ApplicationVersion>
+    <ApplicationVersion>0.5.11.0</ApplicationVersion>
     <PublishSingleFile>false</PublishSingleFile>
     <PublishReadyToRun>false</PublishReadyToRun>
     <SelfContained>false</SelfContained>
@@ -22,5 +22,6 @@
     <Content Include="..\..\..\packages\example-ui-plugin\README.md" Link="bundled\example-ui-plugin\README.md" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="..\..\..\packages\example-ui-plugin\LICENSE" Link="bundled\example-ui-plugin\LICENSE" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="..\..\..\src\settings-host.mjs" Link="bundled\settings-host.mjs" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="..\..\..\src\composer-host.mjs" Link="bundled\composer-host.mjs" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
