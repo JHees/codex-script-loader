@@ -192,13 +192,13 @@ Plugins must not read `globalThis.__codexScriptLoader.activeApi` or other Loader
 
 The handle returned by `api.settings.registerPage(...)` also supports `open(): Promise<void>` on compatible hosts. Call it from an explicit user action to navigate to this plugin's registered page inside the native system settings shell. It accepts no page ID, route, selector or script. It resolves after the page mounts; an unavailable/ambiguous native entry, timeout, concurrent navigation or revoked registration rejects with a stable `SETTINGS_*` error code. Repeated opens of the same page share the pending operation. Unregistering or stopping the host revokes pending and retained handles. Older hosts may omit `open`; feature-detect it and do not claim navigation succeeded or create an undisclosed separate settings UI.
 
-## Composer accessory, visible context and native receipts (candidate interface)
+## Composer accessory, visible context and native receipts
 
 The optional `composer` permission exposes `api.composer.registerAccessory`.
 This is a generic renderer interface, not a Chat client or a message-sending API.
-It requires a host built with the bundled `composer-host.mjs` resource; the product
-version has not been changed for this development work. Published hosts must not
-be assumed to support it because they have the same version number.
+The base interface ships in 0.5.11. Collapsed presentation, restored-draft clearing
+and managed user-change notifications ship in 0.5.12. Use the capability fields
+below to distinguish these extensions, including when testing local candidates.
 
 ```js
 const handle = api.composer.registerAccessory({
@@ -230,11 +230,67 @@ The host locates the unique visible native task editor and its original composer
 controller. It skips tooltip wrappers and mounts immediately before the native
 model control in its verified flex row (after the context indicator when present).
 This uses semantic attributes and computed layout, not compressed class names or
-coordinates. The final candidate placement has not yet been visually accepted.
+coordinates.
 An ambiguous editor, an inconsistent existing task, or
 an unsupported App shape returns `COMPOSER_UNAVAILABLE`. A native Codex editor
 without an existing task gets an instance-local `draftId`, not a guessed task ID.
 Only an accepted native request may resolve that draft to a host and task.
+
+`getStatus().contextDisplay === "collapsed-v1"` advertises
+optional `summary` support on `prepareContext` and `prepareSubmission`. A nonempty
+summary (up to 256 characters) renders the exact owned paragraph as a compact
+Show more/Remove disclosure through the editor's node-view interface. It is
+presentation metadata, not extra model input; the original native serialization
+and submission receipt remain unchanged. The original text is still sent.
+Disclosure starts collapsed. Cursor restoration, selection changes and editor
+refreshes do not expand it; users open it with Show more. A caret restored inside
+the collapsed paragraph is redirected to the preceding editable text before
+typing or composition. If there is no preceding text, a blank paragraph is
+inserted before the instructions. Expanded instructions remain editable; hiding
+them must not route ordinary typing into the instruction block.
+`getStatus().context.display` reports `collapsed` or `unsupported`; unsupported
+editors retain visible text, not a falsely hidden context. User editing, removal,
+navigation and teardown retain the existing context-ownership rules. A conflicting
+paragraph renderer is not overwritten. This is not a hidden-context submission
+hook and does not fold historical sent messages.
+
+On mounting or restoring a draft, the host can also fold a single complete
+context paragraph belonging to the registered plugin, labeled "Saved plugin
+instructions". This restores presentation only: it does not adopt the text,
+create a preparation, restore a receipt, or send anything. The context remains
+`idle`; an attempted new preparation still returns `CONTEXT_EXISTS`. The
+fold's Remove action or an explicit plugin `clearContext()` call deletes that exact paragraph after checking the
+current editor identity. Unregistering removes the presentation but preserves
+unowned draft text. Incomplete, duplicate, mixed-content and other-plugin
+paragraphs are not folded. This also handles draft text arriving after mounting.
+
+### Changes to Loader-managed controls
+
+`getStatus().notifications === "managed-v1"` advertises the optional
+`registerAccessory({ id, render, onChange(event) {} })` callback. It reports user
+changes to content and controls that Loader manages for that accessory. Currently
+this covers composer context disclosure (`expanded`, `collapsed`), native context
+editing (`edited`), and successful use of its Remove control (`removed`). Events
+have `{ target: "context", action, revision, identity }`; `identity` is the bound
+`{ taskId, hostId }` or `{ draftId }`. They contain no draft text or message data.
+
+The callback runs after the change, only for its owning accessory. Exceptions and
+rejected callback promises are isolated. Ordinary user-text edits do not notify;
+context edits are deduplicated by content and observed after native input, including
+composition. `edited` does not assert why an unmatched context disappeared (for
+example, editing its marker); only the explicit Remove control yields `removed`.
+Accepted/dispatched native submissions, restoration, navigation, and teardown do
+not generate user-change events. Plugin-initiated prepare/clear calls also remain
+silent: the caller already knows about its own operation. There are no duplicate
+events for plugin-rendered settings pages, accessory switches, or other controls
+whose handlers the plugin owns. Future Loader-managed controls should follow this
+same ownership and no-echo contract rather than observe arbitrary plugin DOM.
+
+An explicit `clearContext()` also clears a single complete, unchanged restored
+context of that plugin, with the same mounted-editor identity and exact-text checks
+as Remove. It does not adopt that text, create a receipt, or touch another plugin.
+Lifecycle cleanup still preserves unowned restored drafts. Older hosts may ignore
+`onChange`; feature-detect the capability instead of relying on the release version.
 
 `prepareContext` adds a visible paragraph through an editor transaction; it does
 not replace the user's document, focus the editor, simulate a key, click Send,

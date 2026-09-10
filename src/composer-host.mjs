@@ -2,6 +2,19 @@
 function createSubmissionContext(adapter, pluginId) {
   let current = null;
   let stopped = false;
+  let presentation = null;
+  let display = "text";
+  let restored = null;
+  let observed = null;
+  const notify = (action, entry = current ?? restored) => {
+    if (!stopped && entry) adapter.notify?.({ target: "context", action, revision: entry.revision });
+  };
+  const removed = () => {
+    const entry = current ?? restored;
+    if (!entry || adapter.count(entry.block) !== 1) fail("CONTEXT_EDITED");
+    clear(true); notify("removed", entry);
+  };
+  const disclosure = expanded => notify(expanded ? "expanded" : "collapsed");
   const fail = (code) => { throw Object.assign(new Error(code), { code }); };
   const sameTask = identity => identity && identity.taskId === current?.taskId && identity.hostId === current?.hostId && identity.draftId === current?.draftId;
   function status() {
@@ -9,17 +22,48 @@ function createSubmissionContext(adapter, pluginId) {
     if (!current) return { state: "idle" };
     const count = sameTask(adapter.identity()) ? adapter.count(current.block) : -1;
     return { state: count < 0 ? "task-changed" : count === 1 ? "prepared" : count === 0 ? "missing-or-edited" : "ambiguous",
-      ...(current.draftId ? { draftId: current.draftId } : { taskId: current.taskId, hostId: current.hostId }), revision: current.revision };
+      ...(current.draftId ? { draftId: current.draftId } : { taskId: current.taskId, hostId: current.hostId }), revision: current.revision, ...(current.summary !== undefined ? {display} : {}) };
   }
-  function clear() {
+  function clear(includeRestored = false) {
+    // A restored fold is presentation only, not an adopted editable context.
+    if (!current && !(includeRestored && restored)) return;
+    if (!current) {
+      if (adapter.count(restored.block) !== 1) fail("CONTEXT_EDITED");
+      adapter.remove(restored.block);
+    }
     if (current && sameTask(adapter.identity()) && adapter.count(current.block) === 1) adapter.remove(current.block);
     current = null;
+    restored = null; observed = null;
+    presentation?.stop(); presentation = null; display = "text";
   }
   return Object.freeze({
     status,
+    userEdit() {
+      const entry = current ?? restored;
+      if (stopped || !entry) return;
+      const prefix = `[Loader context: ${pluginId} / ${entry.revision}]`;
+      const text = JSON.stringify((adapter.paragraphs?.() ?? []).filter(p => p.startsWith(prefix)));
+      if (text === observed) return;
+      observed = text; notify("edited", entry);
+    },
+    refreshPresentation() {
+      if (stopped || current || presentation || typeof adapter.fold !== "function") return;
+      const prefix = `[Loader context: ${pluginId} / `;
+      const candidates = (adapter.paragraphs?.() ?? []).filter(text => text.startsWith(prefix));
+      if (candidates.length !== 1) return;
+      const block = candidates[0];
+      const match = block.slice(prefix.length).match(/^([A-Za-z0-9._:-]{1,128})\]\n([\s\S]+)\n\[\/Loader context\]$/);
+      if (!match || match[2].includes("[Loader context:") || match[2].includes("[/Loader context]")
+        || match[2].includes("\0") || new TextEncoder().encode(match[2]).length > 8192) return;
+      // Never manufacture a preparation or receipt from persisted draft text.
+      restored = { block, revision: match[1] };
+      observed = JSON.stringify([block]);
+      presentation = adapter.fold(block, adapter.restoredSummary ?? "Saved plugin instructions", removed, disclosure) ?? null;
+    },
     prepare(input) {
       if (stopped) fail("COMPOSER_STOPPED");
       const fields = input?.draftId !== undefined ? ["draftId", "revision", "text"] : ["taskId", "hostId", "revision", "text"];
+      if (input?.summary !== undefined) fields.push("summary");
       if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).length !== fields.length || fields.some(k => typeof input[k] !== "string" || !input[k].trim())) fail("INVALID_CONTEXT");
       if (!/^[A-Za-z0-9._:-]{1,128}$/.test(input.revision) || fields.filter(k => k !== "text").some(k => input[k].length > 256) || new TextEncoder().encode(input.text).length > 8192 || input.text.includes("\0")) fail("INVALID_CONTEXT");
       const identity = adapter.identity();
@@ -36,11 +80,77 @@ function createSubmissionContext(adapter, pluginId) {
       if (current) adapter.replace(current.block, next.block);
       else adapter.insert(next.block);
       current = next;
+      restored = null; observed = JSON.stringify([next.block]);
+      presentation?.stop(); presentation = null;
+      if (input.summary !== undefined) {
+        presentation = adapter.fold?.(next.block, input.summary, removed, disclosure) ?? null;
+        display = presentation ? "collapsed" : "unsupported";
+      } else display = "text";
       return status();
     },
     clear,
-    stop() { if (!stopped) { try { clear(); } finally { stopped = true; } } },
+    stop() { if (!stopped) { try { clear(); } finally { stopped = true; presentation?.stop(); presentation = null; } } },
   });
+}
+
+// Fold presentation and caret routing; instruction text is never rewritten.
+function mountContextFold(view, block, summary, remove, changed) {
+  if (typeof view?.setProps !== "function" || !view.props || view.nodeViews?.paragraph || view.composing) return null;
+  const document = view.dom.ownerDocument;
+  const zh = /^zh/i.test(document.documentElement.lang);
+  const matches = node => node.type.name === "paragraph" && node.textBetween(0, node.content.size, "", "\n") === block;
+  let stopped = false;
+  const factory = (node, _view, getPos) => {
+    if (stopped || !matches(node)) return undefined;
+    const dom = document.createElement("div"), bar = document.createElement("div"), contentDOM = document.createElement("p");
+    dom.dataset.loaderContextFold = "true";
+    dom.style.cssText = "margin:6px 0;border:1px solid var(--color-token-border,ButtonBorder);border-radius:10px;padding:6px 8px;";
+    bar.contentEditable = "false";
+    bar.style.cssText = "display:flex;align-items:center;gap:8px;font-size:12px;";
+    const title = document.createElement("span"), toggle = document.createElement("button"), erase = document.createElement("button");
+    title.textContent = summary; title.style.cssText = "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap";
+    title.title = summary;
+    for (const button of [toggle, erase]) { button.type = "button"; button.style.cssText = "font:inherit;color:inherit;background:transparent;border:0;padding:2px 4px;cursor:pointer;white-space:nowrap"; }
+    erase.textContent = zh ? "移除" : "Remove";
+    let expanded = false;
+    const show = value => { expanded = value; contentDOM.hidden = !value; toggle.textContent = value ? (zh ? "收起" : "Show less") : (zh ? "显示更多" : "Show more"); toggle.setAttribute("aria-expanded", String(value)); };
+    toggle.onclick = () => { toggle.focus(); show(!expanded); changed?.(expanded); };
+    erase.onclick = () => { try { remove(); } catch (error) { title.textContent = /^[A-Z_]+$/.test(error?.code) ? error.code : "CONTEXT_EDITED"; show(true); } };
+    const redirectCaret = () => {
+      if (expanded || stopped || view.isDestroyed || view.composing) return;
+      const pos = getPos();
+      const { selection } = view.state;
+      if (typeof pos !== "number" || selection.from <= pos || selection.to >= pos + node.nodeSize) return;
+      const tr = view.state.tr;
+      let target = selection.constructor.findFrom(tr.doc.resolve(pos), -1, true);
+      if (!target) {
+        // A context-only draft needs a normal text paragraph, never input in metadata.
+        tr.insert(pos, view.state.schema.nodes.paragraph.create());
+        target = selection.constructor.findFrom(tr.doc.resolve(pos), 1, true);
+      }
+      view.dispatch(tr.setSelection(target).setMeta("addToHistory", false));
+    };
+    document.addEventListener("selectionchange", redirectCaret);
+    for (const event of ["focus", "beforeinput", "compositionstart"]) view.dom.addEventListener(event, redirectCaret, true);
+    bar.append(title, toggle, erase); dom.append(bar, contentDOM); show(false);
+    return {
+      dom, contentDOM,
+      update(next) { if (!matches(next)) return false; node = next; return true; },
+      stopEvent: event => bar.contains(event.target),
+      ignoreMutation: mutation => mutation.type !== "selection" && (bar.contains(mutation.target) || (mutation.type === "attributes" && mutation.target === contentDOM)),
+      destroy() {
+        document.removeEventListener("selectionchange", redirectCaret);
+        for (const event of ["focus", "beforeinput", "compositionstart"]) view.dom.removeEventListener(event, redirectCaret, true);
+      },
+    };
+  };
+  view.setProps({nodeViews:{...view.props.nodeViews,paragraph:factory}});
+  return { stop() {
+    if (stopped) return; stopped = true;
+    if (!view.isDestroyed && view.props.nodeViews?.paragraph === factory) {
+      const next = {...view.props.nodeViews}; delete next.paragraph; view.setProps({nodeViews:next});
+    }
+  }};
 }
 
 function createSubmissionReceipts() {
@@ -110,7 +220,7 @@ function createSubmissionReceipts() {
 function installComposerHost() {
   const runtime = globalThis.__codexScriptLoader;
   if (!runtime) return;
-  const revision = "composer-native-submission-4";
+  const revision = "composer-native-submission-10";
   if (runtime.composerHost?.revision === revision) return;
   runtime.composerHost?.stop();
   const registrations = new Map();
@@ -173,7 +283,7 @@ function installComposerHost() {
     }
     return { editor, controller, identity, anchor };
   }
-  function adapterFor(binding) {
+  function adapterFor(binding, notify) {
     const paragraphText = node => node.textBetween(0, node.content.size, "", "\n");
     function positions(text) {
       const matches = [];
@@ -211,15 +321,20 @@ function installComposerHost() {
       view.dispatch(tr);
     }
     return {
+      notify,
       identity() { const active = locate(); return active?.editor === binding.editor && active.controller === binding.controller ? active.identity : null; },
+      paragraphs() { const texts = []; binding.controller.view.state.doc.forEach(node => { if (node.type.name === "paragraph") texts.push(paragraphText(node)); }); return texts; },
+      restoredSummary: /^zh/i.test(document.documentElement.lang) ? "插件说明（已有草稿）" : "Saved plugin instructions",
       count: text => positions(text).length,
       hasPrefix(prefix) { let found = false; binding.controller.view.state.doc.forEach(node => { if (node.type.name === "paragraph" && node.textContent.startsWith(prefix)) found = true; }); return found; },
       insert: text => write(null, text),
       remove: text => write(text, null),
       replace: (before, after) => write(before, after),
+      fold: (block, summary, remove, changed) => mountContextFold(binding.controller.view, block, summary, remove, changed),
     };
   }
   function unmount(record) {
+    record.stopInput?.(); record.stopInput = null;
     try { record.cleanup?.(); } catch { /* Plugin cleanup must not prevent host cleanup. */ }
     try { record.context?.stop(); } catch { /* An edited draft stays untouched. */ }
     record.root?.remove();
@@ -232,7 +347,7 @@ function installComposerHost() {
     if (record.failed) return { available: false, reason: "ACCESSORY_RENDER_FAILED" };
     const active = locate();
     if (!active || active.editor !== record.binding?.editor || !sameIdentity(active.identity, record.binding.identity)) return { available: false, reason: "COMPOSER_UNAVAILABLE" };
-    return { available: true, ...active.identity, placement: "native-controls", context: record.context.status() };
+    return { available: true, ...active.identity, placement: "native-controls", contextDisplay: "collapsed-v1", notifications: "managed-v1", context: record.context.status() };
   }
   function refresh() {
     const active = locate();
@@ -242,7 +357,31 @@ function installComposerHost() {
         unmount(record);
         if (!active || record.closed || registrations.get(record.pluginId + ":" + record.id) !== record) continue;
         record.binding = active;
-        record.context = createSubmissionContext(adapterFor(active), record.pluginId);
+        record.context = createSubmissionContext(adapterFor(active, change => {
+          if (!snapshot(record).available) return;
+          if (change.action === "removed" && record.prepared) {
+            if (record.receipts.get(record.prepared.bindingId).state === "prepared") record.receipts.clear(record.prepared.bindingId);
+            record.prepared = null;
+          }
+          try { Promise.resolve(record.onChange?.(Object.freeze({ ...change, identity: Object.freeze({ ...active.identity }) }))).catch(() => {}); }
+          catch { /* A plugin callback must not break the native control. */ }
+        }), record.pluginId);
+        let inputTimer = null;
+        const input = () => {
+          if (inputTimer !== null) return;
+          inputTimer = setTimeout(() => {
+            inputTimer = null;
+            if (!snapshot(record).available || active.controller.view.composing) return;
+            if (record.prepared && !["prepared", "rejected"].includes(record.receipts.get(record.prepared.bindingId).state)) return;
+            record.context?.userEdit();
+          }, 0);
+        };
+        active.editor.addEventListener("input", input);
+        active.editor.addEventListener("compositionend", input);
+        record.stopInput = () => {
+          active.editor.removeEventListener("input", input); active.editor.removeEventListener("compositionend", input);
+          if (inputTimer !== null) clearTimeout(inputTimer);
+        };
         const root = document.createElement("span");
         root.dataset.loaderComposerAccessory = record.pluginId + ":" + record.id;
         root.style.display = "inline-flex";
@@ -254,6 +393,7 @@ function installComposerHost() {
         try { record.cleanup = record.render(root, Object.freeze({ ...active.identity })); }
         catch { unmount(record); record.failed = true; }
       }
+      record.context?.refreshPresentation();
     }
   }
   function schedule() {
@@ -273,11 +413,11 @@ function installComposerHost() {
   runtime.composerHost = Object.freeze({
     revision,
     register(pluginId, spec) {
-      if (!spec || !/^[a-zA-Z0-9._-]{1,64}$/.test(spec.id) || typeof spec.render !== "function") fail("INVALID_ACCESSORY");
+      if (!spec || !/^[a-zA-Z0-9._-]{1,64}$/.test(spec.id) || typeof spec.render !== "function" || (spec.onChange !== undefined && typeof spec.onChange !== "function")) fail("INVALID_ACCESSORY");
       const key = pluginId + ":" + spec.id;
       if (registrations.has(key)) fail("ACCESSORY_EXISTS");
       if (registrations.size >= 16) fail("ACCESSORY_LIMIT");
-      const record = { pluginId, id: spec.id, render: spec.render, root: null, binding: null, context: null, cleanup: null, closed: false, receipts: createSubmissionReceipts(), prepared: null };
+      const record = { pluginId, id: spec.id, render: spec.render, onChange: spec.onChange, root: null, binding: null, context: null, cleanup: null, closed: false, receipts: createSubmissionReceipts(), prepared: null };
       registrations.set(key, record);
       start(); refresh();
       return Object.freeze({
@@ -299,8 +439,8 @@ function installComposerHost() {
           const controller = record.binding.controller;
           if (typeof controller.getText !== "function") fail("SUBMISSION_UNSUPPORTED");
           if (previous) record.context.clear();
-          record.context.prepare({ ...input, revision: bindingId });
           try {
+            record.context.prepare({ ...input, revision: bindingId });
             // Capture the native serializer's output rather than duplicating Markdown escaping rules.
             const documentText = controller.getText();
             const marker = documentText.indexOf(bindingId);
@@ -317,7 +457,9 @@ function installComposerHost() {
         prepareContext: input => { if (record.closed) fail("COMPOSER_STOPPED"); if (!snapshot(record).available) fail("COMPOSER_UNAVAILABLE"); return record.context.prepare(input); },
         clearContext: () => {
           if (record.closed) return;
-          record.context?.clear();
+          if (!snapshot(record).available) fail("COMPOSER_UNAVAILABLE");
+          record.context?.refreshPresentation();
+          record.context?.clear(true);
           if (record.prepared && record.receipts.get(record.prepared.bindingId).state === "prepared") record.receipts.clear(record.prepared.bindingId);
           record.prepared = null;
         },
@@ -340,7 +482,7 @@ function installComposerHost() {
 }
 
 export function buildComposerHostSource() {
-  return `(() => { ${createSubmissionContext.toString()}\n${createSubmissionReceipts.toString()}\n${installComposerHost.toString()}\ninstallComposerHost(); })();`;
+  return `(() => { ${mountContextFold.toString()}\n${createSubmissionContext.toString()}\n${createSubmissionReceipts.toString()}\n${installComposerHost.toString()}\ninstallComposerHost(); })();`;
 }
 
-export { createSubmissionContext, createSubmissionReceipts };
+export { createSubmissionContext, createSubmissionReceipts, mountContextFold };

@@ -248,7 +248,7 @@ public static class InjectionSourceBuilder
     (() => {
       const existing = globalThis.__codexScriptLoader;
       const runtime = existing && typeof existing === "object" ? existing : {};
-      runtime.runtimeVersion = "0.5.11";
+      runtime.runtimeVersion = "0.5.12";
       runtime.documentId = runtime.documentId || Math.random().toString(36).slice(2);
       runtime.scripts = runtime.scripts || Object.create(null);
       runtime.errors = Array.isArray(runtime.errors) ? runtime.errors.slice(-100) : [];

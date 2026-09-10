@@ -1,11 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import vm from "node:vm";
+import { readFileSync } from "node:fs";
 import { buildComposerHostSource } from "../src/composer-host.mjs";
 
 // Small local App stand-in: exercises the real host, including its editor adapter.
 // No browser, native App, message sender, or third-party plugin is used.
-function fixture() {
+function fixture(source = buildComposerHostSource()) {
   const paragraph = content => {
     const parts = Array.isArray(content) ? content : [content];
     const text = parts.map(p => typeof p === "string" ? p : "\n").join("");
@@ -15,7 +16,10 @@ function fixture() {
   const doc = () => ({ content: { size: nodes.reduce((sum, node) => sum + node.nodeSize, 0) }, forEach(fn) { let offset = 0; for (const node of nodes) { fn(node, offset); offset += node.nodeSize; } } });
   const row = { children: [], before: null, appendChild(child) { this.children.push(child); child.isConnected = true; child.parentElement = this; }, insertBefore(child, before) { this.before = before; this.appendChild(child); } };
   const anchor = { parentElement: row };
-  const editor = { isConnected: true, getClientRects: () => [{}], closest: () => ({ querySelector: () => anchor }) };
+  const editorListeners = new Map();
+  const editor = { isConnected: true, getClientRects: () => [{}], closest: () => ({ querySelector: () => anchor }),
+    addEventListener(type, listener) { if (!editorListeners.has(type)) editorListeners.set(type, new Set()); editorListeners.get(type).add(listener); },
+    removeEventListener(type, listener) { editorListeners.get(type)?.delete(listener); if (!editorListeners.get(type)?.size) editorListeners.delete(type); } };
   let edits = 0, maps = 0, observations = 0, disconnects = 0, nextId = 0, refresh;
   const view = { dom: editor, composing: false, dispatch(tr) { tr.apply(); edits++; } };
   Object.defineProperty(view, "state", { get() { return {
@@ -37,11 +41,52 @@ function fixture() {
     addEventListener(type, callback) { listeners.set(type, callback); },
     removeEventListener(type) { listeners.delete(type); },
   });
-  vm.runInContext(buildComposerHostSource(), context);
-  return { host: context.__codexScriptLoader.composerHost, context, nodes, taskProps, view, row, anchor, listeners,
+  vm.runInContext(source, context);
+  return { host: context.__codexScriptLoader.composerHost, context, nodes, taskProps, view, row, anchor, listeners, editorListeners, paragraph,
     refresh: async () => { refresh(); await new Promise(resolve => setTimeout(resolve, 5)); },
     counts: () => ({ edits, maps, observations, disconnects }) };
 }
+
+function windowsComposerSource() {
+  const module = readFileSync(new URL("../src/composer-host.mjs",import.meta.url),"utf8");
+  // The shipped native builder starts at this stable function, not the module header.
+  const start=module.indexOf("function createSubmissionContext(adapter, pluginId)");
+  const end=module.indexOf("\nexport function buildComposerHostSource()");
+  assert.ok(start>=0 && end>start);
+  return `(() => {${module.slice(start,end)}\ninstallComposerHost();})()`;
+}
+
+test("the installed Windows extraction contract includes optional presentation helpers", () => {
+  const f=fixture(windowsComposerSource());
+  const handle=f.host.register("example.context",{id:"control",render(){}});
+  handle.prepareSubmission({taskId:"task-a",hostId:"local",revision:"one",text:"An instruction",summary:"A summary"});
+  assert.equal(handle.getStatus().context.state,"prepared");
+  assert.equal(handle.getStatus().context.display,"unsupported"); // Stand-in has no native view renderer.
+  handle.unregister();assert.equal(f.nodes.length,1);
+});
+
+test("native host routes managed user changes only to the owning accessory and isolates callbacks", async () => {
+  const f = fixture(windowsComposerSource()), events = [], other = [];
+  const inputEvent = () => { for (const listener of f.editorListeners.get("input")) listener(); };
+  const handle = f.host.register("example.context", { id: "control", render() {}, onChange(event) { events.push(event); throw Error("isolated"); } });
+  f.host.register("example.other", { id: "control", render() {}, onChange: event => other.push(event) });
+  const input = { taskId: "task-a", hostId: "local", revision: "one", text: "Original instruction" };
+  handle.prepareSubmission(input);
+  assert.equal(handle.getStatus().notifications, "managed-v1");
+  assert.equal(events.length, 0);
+  f.nodes[1] = f.paragraph(f.nodes[1].textContent.replace("Original", "Edited"));
+  inputEvent();
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(events.length, 1); assert.equal(other.length, 0);
+  assert.deepEqual(JSON.parse(JSON.stringify(events[0])), { target: "context", action: "edited", revision: "submission-test-receipt-1", identity: { taskId: "task-a", hostId: "local" } });
+  f.nodes[0] = f.paragraph("Changed user text");
+  inputEvent(); await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(events.length, 1);
+  f.taskProps.conversationId = "task-b";
+  inputEvent(); await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(events.length, 1);
+  f.host.stop(); assert.equal(f.editorListeners.size, 0);
+});
 
 test("actual renderer host binds one accessory and edits via a selection-preserving transaction", () => {
   const f = fixture();
@@ -75,9 +120,10 @@ test("visible context uses native line breaks that survive normal draft editing"
   assert.equal(f.nodes.length, 1);
 });
 
-test("a plugin can read its accepted native submission after the draft disappears", () => {
+test("a plugin can read its accepted native submission after the draft disappears", async () => {
   const f = fixture();
-  const handle = f.host.register("example.context", { id: "control", render() {} });
+  const changes = [];
+  const handle = f.host.register("example.context", { id: "control", render() {}, onChange: event => changes.push(event) });
   const prepared = handle.prepareSubmission({ taskId: "task-a", hostId: "local", revision: "config-1", text: "Use example_workflow" });
   assert.equal(prepared.state, "prepared");
   const serialized = f.nodes.map(n => n.textContent.replaceAll('_', '\\_')).join('\n');
@@ -87,6 +133,9 @@ test("a plugin can read its accepted native submission after the draft disappear
   f.listeners.get("message")({ source: null, data: { type: "mcp-response", hostId: "local", message: { id: "request-1", result: { turn: { id: "turn-1" } } } } });
   assert.equal(handle.getSubmission(prepared.bindingId).state, "accepted");
   assert.equal(handle.getSubmission(prepared.bindingId).turnId, "turn-1");
+  for (const listener of f.editorListeners.get("input")) listener();
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(changes.length, 0, "accepted native submission is not a user removal");
   handle.unregister();
   assert.equal(f.listeners.size, 0);
 });
@@ -157,4 +206,43 @@ test("an unsent preparation in another task does not block the new task", async 
   await f.refresh();
   assert.doesNotThrow(() => handle.prepareSubmission({ hostId: "local", taskId: "task-b", revision: "two", text: "Second task" }));
   handle.unregister();
+});
+
+test("returning to a saved draft restores presentation without editing text or registering a submission", async () => {
+  const f = fixture(windowsComposerSource());
+  f.view.props = { nodeViews: {} }; f.view.nodeViews = {};
+  f.view.dom.ownerDocument = { documentElement: { lang: "en" } };
+  f.view.setProps = function(next) { this.props = { ...this.props, ...next }; this.nodeViews = this.props.nodeViews; };
+  const handle = f.host.register("example.context", { id: "control", render() {} });
+  const receipt = handle.prepareSubmission({ hostId: "local", taskId: "task-a", revision: "one", text: "Saved instructions", summary: "Example" });
+  const saved = [...f.nodes];
+  f.taskProps.conversationId = "task-b"; f.nodes.splice(1);
+  await f.refresh();
+  assert.equal(f.view.props.nodeViews.paragraph, undefined);
+  f.taskProps.conversationId = "task-a";
+  await f.refresh(); // Native draft contents can arrive after the editor mounts.
+  f.nodes.splice(0, f.nodes.length, ...saved);
+  const edits = f.counts().edits;
+  await f.refresh();
+  assert.equal(typeof f.view.props.nodeViews.paragraph, "function");
+  assert.deepEqual(f.nodes, saved);
+  assert.equal(f.counts().edits, edits);
+  assert.equal(handle.getStatus().context.state, "idle");
+  assert.equal(handle.getSubmission(receipt.bindingId).state, "prepared");
+  assert.throws(() => handle.prepareSubmission({ hostId: "local", taskId: "task-a", revision: "two", text: "New instructions" }), { code: "CONTEXT_EXISTS" });
+  assert.equal(typeof f.view.props.nodeViews.paragraph, "function", "a rejected preparation must not remove restored presentation");
+  handle.unregister();
+  assert.equal(f.view.props.nodeViews.paragraph, undefined);
+  assert.deepEqual(f.nodes, saved, "unregister does not adopt and erase a restored draft");
+  const reloaded = f.host.register("example.context", { id: "control", render() {} });
+  assert.equal(typeof f.view.props.nodeViews.paragraph, "function", "a fresh registration also restores existing draft presentation");
+  assert.equal(reloaded.getSubmission(receipt.bindingId).state, "unknown");
+  assert.equal(f.counts().edits, edits);
+  reloaded.unregister();
+  assert.deepEqual(f.nodes, saved);
+  const events = [];
+  const clearer = f.host.register("example.context", { id: "control", render() {}, onChange: event => events.push(event) });
+  clearer.clearContext();
+  assert.deepEqual(f.nodes, [saved[0]], "explicit clear removes only the exact restored instructions");
+  assert.equal(events.length, 0); clearer.unregister();
 });

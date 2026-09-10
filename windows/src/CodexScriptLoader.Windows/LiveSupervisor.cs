@@ -17,7 +17,7 @@ internal enum ManagedCodexExitReason
 
 internal sealed class LiveSupervisor : IAsyncDisposable
 {
-    public const string Version = "0.5.11";
+    public const string Version = "0.5.12";
     private const string TrustedInputPermission = "trusted-input";
     private static readonly TimeSpan GracefulRestartShutdownTimeout = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan ForcedRestartShutdownTimeout = TimeSpan.FromSeconds(10);

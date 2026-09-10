@@ -19,6 +19,15 @@ function fixture() {
 }
 const request = { taskId: "task-a", hostId: "local", revision: "r1", text: "Use the installed example workflow." };
 
+test("optional summary is presentation metadata, never an extra submitted instruction", () => {
+  const f = fixture();
+  assert.equal(f.context.prepare({...request,summary:"Example · Show more"}).display,"unsupported");
+  assert.equal(f.paragraphs[2].includes("Example · Show more"),false);
+  assert.ok(f.paragraphs[2].includes(request.text));
+  assert.throws(()=>fixture().context.prepare({...request,summary:"x".repeat(257)}),{code:"INVALID_CONTEXT"});
+  f.context.clear();assert.equal(f.paragraphs.length,2);
+});
+
 test("preparing visible context appends without replacing the user draft", () => {
   const f = fixture();
   assert.deepEqual(f.context.prepare(request), { state: "prepared", taskId: "task-a", hostId: "local", revision: "r1" });
@@ -104,4 +113,81 @@ test("a leftover annotation is not adopted or duplicated by a new registration",
   f.paragraphs.push("[Loader context: example.workflow / old]\nA user-edited leftover");
   assert.throws(() => f.context.prepare(request), { code: "CONTEXT_EXISTS" });
   assert.equal(f.edits, 0);
+});
+
+test("saved context presentation is read-only until its own Remove button is used", () => {
+  const block = "[Loader context: example.workflow / saved]\nAn existing instruction\n[/Loader context]";
+  const paragraphs = ["User text", block];
+  let remove, stops = 0, folds = 0;
+  const context = createSubmissionContext({
+    paragraphs: () => paragraphs,
+    count: text => paragraphs.filter(p => p === text).length,
+    remove: text => paragraphs.splice(paragraphs.indexOf(text), 1),
+    fold(text, summary, erase) { assert.equal(text, block); assert.ok(summary); remove = erase; folds++; return { stop() { stops++; } }; },
+  }, "example.workflow");
+  context.refreshPresentation(); context.refreshPresentation();
+  assert.equal(folds, 1);
+  assert.deepEqual(context.status(), { state: "idle" });
+  context.clear();
+  assert.equal(stops, 0, "clearing an unowned context does not discard the presentation");
+  assert.deepEqual(paragraphs, ["User text", block]);
+  remove();
+  assert.deepEqual(paragraphs, ["User text"]); assert.equal(stops, 1);
+  context.stop(); context.refreshPresentation(); assert.equal(folds, 1);
+});
+
+test("restored folds ignore incomplete, mixed, duplicate and other-plugin annotations", () => {
+  const block = "[Loader context: example.workflow / saved]\nInstructions\n[/Loader context]";
+  for (const paragraphs of [[block + " User text"], ["User text " + block], [block.replace("[/Loader context]", "")],
+    [block, block], [block.replace("example.workflow", "another.plugin")], [block + "\n" + block]]) {
+    let folds = 0;
+    const context = createSubmissionContext({ paragraphs: () => paragraphs, fold() { folds++; } }, "example.workflow");
+    context.refreshPresentation();
+    assert.equal(folds, 0);
+    context.stop();
+  }
+});
+
+test("managed context actions notify once, while API changes and teardown stay silent", () => {
+  const paragraphs = ["User draft"], events = [];
+  let erase, disclosure;
+  const context = createSubmissionContext({
+    identity: () => ({ taskId: "task-a", hostId: "local" }),
+    paragraphs: () => paragraphs,
+    count: text => paragraphs.filter(p => p === text).length,
+    hasPrefix: prefix => paragraphs.some(p => p.startsWith(prefix)),
+    insert: text => paragraphs.push(text),
+    remove: text => paragraphs.splice(paragraphs.indexOf(text), 1),
+    notify: event => events.push(event),
+    fold(_text, _summary, remove, changed) { erase = remove; disclosure = changed; return { stop() {} }; },
+  }, "example.workflow");
+  context.prepare({ ...request, summary: "Workflow" });
+  assert.equal(events.length, 0);
+  disclosure(true); disclosure(false);
+  paragraphs[1] = paragraphs[1].replace("installed", "selected");
+  context.userEdit(); context.userEdit();
+  paragraphs[0] += " normal typing"; context.userEdit();
+  assert.deepEqual(events.map(event => event.action), ["expanded", "collapsed", "edited"]);
+  assert.ok(events.every(event => event.target === "context" && event.revision === "r1"));
+  context.clear(); // Edited text is not silently deleted.
+  paragraphs.splice(1);
+  context.prepare({ ...request, summary: "Workflow" }); erase();
+  assert.equal(events.at(-1).action, "removed");
+  assert.deepEqual(paragraphs, ["User draft normal typing"]);
+  context.prepare({ ...request, summary: "Workflow" }); context.clear(); context.stop();
+  assert.equal(events.length, 4);
+});
+
+test("explicit API clear can remove a restored exact context without notification or adoption", () => {
+  const block = "[Loader context: example.workflow / saved]\nSaved instructions\n[/Loader context]";
+  const paragraphs = ["User text", block], events = [];
+  const context = createSubmissionContext({
+    paragraphs: () => paragraphs, count: text => paragraphs.filter(p => p === text).length,
+    remove: text => paragraphs.splice(paragraphs.indexOf(text), 1),
+    notify: event => events.push(event), fold() { return { stop() {} }; },
+  }, "example.workflow");
+  context.refreshPresentation();
+  assert.equal(context.status().state, "idle");
+  context.clear(true);
+  assert.deepEqual(paragraphs, ["User text"]); assert.deepEqual(events, []);
 });
