@@ -7,6 +7,9 @@ internal sealed class DiagnosticsForm : Form
 {
     private readonly TextBox content;
     private readonly Button exportButton;
+    private readonly Button exitButton;
+
+    public event EventHandler? ExitRequested;
 
     public DiagnosticsForm()
     {
@@ -28,7 +31,14 @@ internal sealed class DiagnosticsForm : Form
             AutoSize = true,
         };
         exportButton.Click += (_, _) => ExportDiagnostics();
+        exitButton = new Button
+        {
+            Text = "Exit Loader",
+            AutoSize = true,
+        };
+        exitButton.Click += (_, _) => ExitRequested?.Invoke(this, EventArgs.Empty);
         commands.Controls.Add(exportButton);
+        commands.Controls.Add(exitButton);
         content = new TextBox
         {
             Dock = DockStyle.Fill,

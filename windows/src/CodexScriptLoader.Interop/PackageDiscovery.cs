@@ -7,6 +7,7 @@ namespace CodexScriptLoader.Interop;
 public static partial class PackageDiscovery
 {
     public const string CodexPackageFamilyName = "OpenAI.Codex_2p2nqsd0c76g0";
+    private const string PrimaryCodexApplicationId = "App";
     private const int ErrorInsufficientBuffer = 122;
     private const int ErrorNoMoreItems = 259;
 
@@ -32,11 +33,6 @@ public static partial class PackageDiscovery
     private static CodexPackageIdentity CreateIdentity(string familyName, string fullName)
     {
         var applicationIds = GetApplicationIds(fullName);
-        if (applicationIds.Count != 1)
-        {
-            throw new InvalidOperationException(
-                $"Expected exactly one application id for '{fullName}', found {applicationIds.Count}.");
-        }
 
         var versionMatch = PackageVersionRegex().Match(fullName);
         if (!versionMatch.Success || !Version.TryParse(versionMatch.Groups[1].Value, out var version))
@@ -45,7 +41,7 @@ public static partial class PackageDiscovery
         }
 
         var architecture = versionMatch.Groups[2].Value;
-        var returnedApplicationId = applicationIds[0];
+        var returnedApplicationId = SelectApplicationIdForActivation(familyName, fullName, applicationIds);
         var aumidPrefix = $"{familyName}!";
         var applicationId = returnedApplicationId.StartsWith(aumidPrefix, StringComparison.OrdinalIgnoreCase)
             ? returnedApplicationId[aumidPrefix.Length..]
@@ -60,6 +56,28 @@ public static partial class PackageDiscovery
             appUserModelId,
             architecture,
             version);
+    }
+
+    internal static string SelectApplicationIdForActivation(
+        string packageFamilyName,
+        string packageFullName,
+        IReadOnlyCollection<string> applicationIds)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(packageFamilyName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(packageFullName);
+        ArgumentNullException.ThrowIfNull(applicationIds);
+
+        var expected = $"{packageFamilyName}!{PrimaryCodexApplicationId}";
+        var matches = applicationIds
+            .Where(applicationId => string.Equals(applicationId, expected, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        if (matches.Length == 1)
+        {
+            return matches[0];
+        }
+
+        throw new InvalidOperationException(
+            $"Expected one primary application id '{expected}' for '{packageFullName}', found {matches.Length} among {applicationIds.Count} registered ids.");
     }
 
     private static IReadOnlyList<string> GetPackageFullNames(string packageFamilyName)

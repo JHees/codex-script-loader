@@ -95,6 +95,7 @@ internal sealed class LoaderApplicationContext : ApplicationContext
         if (diagnostics is null || diagnostics.IsDisposed)
         {
             diagnostics = new DiagnosticsForm();
+            diagnostics.ExitRequested += (_, _) => ExitThread();
         }
         diagnostics.UpdateSnapshot(supervisor.Snapshot, logger.CurrentPath);
         if (!diagnostics.Visible)

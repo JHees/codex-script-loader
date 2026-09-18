@@ -46,6 +46,7 @@ internal static partial class Program
             TestPathBoundary(testRoot);
             TestPackageProcessTerminationBoundary();
             TestCodexPackageUpgradeClassification();
+            TestCodexPrimaryApplicationSelection();
             TestLogRedaction(testRoot);
             await TestAtomicUpdateStateAsync(testRoot);
             await TestUpdatePackageVerificationAsync(testRoot);
@@ -171,6 +172,22 @@ internal static partial class Program
         True(!LiveSupervisor.IsPackageUpgrade(current, upgraded with { PackageFamilyName = "Example.Other_family" }), "Different package family is not classified as a Codex update restart");
     }
 
+    private static void TestCodexPrimaryApplicationSelection()
+    {
+        var family = PackageDiscovery.CodexPackageFamilyName;
+        var fullName = "OpenAI.Codex_26.915.3509.0_x64__2p2nqsd0c76g0";
+        var primary = $"{family}!App";
+        Equal(primary, PackageDiscovery.SelectApplicationIdForActivation(family, fullName,
+            [primary, $"{family}!CodexCoreCommandRunner"]),
+            "Codex desktop App entry remains selected when an update adds a command runner entry");
+        Throws<InvalidOperationException>(() => PackageDiscovery.SelectApplicationIdForActivation(family, fullName,
+            [$"{family}!CodexCoreCommandRunner"]),
+            "A package without the primary Codex desktop entry is rejected");
+        Throws<InvalidOperationException>(() => PackageDiscovery.SelectApplicationIdForActivation(family, fullName,
+            [primary, primary]),
+            "Duplicate primary Codex desktop entries are rejected");
+    }
+
     private static async Task TestDescriptorAndInjectionAsync(string testRoot)
     {
         var paths = LoaderPaths.FromRoot(Path.Combine(testRoot, "healthy"));
@@ -180,7 +197,7 @@ internal static partial class Program
         var plan = await registry.BuildPlanAsync(force: true);
         Equal(1, plan.Scripts.Count, "Bundled script count");
         Equal("dev.codex-script-loader.example-ui", plan.Scripts[0].Id, "Bundled script id");
-        True(plan.Source.Contains("runtime.runtimeVersion = \"0.5.12\"", StringComparison.Ordinal), "Runtime version source");
+        True(plan.Source.Contains("runtime.runtimeVersion = \"0.5.13\"", StringComparison.Ordinal), "Runtime version source");
         True(plan.Source.Contains("__codexScriptLoaderExampleUi", StringComparison.Ordinal), "Lifecycle source");
         True(plan.Source.Contains("installSettingsHost", StringComparison.Ordinal), "Settings host source");
         True(plan.Source.Contains("sha256-" + plan.Scripts[0].Fingerprint, StringComparison.Ordinal), "Integrity source");

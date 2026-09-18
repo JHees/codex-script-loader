@@ -236,7 +236,7 @@ jobs:
           @"
           ## Downloads
 
-          This release adds collapsed composer instructions, restored-draft presentation, safe caret routing and scoped user-change notifications for Loader-managed content. Explicit clearing supports unchanged restored instructions. Plugin-owned controls, API calls, native submission and lifecycle cleanup do not echo user-change events. These are generic plugin interfaces; no third-party plugin is bundled or automatically installed.
+          This release restores Loader startup after Codex registers a second package application entry. The Loader explicitly selects Codex's desktop `App` entry and no longer treats the package as ambiguous. The diagnostics window also provides an Exit Loader button. These remain generic Loader capabilities; no third-party plugin is bundled or automatically installed.
 
           | Windows architecture | Installer | Portable |
           | --- | --- | --- |
