@@ -16,6 +16,7 @@ on:
       - "Directory.Build.props"
       - "global.json"
       - "NuGet.Config"
+      - "docs/RELEASE-*.md"
       - ".github/workflows/windows-loader.yml"
 
 permissions:
@@ -169,6 +170,10 @@ jobs:
         run: |
           $productVersion = (Get-Content -LiteralPath package.json -Raw | ConvertFrom-Json).version
           if ($env:GITHUB_REF_NAME -ne "v$productVersion") { throw "Tag $env:GITHUB_REF_NAME does not match package.json version $productVersion." }
+          $notesPath = "docs/RELEASE-$productVersion.md"
+          if (-not (Test-Path -LiteralPath $notesPath) -or [string]::IsNullOrWhiteSpace((Get-Content -LiteralPath $notesPath -Raw))) {
+            throw "Missing or empty version-specific release notes: $notesPath"
+          }
           "product_version=$productVersion" >> $env:GITHUB_OUTPUT
 
   publish_release:
@@ -178,6 +183,7 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - name: Download Windows packages
         uses: actions/download-artifact@v4
         with:
@@ -233,10 +239,11 @@ jobs:
           $x64ZipHash = Get-PackageHash $x64Zip
           $arm64SetupHash = Get-PackageHash $arm64Setup
           $arm64ZipHash = Get-PackageHash $arm64Zip
-          @"
+          $notesPath = "docs/RELEASE-$env:RELEASE_VERSION.md"
+          $releaseNotes = Get-Content -LiteralPath $notesPath -Raw
+          if ([string]::IsNullOrWhiteSpace($releaseNotes)) { throw "Empty release notes: $notesPath" }
+          $downloads = @"
           ## Downloads
-
-          This release restores Loader startup after Codex registers a second package application entry. The Loader explicitly selects Codex's desktop `App` entry and no longer treats the package as ambiguous. The diagnostics window also provides an Exit Loader button. These remain generic Loader capabilities; no third-party plugin is bundled or automatically installed.
 
           | Windows architecture | Installer | Portable |
           | --- | --- | --- |
@@ -257,7 +264,8 @@ jobs:
           | ``$arm64Zip`` | ``$arm64ZipHash`` |
 
           Release binaries are currently not Authenticode-signed.
-          "@ | Set-Content -LiteralPath release-summary.md -Encoding utf8NoBOM
+          "@
+          ($releaseNotes.TrimEnd() + "`n`n" + $downloads) | Set-Content -LiteralPath release-summary.md -Encoding utf8NoBOM
       - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -279,6 +287,7 @@ jobs:
               esac
             done < <(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' --repo "$GITHUB_REPOSITORY")
             gh release upload "$RELEASE_TAG" release-payload/* --clobber --repo "$GITHUB_REPOSITORY"
+            gh release edit "$RELEASE_TAG" --notes-file release-summary.md --repo "$GITHUB_REPOSITORY"
           else
-            gh release create "$RELEASE_TAG" release-payload/* --verify-tag --generate-notes --notes-file release-summary.md --title "Codex Script Loader v$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY"
+            gh release create "$RELEASE_TAG" release-payload/* --verify-tag --notes-file release-summary.md --title "Codex Script Loader v$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY"
           fi
