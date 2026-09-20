@@ -7,6 +7,25 @@ import vm from "node:vm";
 // No third-party plugin, private App router or native message sender is involved.
 const source = await readFile(new URL("../src/settings-host.mjs", import.meta.url), "utf8");
 const routine = source.slice(source.indexOf("  function openRegisteredPage(entry)"), source.indexOf("\n  const host = {"));
+
+test("plugin settings survive a temporary bridge failure and reconcile after recovery", async () => {
+  let fail = false;
+  let plugins = [{ id: "local.example", enabled: true }];
+  const context = vm.createContext({ managedPlugins: [], scheduleSync() {}, async requestBridge() {
+    if (fail) throw new Error("Loader request timed out");
+    return plugins;
+  } });
+  vm.runInContext(source.slice(source.indexOf("  async function refreshManagedPlugins()"), source.indexOf("\n  function loaderLabels()")), context);
+  await context.refreshManagedPlugins();
+  assert.equal(context.managedPlugins.length, 1);
+  fail = true;
+  await context.refreshManagedPlugins();
+  assert.equal(context.managedPlugins.length, 1, "a timeout must not remove plugin settings entries");
+  fail = false;
+  plugins = [];
+  await context.refreshManagedPlugins();
+  assert.equal(context.managedPlugins.length, 0, "a successful empty list removes stale entries");
+});
 function fixture(initial = "main") {
   let phase = initial, clock = 0, clicks = 0, pointers = 0, activations = 0;
   const callbacks = new Map(); let timer = 0;

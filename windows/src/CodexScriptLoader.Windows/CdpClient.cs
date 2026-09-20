@@ -95,10 +95,13 @@ internal sealed class CdpSession : IAsyncDisposable
     private readonly ClientWebSocket socket = new();
     private readonly ConcurrentDictionary<int, TaskCompletionSource<JsonElement>> pending = new();
     private readonly CancellationTokenSource lifetime = new();
+    private readonly SemaphoreSlim send = new(1, 1);
     private Task? receiveTask;
     private int nextId;
 
     public event Action<JsonElement>? EventReceived;
+
+    public bool IsConnected => socket.State == WebSocketState.Open && !lifetime.IsCancellationRequested && receiveTask?.IsCompleted == false;
 
     public static async Task<CdpSession> ConnectAsync(Uri endpoint, CancellationToken cancellationToken)
     {
@@ -127,7 +130,7 @@ internal sealed class CdpSession : IAsyncDisposable
         CancellationToken cancellationToken = default,
         TimeSpan? commandTimeout = null)
     {
-        if (socket.State != WebSocketState.Open)
+        if (!IsConnected)
         {
             throw new InvalidOperationException("CDP WebSocket is not open.");
         }
@@ -145,7 +148,11 @@ internal sealed class CdpSession : IAsyncDisposable
         try
         {
             var payload = JsonSerializer.SerializeToUtf8Bytes(new { id, method, @params = parameters ?? new { } });
-            await socket.SendAsync(payload, WebSocketMessageType.Text, true, timeout.Token).ConfigureAwait(false);
+            // ClientWebSocket permits only one send at a time. Bridge replies,
+            // transport events and health checks share this session.
+            await send.WaitAsync(timeout.Token).ConfigureAwait(false);
+            try { await socket.SendAsync(payload, WebSocketMessageType.Text, true, timeout.Token).ConfigureAwait(false); }
+            finally { send.Release(); }
             return await completion.Task.ConfigureAwait(false);
         }
         finally
@@ -207,6 +214,11 @@ internal sealed class CdpSession : IAsyncDisposable
             {
                 completion.TrySetException(new IOException("CDP WebSocket receive loop stopped.", exception));
             }
+        }
+        finally
+        {
+            lifetime.Cancel();
+            socket.Abort();
         }
     }
 

@@ -17,12 +17,15 @@ internal enum ManagedCodexExitReason
 
 internal sealed class LiveSupervisor : IAsyncDisposable
 {
-    public const string Version = "0.5.13";
+    public const string Version = "0.5.14";
     private const string TrustedInputPermission = "trusted-input";
     private static readonly TimeSpan GracefulRestartShutdownTimeout = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan ForcedRestartShutdownTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan PackageExitPollInterval = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan StablePackageExitWindow = TimeSpan.FromMilliseconds(500);
+    // Store updates can close the old renderer before the replacement package is
+    // registered. Keep the managed host alive long enough to notice that handoff.
+    private static readonly TimeSpan PackageUpdateDetectionGracePeriod = TimeSpan.FromSeconds(90);
     private readonly LoaderPaths paths;
     private readonly JsonlLogger logger;
     private readonly SemaphoreSlim operation = new(1, 1);
@@ -1026,6 +1029,8 @@ internal sealed class LiveSupervisor : IAsyncDisposable
     private async Task MonitorAsync(CancellationToken cancellationToken)
     {
         var missingTicks = 0;
+        DateTimeOffset? unreachableSince = null;
+        var connectionDegraded = false;
         while (!cancellationToken.IsCancellationRequested)
         {
             try
@@ -1034,8 +1039,13 @@ internal sealed class LiveSupervisor : IAsyncDisposable
                 var targets = client is null ? [] : await client.GetCodexTargetsAsync(cancellationToken).ConfigureAwait(false);
                 if (targets.Count == 0)
                 {
+                    unreachableSince ??= DateTimeOffset.UtcNow;
                     missingTicks++;
-                    if (TryNotifyManagedCodexExit(missingTicks))
+                    if (missingTicks == 1)
+                    {
+                        logger.Info("managed-codex-unreachable-awaiting-update", new { updateGraceSeconds = PackageUpdateDetectionGracePeriod.TotalSeconds });
+                    }
+                    if (TryNotifyManagedCodexExit(missingTicks, unreachableSince.Value))
                     {
                         return;
                     }
@@ -1043,21 +1053,54 @@ internal sealed class LiveSupervisor : IAsyncDisposable
                 else
                 {
                     missingTicks = 0;
-                    if (bridge is not null)
+                    unreachableSince = null;
+                    // A bridge failure is not evidence that the Codex process
+                    // exited: target discovery above has just succeeded.
+                    await operation.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    try
                     {
-                        await bridge.SyncAsync(targets, cancellationToken).ConfigureAwait(false);
+                        if (bridge is not null)
+                        {
+                            var recovered = await bridge.SyncAsync(targets, cancellationToken).ConfigureAwait(false);
+                            if (recovered > 0) logger.Info("managed-bridge-reconnected", new { targetCount = recovered });
+                        }
+                        if (pageCompanions is not null) await pageCompanions.SyncAsync(cancellationToken).ConfigureAwait(false);
+                        if (connectionDegraded)
+                        {
+                            var failed = scripts.Count(script => script.LifecycleResult != "running");
+                            SetState(failed == 0 ? LoaderState.Healthy : LoaderState.Degraded, failed == 0 ? null : $"{failed} renderer scripts failed to start.");
+                            logger.Info("managed-connection-recovered", new { targetCount = targets.Count });
+                            connectionDegraded = false;
+                        }
                     }
-                    if (pageCompanions is not null) await pageCompanions.SyncAsync(cancellationToken).ConfigureAwait(false);
+                    catch (Exception exception) when (IsTransientConnectionFailure(exception) && !cancellationToken.IsCancellationRequested)
+                    {
+                        if (!connectionDegraded) logger.Warn("managed-bridge-retry", new { message = JsonlLogger.Redact(exception.Message) });
+                        connectionDegraded = true;
+                        SetState(LoaderState.Degraded, exception.Message);
+                    }
+                    finally { operation.Release(); }
                 }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 return;
             }
-            catch (Exception exception) when (exception is HttpRequestException or WebSocketException or InvalidOperationException)
+            catch (Exception exception) when (IsTransientConnectionFailure(exception) && !cancellationToken.IsCancellationRequested)
             {
+                connectionDegraded = true;
+                SetState(LoaderState.Degraded, exception.Message);
+                unreachableSince ??= DateTimeOffset.UtcNow;
                 missingTicks++;
-                if (TryNotifyManagedCodexExit(missingTicks, exception))
+                if (missingTicks == 1)
+                {
+                    logger.Info("managed-codex-unreachable-awaiting-update", new
+                    {
+                        updateGraceSeconds = PackageUpdateDetectionGracePeriod.TotalSeconds,
+                        message = JsonlLogger.Redact(exception.Message),
+                    });
+                }
+                if (TryNotifyManagedCodexExit(missingTicks, unreachableSince.Value, exception))
                 {
                     return;
                 }
@@ -1065,7 +1108,10 @@ internal sealed class LiveSupervisor : IAsyncDisposable
         }
     }
 
-    private bool TryNotifyManagedCodexExit(int missingTicks, Exception? connectionError = null)
+    private static bool IsTransientConnectionFailure(Exception exception) =>
+        exception is HttpRequestException or WebSocketException or InvalidOperationException or IOException or OperationCanceledException;
+
+    private bool TryNotifyManagedCodexExit(int missingTicks, DateTimeOffset unreachableSince, Exception? connectionError = null)
     {
         if (package is not null)
         {
@@ -1094,7 +1140,7 @@ internal sealed class LiveSupervisor : IAsyncDisposable
             }
         }
 
-        if (missingTicks < 5)
+        if (!IsPackageUpdateDetectionGraceExpired(DateTimeOffset.UtcNow - unreachableSince))
         {
             return false;
         }
@@ -1115,6 +1161,9 @@ internal sealed class LiveSupervisor : IAsyncDisposable
     internal static bool IsPackageUpgrade(CodexPackageIdentity current, CodexPackageIdentity installed) =>
         string.Equals(current.PackageFamilyName, installed.PackageFamilyName, StringComparison.OrdinalIgnoreCase) &&
         installed.Version > current.Version;
+
+    internal static bool IsPackageUpdateDetectionGraceExpired(TimeSpan unreachableFor) =>
+        unreachableFor >= PackageUpdateDetectionGracePeriod;
 
     private void SetState(LoaderState state, string? error)
     {

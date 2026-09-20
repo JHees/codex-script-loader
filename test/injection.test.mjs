@@ -144,7 +144,7 @@ test("settings API is permission-gated and owned by the loader host", () => {
   assert.equal(typeof context.__settingsApi.registerPage, "function");
   assert.equal(typeof context.__settingsApi.register, "function");
   assert.equal(context.__processKind, "renderer");
-  assert.equal(context.__codexScriptLoader.settingsHost.snapshot().version, "0.5.13");
+  assert.equal(context.__codexScriptLoader.settingsHost.snapshot().version, "0.5.14");
 
   const withoutPermission = { ...descriptor({ id: "test.no-settings", source: "globalThis.__settingsWithoutPermission = api.settings;" }), permissions: [] };
   vm.runInContext(buildInjectionSource([withoutPermission]), context);
@@ -212,7 +212,7 @@ test("loopback socket opened asynchronously is still cleaned up when the plugin 
 test("settings host groups management and plugin pages under Script-Loader without refreshing Codex", () => {
   const source = buildInjectionSource([]);
   assert.match(source, /loaderGroup: "Script-Loader"/);
-  assert.match(source, /const implementationRevision = "settings-page-navigation-1"/);
+  assert.match(source, /const implementationRevision = "settings-connection-recovery-1"/);
   assert.match(source, /current\?\.version === version && current\?\.implementationRevision === implementationRevision/);
   assert.match(source, /implementationRevision,/);
   assert.doesNotMatch(source, /tweaksGroup:/);

@@ -22,11 +22,12 @@ internal sealed class LoaderHostBridge : IAsyncDisposable
         this.transportHost = transportHost;
     }
 
-    public async Task SyncAsync(IReadOnlyList<CdpTarget> targets, CancellationToken cancellationToken)
+    public async Task<int> SyncAsync(IReadOnlyList<CdpTarget> targets, CancellationToken cancellationToken)
     {
         await sync.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            var recovered = 0;
             var desired = targets.ToDictionary(target => target.Id, StringComparer.Ordinal);
             foreach (var targetId in sessions.Keys.Where(targetId => !desired.ContainsKey(targetId)).ToArray())
             {
@@ -35,17 +36,44 @@ internal sealed class LoaderHostBridge : IAsyncDisposable
 
             foreach (var target in targets)
             {
+                if (sessions.TryGetValue(target.Id, out var state) && !await IsHealthyAsync(state, cancellationToken).ConfigureAwait(false))
+                {
+                    await DropAsync(target.Id, cancellationToken).ConfigureAwait(false);
+                    recovered++;
+                }
                 if (!sessions.ContainsKey(target.Id))
                 {
                     await AttachAsync(target, cancellationToken).ConfigureAwait(false);
                 }
             }
+            return recovered;
         }
         finally
         {
             sync.Release();
         }
     }
+
+    private async Task<bool> IsHealthyAsync(BridgeSession state, CancellationToken cancellationToken)
+    {
+        if (!state.Session.IsConnected) return false;
+        try
+        {
+            var result = await state.Session.SendAsync("Runtime.evaluate", new
+            {
+                expression = $"globalThis[{JsonSerializer.Serialize(BridgeGlobal)}]?.connected === true && globalThis[{JsonSerializer.Serialize(BridgeGlobal)}]?.bindingName === {JsonSerializer.Serialize(bindingName)} && typeof globalThis[{JsonSerializer.Serialize(bindingName)}] === 'function'",
+                returnByValue = true,
+            }, cancellationToken).ConfigureAwait(false);
+            return result.TryGetProperty("result", out var value) && value.TryGetProperty("value", out var healthy) && healthy.ValueKind == JsonValueKind.True;
+        }
+        catch (Exception exception) when (IsConnectionFailure(exception) && !cancellationToken.IsCancellationRequested)
+        {
+            return false;
+        }
+    }
+
+    private static bool IsConnectionFailure(Exception exception) =>
+        exception is InvalidOperationException or IOException or System.Net.WebSockets.WebSocketException or OperationCanceledException;
 
     public async Task ReconnectAsync(IReadOnlyList<CdpTarget> targets, CancellationToken cancellationToken)
     {
@@ -229,7 +257,7 @@ internal sealed class LoaderHostBridge : IAsyncDisposable
                 ? new { expression, contextId = contextId.Value, returnByValue = true }
                 : new { expression, returnByValue = true }, CancellationToken.None).ConfigureAwait(false);
         }
-        catch (InvalidOperationException)
+        catch (Exception exception) when (IsConnectionFailure(exception))
         {
         }
     }
@@ -246,14 +274,16 @@ internal sealed class LoaderHostBridge : IAsyncDisposable
             try { await transportHost.DetachSessionAsync(targetId, cancellationToken).ConfigureAwait(false); } catch { }
         }
 
+        using var cleanup = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        cleanup.CancelAfter(TimeSpan.FromSeconds(1));
         try
         {
             await state.Session.SendAsync("Runtime.evaluate", new
             {
                 expression = $"globalThis[{JsonSerializer.Serialize(BridgeGlobal)}]?.bindingName === {JsonSerializer.Serialize(bindingName)} && globalThis[{JsonSerializer.Serialize(BridgeGlobal)}].dispose('Loader sidecar disconnected');",
-            }, cancellationToken).ConfigureAwait(false);
+            }, cleanup.Token).ConfigureAwait(false);
         }
-        catch (InvalidOperationException)
+        catch (Exception exception) when (IsConnectionFailure(exception))
         {
         }
 
@@ -261,18 +291,18 @@ internal sealed class LoaderHostBridge : IAsyncDisposable
         {
             try
             {
-                await state.Session.SendAsync("Page.removeScriptToEvaluateOnNewDocument", new { identifier = state.RegistrationId }, cancellationToken).ConfigureAwait(false);
+                await state.Session.SendAsync("Page.removeScriptToEvaluateOnNewDocument", new { identifier = state.RegistrationId }, cleanup.Token).ConfigureAwait(false);
             }
-            catch (InvalidOperationException)
+            catch (Exception exception) when (IsConnectionFailure(exception))
             {
             }
         }
 
         try
         {
-            await state.Session.SendAsync("Runtime.removeBinding", new { name = bindingName }, cancellationToken).ConfigureAwait(false);
+            await state.Session.SendAsync("Runtime.removeBinding", new { name = bindingName }, cleanup.Token).ConfigureAwait(false);
         }
-        catch (InvalidOperationException)
+        catch (Exception exception) when (IsConnectionFailure(exception))
         {
         }
 
@@ -321,6 +351,7 @@ internal sealed class LoaderHostBridge : IAsyncDisposable
         dispose(reason = "Loader sidecar disconnected") {
           if (disposed) return;
           disposed = true;
+          this.connected = false;
           for (const item of pending.values()) { clearTimeout(item.timer); item.reject(new Error(reason)); }
           pending.clear();
         }
