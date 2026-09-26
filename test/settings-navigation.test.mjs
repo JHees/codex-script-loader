@@ -8,6 +8,26 @@ import vm from "node:vm";
 const source = await readFile(new URL("../src/settings-host.mjs", import.meta.url), "utf8");
 const routine = source.slice(source.indexOf("  function openRegisteredPage(entry)"), source.indexOf("\n  const host = {"));
 
+test("split navigation rail resolves the native settings main and separate header/body scroller", () => {
+  class Element { constructor(className = "") { this.className = className; this.classList = { contains: value => className.split(" ").includes(value) }; this.dataset = {}; this.children = []; } }
+  const page = new Element("group/settings mx-auto px-panel pb-panel pt-panel");
+  const heading = new Element();
+  const surface = new Element("flex-1 scrollbar-stable overflow-y-auto");
+  surface.children = [heading, page]; page.parentElement = surface;
+  surface.querySelector = selector => selector === "h1" ? heading : null;
+  const main = new Element();
+  main.querySelector = () => page;
+  main.querySelectorAll = () => [surface, page];
+  const aside = new Element();
+  aside.parentElement = { children: [new Element(), aside, main], querySelector: () => main };
+  const sidebar = { closest: selector => selector === "aside" ? aside : null };
+  const context = vm.createContext({ HTMLElement: Element, panelSurface: null, visibleBox: () => true });
+  vm.runInContext(source.slice(source.indexOf("  function findContentArea("), source.indexOf("  function pageIcon(")), context);
+  assert.equal(context.findContentArea(sidebar), main);
+  assert.equal(context.findNativePageSurface(main), surface);
+  assert.equal(context.findNativePageTemplate(surface), page);
+});
+
 test("plugin settings survive a temporary bridge failure and reconcile after recovery", async () => {
   let fail = false;
   let plugins = [{ id: "local.example", enabled: true }];

@@ -6,7 +6,7 @@
 
 **打开 Codex 调试入口，加载用户脚本，并自动管理注入、重载与清理。**
 
-[![Version](https://img.shields.io/badge/version-0.5.14-f97316)](https://github.com/JHees/codex-script-loader)
+[![Version](https://img.shields.io/badge/version-0.5.15-f97316)](https://github.com/JHees/codex-script-loader)
 [![Windows](https://img.shields.io/badge/Windows-11-0078d4?logo=windows11)](#系统要求)
 [![macOS](https://img.shields.io/badge/macOS-未测试-999999?logo=apple)](#平台支持)
 [![.NET](https://img.shields.io/badge/.NET-10-512bd4?logo=dotnet)](global.json)
@@ -55,7 +55,7 @@ Windows 使用无控制台、无托盘图标的原生 .NET 10 后台宿主，是
 
 0.5.3 新增默认关闭、逐插件启用的 GitHub Release 更新。声明更新源的第三方插件会被独立扫描，通过相同的受限传输下载，经强制 `.sha256` 校验后以事务方式替换并原位重载。Loader 自有的示例插件仍随 Loader 打包，不进入第三方更新流程。
 
-0.5.14 修复 Loader 短暂断连后控制连接无法恢复的问题：即使页面 ID 不变，也会检查桥接健康状态并重连失效会话；HTTP 或 WebSocket 超时后继续监控。插件设置入口在短暂断连时保留上次成功读取的列表。Codex 不可达后，宿主会保留最多 90 秒的 Store 更新注册检测窗口。升级详情见[发布说明](docs/RELEASE-0.5.14.md)。
+0.5.15 恢复 Windows Codex 26.924.1866.0 中的 Loader 和插件设置页：适配分离后的导航布局与设置内容容器，保留原生滚动区域，并正确显示当前插件页面的选中状态。兼容性与升级详情见[发布说明](docs/RELEASE-0.5.15.md)。
 
 0.5.10 新增 **从 GitHub 安装**、已校验的同 ID 插件替换、插件附带 Skill 的一包安装，以及按操作白名单调用 renderer 插件的原生命令客户端。标准安装可沿用在线宿主更新，无需重新手工安装；启动器与接管协议保持不变。插件自动更新仍需单独开启。新增的 GitHub 安装入口仅使用公开 Release API 发现安装资产，不读取 GitHub 登录凭据。
 
@@ -76,12 +76,12 @@ build/
 ├── app/active.json
 ├── app/previous.json
 ├── app/update-manifest.json
-├── app/versions/0.5.14/win-x64/               # 完整 Loader 宿主
-├── CodexScriptLoader-0.5.14-windows-x64-setup.exe
-├── CodexScriptLoader-0.5.14-windows-x64-setup.exe.sha256
-├── CodexScriptLoader-0.5.14-windows-x64.zip
-├── CodexScriptLoader-0.5.14-windows-x64.zip.sha256
-└── CodexScriptLoader-0.5.14-x64.spdx.json
+├── app/versions/0.5.15/win-x64/               # 完整 Loader 宿主
+├── CodexScriptLoader-0.5.15-windows-x64-setup.exe
+├── CodexScriptLoader-0.5.15-windows-x64-setup.exe.sha256
+├── CodexScriptLoader-0.5.15-windows-x64.zip
+├── CodexScriptLoader-0.5.15-windows-x64.zip.sha256
+└── CodexScriptLoader-0.5.15-x64.spdx.json
 ```
 
 ### macOS live runtime（尚未测试）

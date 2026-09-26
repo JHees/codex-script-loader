@@ -1,4 +1,4 @@
-const SETTINGS_HOST_VERSION = "0.5.14";
+const SETTINGS_HOST_VERSION = "0.5.15";
 
 /*
  * Renderer-only settings host inspired by b-nnett/codex-plusplus.
@@ -11,7 +11,7 @@ function installSettingsHost(version) {
   // Using the approved mark as a mask keeps the sidebar icon aligned with
   // Codex's currentColor-based system settings icons in light and dark themes.
   const loaderBrandMask = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAYAAACNiR0NAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAEYSURBVDhP7dK9K4ZhFMfxj1LkJQMp5CULEjYZFH+ASZn8DwaDyWSRySSLyWgQk1UGYhIZDLIgWQwmyUtXnXJ39eh5PKN8l7vfOdc517nu3+GvUIs21OeJakmNrnCD1jxZLUd4w2ye+C018d3GA2ayfMX04hIDoQ9whjE0ZWfL0oNn7IZewCO6sYFrNGQ1P9KBJ+yEnsI7JkM34xgXaCnUlSS5eYu9Qmwd94WGibRGpzgp/OOSpGe8YLMQm48Ji7HEFu7KNUyM4BUroeuwhg8MRyxd8hkGVcR4FCyFTk9M06xiKHJzWU1ZkhmpcCImSUYt4jAaV8VgOLmPczSiMz/0G7owGnu3jOnYxapJ0/ShHf1hWNrTf775Amv8Ll/zMvAfAAAAAElFTkSuQmCC";
-  const implementationRevision = "settings-connection-recovery-1";
+  const implementationRevision = "settings-split-navigation-3";
   const current = runtime.settingsHost;
   if (current?.version === version && current?.implementationRevision === implementationRevision) {
     current.start();
@@ -108,6 +108,8 @@ function installSettingsHost(version) {
     const explicitAside = sidebar.closest("aside");
     const explicitShell = explicitAside?.parentElement;
     if (explicitShell) {
+      const main = explicitShell.querySelector("[data-app-shell-focus-area='main']");
+      if (main instanceof HTMLElement) return main;
       const explicitMain = Array.from(explicitShell.children).find((child) => child !== explicitAside && child instanceof HTMLElement);
       if (explicitMain instanceof HTMLElement) return explicitMain;
     }
@@ -125,6 +127,8 @@ function installSettingsHost(version) {
 
   function findNativePageSurface(content) {
     if (panelSurface?.isConnected && content.contains(panelSurface)) return panelSurface;
+    const settingsBody = content.querySelector('[class~="group/settings"]');
+    if (settingsBody?.parentElement?.classList.contains("overflow-y-auto")) return settingsBody.parentElement;
     const candidates = Array.from(content.querySelectorAll("div")).filter((node) => {
       if (!(node instanceof HTMLElement) || node.dataset.codexLoaderSettings) return false;
       const className = String(node.className || "");
@@ -134,7 +138,8 @@ function installSettingsHost(version) {
   }
 
   function findNativePageTemplate(surface) {
-    return Array.from(surface?.children || []).find((node) => node instanceof HTMLElement && !node.dataset.codexLoaderSettings && node.querySelector("h1")) || null;
+    const children = Array.from(surface?.children || []).filter((node) => node instanceof HTMLElement && !node.dataset.codexLoaderSettings);
+    return children.find((node) => node.classList.contains("group/settings")) || children.find((node) => node.querySelector("h1")) || null;
   }
 
   function pageIcon() {
@@ -1540,6 +1545,7 @@ function installSettingsHost(version) {
   };
 
   function combinedEntries() {
+    loaderEntry.title = loaderLabels().settings;
     return [loaderEntry, ...pluginEntries()];
   }
 
@@ -1549,6 +1555,7 @@ function installSettingsHost(version) {
     const outer = sidebar.parentElement && isSettingsSidebar(sidebar.parentElement) ? sidebar.parentElement : sidebar;
     sidebarRoot = outer;
     const plugins = pluginEntries();
+    loaderEntry.title = loaderLabels().settings;
     const entries = [loaderEntry, ...plugins];
     const activeEntryExists = !activeId || entries.some((entry) => entry.id === activeId);
     const mountedGroups = Array.from(document.querySelectorAll("[data-codex-loader-settings='pages-group']"));
@@ -1571,6 +1578,9 @@ function installSettingsHost(version) {
     group.dataset.codexLoaderSettings = "pages-group";
     group.dataset.fingerprint = desired;
     group.className = "flex flex-col gap-1";
+    const selectionStyle = document.createElement("style");
+    selectionStyle.textContent = '[data-codex-loader-active] [data-settings-panel-slug] { background-color: transparent !important; }';
+    group.appendChild(selectionStyle);
     const loaderGroup = document.createElement("div");
     loaderGroup.className = "flex flex-col gap-px";
     const groupLabels = loaderLabels();
@@ -1585,10 +1595,13 @@ function installSettingsHost(version) {
 
   function applyActive() {
     if (!pagesGroup) return;
+    if (sidebarRoot) sidebarRoot.toggleAttribute("data-codex-loader-active", Boolean(activeId));
     for (const button of pagesGroup.querySelectorAll("button[data-codex-loader-settings]")) {
       const active = button.dataset.codexLoaderSettings === `nav:${activeId}`;
       button.classList.toggle("bg-token-list-hover-background", active);
       button.classList.toggle("hover:bg-token-list-hover-background", !active);
+      button.classList.toggle("bg-primary-ghost-hover", active);
+      button.classList.toggle("hover:bg-primary-ghost-hover", !active);
       if (active) button.setAttribute("aria-current", "page");
       else button.removeAttribute("aria-current");
     }
