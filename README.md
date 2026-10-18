@@ -6,7 +6,7 @@
 
 **Open Codex for user scripts, with automatic injection, reload, and cleanup.**
 
-[![Version](https://img.shields.io/badge/version-0.5.15-f97316)](https://github.com/JHees/codex-script-loader)
+[![Version](https://img.shields.io/badge/version-0.5.16-f97316)](https://github.com/JHees/codex-script-loader)
 [![Windows](https://img.shields.io/badge/Windows-11-0078d4?logo=windows11)](#requirements)
 [![macOS](https://img.shields.io/badge/macOS-untested-999999?logo=apple)](#platform-support)
 [![.NET](https://img.shields.io/badge/.NET-10-512bd4?logo=dotnet)](global.json)
@@ -55,7 +55,7 @@ Version 0.5.2 isolates update errors inside the update card and uses the Windows
 
 Version 0.5.3 adds opt-in, per-plugin GitHub Release updates. Update-aware third-party plugins are scanned independently, downloaded through the same restricted transport, verified against a required `.sha256` asset, replaced transactionally, and reloaded in place. The Loader-owned example plugin remains bundled and is not part of the third-party update flow.
 
-Version 0.5.15 restores Loader and plugin settings pages in Codex 26.924.1866.0 on Windows. It follows the new split navigation layout, preserves the native settings scroll area, and correctly highlights the selected plugin page. See [release notes](docs/RELEASE-0.5.15.md) for compatibility and upgrade details.
+Version 0.5.16 fixes settings-page detection in newer Codex versions, preventing Loader and plugin settings navigation from appearing beside the chat sidebar. It also cleans up settings UI when leaving the page. See [release notes](docs/RELEASE-0.5.16.md) for compatibility and upgrade details.
 
 Version 0.5.10 added **Install from GitHub**, verified same-ID package replacement,
 single-package optional agent Skills, and an allowlisted native command client
@@ -81,12 +81,12 @@ build/
 ├── app/active.json
 ├── app/previous.json
 ├── app/update-manifest.json
-├── app/versions/0.5.15/win-x64/               # complete Loader host
-├── CodexScriptLoader-0.5.15-windows-x64-setup.exe
-├── CodexScriptLoader-0.5.15-windows-x64-setup.exe.sha256
-├── CodexScriptLoader-0.5.15-windows-x64.zip
-├── CodexScriptLoader-0.5.15-windows-x64.zip.sha256
-└── CodexScriptLoader-0.5.15-x64.spdx.json
+├── app/versions/0.5.16/win-x64/               # complete Loader host
+├── CodexScriptLoader-0.5.16-windows-x64-setup.exe
+├── CodexScriptLoader-0.5.16-windows-x64-setup.exe.sha256
+├── CodexScriptLoader-0.5.16-windows-x64.zip
+├── CodexScriptLoader-0.5.16-windows-x64.zip.sha256
+└── CodexScriptLoader-0.5.16-x64.spdx.json
 ```
 
 The setup executable at the top of `build` is the normal local installation entry. The `build\app` directory is packaging payload, not the recommended launch path. The installer keeps scripts and settings under `%LOCALAPPDATA%\CodexScriptLoader` when upgrading or uninstalling.

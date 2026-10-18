@@ -1,4 +1,4 @@
-const SETTINGS_HOST_VERSION = "0.5.15";
+const SETTINGS_HOST_VERSION = "0.5.16";
 
 /*
  * Renderer-only settings host inspired by b-nnett/codex-plusplus.
@@ -11,7 +11,7 @@ function installSettingsHost(version) {
   // Using the approved mark as a mask keeps the sidebar icon aligned with
   // Codex's currentColor-based system settings icons in light and dark themes.
   const loaderBrandMask = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAYAAACNiR0NAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAEYSURBVDhP7dK9K4ZhFMfxj1LkJQMp5CULEjYZFH+ASZn8DwaDyWSRySSLyWgQk1UGYhIZDLIgWQwmyUtXnXJ39eh5PKN8l7vfOdc517nu3+GvUIs21OeJakmNrnCD1jxZLUd4w2ye+C018d3GA2ayfMX04hIDoQ9whjE0ZWfL0oNn7IZewCO6sYFrNGQ1P9KBJ+yEnsI7JkM34xgXaCnUlSS5eYu9Qmwd94WGibRGpzgp/OOSpGe8YLMQm48Ji7HEFu7KNUyM4BUroeuwhg8MRyxd8hkGVcR4FCyFTk9M06xiKHJzWU1ZkhmpcCImSUYt4jAaV8VgOLmPczSiMz/0G7owGnu3jOnYxapJ0/ShHf1hWNrTf775Amv8Ll/zMvAfAAAAAElFTkSuQmCC";
-  const implementationRevision = "settings-split-navigation-3";
+  const implementationRevision = "settings-sidebar-identity-6";
   const current = runtime.settingsHost;
   if (current?.version === version && current?.implementationRevision === implementationRevision) {
     current.start();
@@ -50,10 +50,6 @@ function installSettingsHost(version) {
   let stopped = false;
 
   const compact = (value) => String(value || "").replace(/\s+/g, " ").trim();
-  const normalize = (value) => compact(value).toLocaleLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-  const coreLabels = ["general", "常规", "通用", "appearance", "外观", "configuration", "配置", "personalization", "个性化"];
-  const extraLabels = ["account", "账户", "keyboard shortcuts", "usage", "computer use", "browser use", "mcp servers", "mcp 服务器", "git", "environments", "环境", "connections", "plugins", "skills"];
-  const mainLabels = ["new chat", "quick chat", "search", "搜索", "automations", "自动化", "chats", "对话", "projects", "项目", "settings", "设置"];
 
   function visibleBox(element) {
     if (!(element instanceof HTMLElement) || !element.isConnected) return null;
@@ -63,45 +59,13 @@ function installSettingsHost(version) {
     return rect.width > 0 && rect.height > 0 ? rect : null;
   }
 
-  function labelsFrom(root) {
-    return [...new Set(Array.from(root.querySelectorAll("button,a,[role='button'],[role='link']"))
-      .map((node) => normalize(node.getAttribute("aria-label") || node.getAttribute("title") || node.textContent))
-      .filter(Boolean))];
-  }
-
-  function markerCount(labels, markers) {
-    return markers.filter((marker) => labels.some((label) => label === marker || label.includes(marker))).length;
-  }
-
-  function isSettingsSidebar(element) {
-    const rect = visibleBox(element);
-    if (!rect || rect.width < 120 || rect.width > 620 || rect.height < 80 || rect.left > innerWidth * 0.65) return false;
-    const labels = labelsFrom(element);
-    const core = markerCount(labels, coreLabels);
-    const total = markerCount(labels, coreLabels.concat(extraLabels));
-    const main = markerCount(labels, mainLabels);
-    return core >= 2 && total >= 3 && !(main >= 2 && markerCount(labels, ["keyboard shortcuts", "usage", "computer use", "mcp servers"]) === 0);
-  }
-
   function findSidebar() {
-    const explicit = document.querySelector("nav[aria-label='设置'],nav[aria-label='Settings']");
-    if (explicit instanceof HTMLElement && visibleBox(explicit)) return explicit;
-    let best = null;
-    let bestScore = -1;
-    let bestArea = Infinity;
-    for (const candidate of document.querySelectorAll("aside,nav,[role='navigation'],div")) {
-      if (!(candidate instanceof HTMLElement) || candidate.dataset.codexLoaderSettings) continue;
-      if (!isSettingsSidebar(candidate)) continue;
-      const rect = candidate.getBoundingClientRect();
-      const score = markerCount(labelsFrom(candidate), coreLabels) * 100 + markerCount(labelsFrom(candidate), extraLabels);
-      const area = rect.width * rect.height;
-      if (score > bestScore || (score === bestScore && area < bestArea)) {
-        best = candidate;
-        bestScore = score;
-        bestArea = area;
-      }
-    }
-    return best;
+    // Chat titles can contain settings words; only native navigation identifies this surface.
+    const selector = "nav[aria-label='设置'],nav[aria-label='Settings'],nav:has([data-settings-panel-slug]),[role='navigation']:has([data-settings-panel-slug]),aside:has([data-settings-panel-slug])";
+    const candidates = Array.from(document.querySelectorAll(selector)).filter((node) =>
+      node instanceof HTMLElement && !node.closest("[data-codex-loader-settings]") && visibleBox(node),
+    );
+    return candidates.find((node) => !candidates.some((other) => other !== node && node.contains(other))) || null;
   }
 
   function findContentArea(sidebar) {
@@ -1550,9 +1514,22 @@ function installSettingsHost(version) {
   }
 
   function sync() {
+    if (stopped) return;
     const sidebar = findSidebar();
-    if (!sidebar) return;
-    const outer = sidebar.parentElement && isSettingsSidebar(sidebar.parentElement) ? sidebar.parentElement : sidebar;
+    if (!sidebar) {
+      pendingActiveId = null;
+      unmountSettingsUi();
+      return;
+    }
+    if (sidebarRoot && sidebarRoot !== sidebar) {
+      pendingActiveId = null;
+      unmountSettingsUi();
+    }
+    if (activeId && !panelHost?.isConnected) {
+      pendingActiveId = null;
+      restoreNative();
+    }
+    const outer = sidebar;
     sidebarRoot = outer;
     const plugins = pluginEntries();
     loaderEntry.title = loaderLabels().settings;
@@ -1629,9 +1606,22 @@ function installSettingsHost(version) {
     applyActive();
   }
 
+  function unmountSettingsUi() {
+    restoreNative();
+    if (restoreHandler) sidebarRoot?.removeEventListener("click", restoreHandler, true);
+    restoreHandler = null;
+    sidebarRoot?.removeAttribute("data-codex-loader-active");
+    pagesGroup?.remove();
+    panelHost?.remove();
+    sidebarRoot = null;
+    pagesGroup = null;
+    panelHost = null;
+    panelSurface = null;
+  }
+
   function activate(id) {
     const entry = combinedEntries().find((candidate) => candidate.id === id);
-    if (!entry || !sidebarRoot) return;
+    if (stopped || !entry || !sidebarRoot || findSidebar() !== sidebarRoot) return;
     const content = findContentArea(sidebarRoot);
     if (!content) return;
     const surface = findNativePageSurface(content);
@@ -1702,7 +1692,7 @@ function installSettingsHost(version) {
   }
 
   function scheduleSync() {
-    if (scanTimer) return;
+    if (stopped || scanTimer) return;
     scanTimer = setTimeout(() => {
       scanTimer = 0;
       try { sync(); } catch (error) { console.warn("[codex-script-loader/settings] sync failed", error); }
@@ -1766,7 +1756,10 @@ function installSettingsHost(version) {
       stopped = false;
       if (!observer) {
         observer = new MutationObserver(scheduleSync);
-        observer.observe(document.documentElement, { childList: true, subtree: true });
+        observer.observe(document.documentElement, {
+          childList: true, subtree: true, attributes: true,
+          attributeFilter: ["aria-label", "data-settings-panel-slug", "hidden"],
+        });
       }
       scheduleSync();
       void refreshManagedPlugins();
@@ -1809,12 +1802,8 @@ function installSettingsHost(version) {
       scanTimer = 0;
       if (managementRefreshTimer) clearInterval(managementRefreshTimer);
       managementRefreshTimer = 0;
-      restoreNative();
+      unmountSettingsUi();
       document.querySelectorAll("[data-codex-loader-settings='pages-group']").forEach((node) => node.remove());
-      panelHost?.remove();
-      pagesGroup = null;
-      panelHost = null;
-      panelSurface = null;
       pages.clear();
       sections.clear();
       pendingActiveId = null;

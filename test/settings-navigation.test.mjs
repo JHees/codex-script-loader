@@ -8,6 +8,23 @@ import vm from "node:vm";
 const source = await readFile(new URL("../src/settings-host.mjs", import.meta.url), "utf8");
 const routine = source.slice(source.indexOf("  function openRegisteredPage(entry)"), source.indexOf("\n  const host = {"));
 
+test("leaving settings clears selection, including a detached panel before the next sidebar mounts", () => {
+  for (const sidebar of [null, {}]) {
+    let restores = 0;
+    const context = vm.createContext({
+      stopped: false, sidebarRoot: null, unmountSettingsUi() { restores++; context.activeId = null; },
+      activeId: "loader:runtime", pendingActiveId: "loader:runtime", panelHost: { isConnected: false },
+      findSidebar: () => sidebar, restoreNative() { restores++; context.activeId = null; },
+      pluginEntries() { throw new Error("selection checked before rendering"); },
+    });
+    vm.runInContext(source.slice(source.indexOf("  function sync()"), source.indexOf("  function applyActive()")), context);
+    try { context.sync(); } catch (error) { assert.match(error.message, /selection checked/); }
+    assert.equal(restores, 1);
+    assert.equal(context.activeId, null);
+    assert.equal(context.pendingActiveId, null);
+  }
+});
+
 test("split navigation rail resolves the native settings main and separate header/body scroller", () => {
   class Element { constructor(className = "") { this.className = className; this.classList = { contains: value => className.split(" ").includes(value) }; this.dataset = {}; this.children = []; } }
   const page = new Element("group/settings mx-auto px-panel pb-panel pt-panel");
