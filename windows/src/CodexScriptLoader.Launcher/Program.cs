@@ -199,7 +199,7 @@ internal static partial class Program
     [LibraryImport("user32.dll", EntryPoint = "MessageBoxW", StringMarshalling = StringMarshalling.Utf16)]
     private static partial int MessageBox(IntPtr window, string text, string caption, uint type);
 
-    [GeneratedRegex("^[0-9]+\\.[0-9]+\\.[0-9]+$", RegexOptions.CultureInvariant)]
+    [GeneratedRegex("^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$", RegexOptions.CultureInvariant)]
     private static partial Regex VersionRegex();
 
     private sealed record InstallPointer(int SchemaVersion, string Version, string Rid, string EntryPoint, int LauncherProtocol, int HandoffProtocol);

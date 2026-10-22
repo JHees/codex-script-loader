@@ -1,4 +1,6 @@
 using CodexScriptLoader.Core;
+using CodexScriptLoader.Interop;
+using CodexScriptLoader.Accounts;
 
 namespace CodexScriptLoader.Windows;
 
@@ -7,6 +9,41 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
+        if (args.Length == 1 && args[0] == "--accounts-backend")
+        {
+            try { Environment.ExitCode = BackendService.RunAsync().GetAwaiter().GetResult(); }
+            catch { Environment.ExitCode = 1; }
+            return;
+        }
+        if (args.Length == 4 && args[0] == "-p" && args[2] == "-tid")
+        {
+            try
+            {
+                var helperPaths = LoaderPaths.ForProduction();
+                var launch = AtomicJsonFile.ReadAsync<AccountLaunch>(AccountModule.LaunchPath(helperPaths)).GetAwaiter().GetResult()
+                    ?? throw new InvalidDataException("Missing desktop launch context.");
+                var pid = int.Parse(args[1], System.Globalization.CultureInfo.InvariantCulture);
+                PackageEnvironmentLease.Resume(launch.PackageFamilyName, pid, int.Parse(args[3], System.Globalization.CultureInfo.InvariantCulture));
+                AtomicJsonFile.WriteAsync(Path.Combine(helperPaths.StateRoot, $"desktop-cli-resumed-{pid}.json"), new { resumed = true }).GetAwaiter().GetResult();
+            }
+            catch { Environment.ExitCode = 1; }
+            return;
+        }
+        if (Environment.GetEnvironmentVariable(AccountModule.EnvironmentVariable) == "1")
+        {
+            try
+            {
+                var modulePaths = LoaderPaths.ForProduction();
+                var launch = AtomicJsonFile.ReadAsync<AccountLaunch>(AccountModule.LaunchPath(modulePaths)).GetAwaiter().GetResult()
+                    ?? throw new InvalidDataException("Account launch context is unavailable.");
+                var enabled = AtomicJsonFile.ReadAsync<AccountModulePreferences>(AccountModule.PreferencesPath(modulePaths)).GetAwaiter().GetResult()?.Enabled == true;
+                Environment.SetEnvironmentVariable(AccountModule.EnvironmentVariable, null);
+                Environment.SetEnvironmentVariable("CODEX_WINDOWS_SANDBOX_PACKAGE_FAMILY", launch.PackageFamilyName);
+                Environment.ExitCode = DesktopCli.RunAsync(Path.Combine(modulePaths.DataRoot, "accounts"), args, enabled).GetAwaiter().GetResult();
+            }
+            catch { Environment.ExitCode = 1; }
+            return;
+        }
         ApplicationConfiguration.Initialize();
         var paths = LoaderPaths.ForProduction();
         paths.EnsureDirectories();

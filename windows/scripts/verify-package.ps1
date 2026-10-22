@@ -3,7 +3,7 @@ param(
   [Parameter(Mandatory)]
   [string]$ArtifactRoot,
   [Parameter(Mandatory)]
-  [ValidatePattern("^\d+\.\d+\.\d+$")]
+  [ValidatePattern("^\d+\.\d+\.\d+(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$")]
   [string]$Version,
   [Parameter(Mandatory)]
   [ValidateSet("x64", "arm64")]
@@ -112,11 +112,14 @@ foreach ($required in @(
   "$hostRelative/CodexScriptLoader.Command.exe",
   "$hostRelative/CodexScriptLoader.Command.dll",
   "$hostRelative/CodexScriptLoader.Core.dll",
+  "$hostRelative/CodexScriptLoader.Accounts.dll",
   "$hostRelative/CodexScriptLoader.Interop.dll",
   "$hostRelative/coreclr.dll",
   "$hostRelative/bundled/example-ui-plugin/index.js",
   "$hostRelative/bundled/example-ui-plugin/manifest.json",
-  "$hostRelative/bundled/settings-host.mjs"
+  "$hostRelative/bundled/settings-host.mjs",
+  "$hostRelative/bundled/composer-host.mjs",
+  "$hostRelative/bundled/accounts-ui.js"
 )) {
   if (-not $appHashes.Contains($required)) { throw "Required application payload is missing: $required" }
 }
@@ -208,6 +211,7 @@ if ($RequireSignature) {
     (Join-Path $hostRoot "CodexScriptLoader.Command.exe"),
     (Join-Path $hostRoot "CodexScriptLoader.Command.dll"),
     (Join-Path $hostRoot "CodexScriptLoader.Core.dll"),
+    (Join-Path $hostRoot "CodexScriptLoader.Accounts.dll"),
     (Join-Path $hostRoot "CodexScriptLoader.Interop.dll")
   )) {
     $signature = Get-AuthenticodeSignature -LiteralPath $path

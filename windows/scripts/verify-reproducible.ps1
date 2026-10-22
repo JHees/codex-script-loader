@@ -2,8 +2,8 @@
 param(
   [ValidateSet("win-x64", "win-arm64")]
   [string]$RuntimeIdentifier = "win-x64",
-  [ValidatePattern("^\d+\.\d+\.\d+$")]
-  [string]$Version = "0.5.16",
+  [ValidatePattern("^\d+\.\d+\.\d+(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$")]
+  [string]$Version = "0.6.0-alpha",
   [string]$NsisPath
 )
 

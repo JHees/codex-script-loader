@@ -13,7 +13,7 @@ public static class InjectionSourceBuilder
         return Build(descriptors, settingsHostModule, forceIds);
     }
 
-    public static string Build(IReadOnlyList<ScriptDescriptor> descriptors, string settingsHostModule, IReadOnlySet<string> forceIds, string? composerHostModule = null)
+    public static string Build(IReadOnlyList<ScriptDescriptor> descriptors, string settingsHostModule, IReadOnlySet<string> forceIds, string? composerHostModule = null, string? builtinSource = null)
     {
         var builder = new StringBuilder();
         builder.AppendLine(BootstrapSource);
@@ -25,6 +25,7 @@ public static class InjectionSourceBuilder
             builder.AppendLine(WrapScript(descriptor, forceIds.Contains(descriptor.Id)));
         }
 
+        if (builtinSource is not null) builder.AppendLine(builtinSource);
         builder.AppendLine(SnapshotSource);
         return builder.ToString();
     }
@@ -248,7 +249,7 @@ public static class InjectionSourceBuilder
     (() => {
       const existing = globalThis.__codexScriptLoader;
       const runtime = existing && typeof existing === "object" ? existing : {};
-      runtime.runtimeVersion = "0.5.16";
+      runtime.runtimeVersion = "0.6.0-alpha";
       runtime.documentId = runtime.documentId || Math.random().toString(36).slice(2);
       runtime.scripts = runtime.scripts || Object.create(null);
       runtime.errors = Array.isArray(runtime.errors) ? runtime.errors.slice(-100) : [];

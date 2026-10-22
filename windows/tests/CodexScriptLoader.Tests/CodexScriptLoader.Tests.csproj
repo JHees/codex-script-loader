@@ -8,6 +8,7 @@
     <ProjectReference Include="..\..\src\CodexScriptLoader.Core\CodexScriptLoader.Core.csproj" />
     <ProjectReference Include="..\..\src\CodexScriptLoader.Interop\CodexScriptLoader.Interop.csproj" />
     <ProjectReference Include="..\..\src\CodexScriptLoader.Windows\CodexScriptLoader.Windows.csproj" />
+    <ProjectReference Include="..\..\tools\HostTransportProbe\HostTransportProbe.csproj" />
   </ItemGroup>
   <ItemGroup>
     <Content Include="..\..\..\packages\example-ui-plugin\index.js" Link="fixtures\example-ui-plugin\index.js" CopyToOutputDirectory="PreserveNewest" />

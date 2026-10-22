@@ -211,6 +211,9 @@ internal sealed class LoaderHostBridge : IAsyncDisposable
                 "page_companion_bind" or
                 "page_companion_invoke" or
                 "page_companion_unbind" or
+                "get_accounts_status" or
+                "set_accounts_enabled" or
+                "accounts_invoke" or
                 "set_plugin_auto_update" or
                 "start_plugin_update" or
                 "confirm_plugin_update" or

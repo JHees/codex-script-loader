@@ -5,12 +5,18 @@
       "CodexScriptLoader": {
         "type": "Project",
         "dependencies": {
-          "CodexScriptLoader.Core": "[0.5.7, )",
-          "CodexScriptLoader.Interop": "[0.5.7, )"
+          "CodexScriptLoader.Core": "[0.5.16, )",
+          "CodexScriptLoader.Interop": "[0.5.16, )"
         }
       },
-      "codexscriptloader.core": {
+      "codexscriptloader.accounts": {
         "type": "Project"
+      },
+      "codexscriptloader.core": {
+        "type": "Project",
+        "dependencies": {
+          "CodexScriptLoader.Accounts": "[0.5.16, )"
+        }
       },
       "codexscriptloader.interop": {
         "type": "Project"

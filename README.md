@@ -6,7 +6,7 @@
 
 **Open Codex for user scripts, with automatic injection, reload, and cleanup.**
 
-[![Version](https://img.shields.io/badge/version-0.5.16-f97316)](https://github.com/JHees/codex-script-loader)
+[![Version](https://img.shields.io/badge/version-0.6.0--alpha-f97316)](https://github.com/JHees/codex-script-loader)
 [![Windows](https://img.shields.io/badge/Windows-11-0078d4?logo=windows11)](#requirements)
 [![macOS](https://img.shields.io/badge/macOS-untested-999999?logo=apple)](#platform-support)
 [![.NET](https://img.shields.io/badge/.NET-10-512bd4?logo=dotnet)](global.json)
@@ -36,6 +36,27 @@ Windows uses the native .NET 10 background host with no console or tray icon and
 | Plugin release updates | Scans update-aware public GitHub plugins, then verifies and atomically reloads an opted-in update per plugin. |
 | Example plugin included | Installs a small Loader-owned UI plugin that demonstrates the package contract. |
 | Windows packaging | Produces per-user NSIS setup executables and portable ZIP archives for x64 and arm64. |
+| Optional account module (source candidate) | Enable in Loader settings to show account management and route local chats through saved accounts. Included in the Windows host; disabled by default. |
+
+### Built-in accounts
+
+The current candidate is **0.6.0-alpha**. It requires manual installation and is
+not offered through the stable update channel.
+
+Loader and plugin packages accept alpha/beta versions with optional numeric
+identifiers, such as `0.6.0-alpha.1` and `1.2.3-beta.2`. To install a prerelease
+plugin from GitHub, paste its exact Release or ZIP link. Repository/latest links
+and automatic updates continue to select stable releases.
+
+In candidate builds that include this feature, open **Codex Settings → Script-Loader → Settings → Built-in features → Start account module**. Enabling it starts the account backend and adds **Account management** to the settings navigation. The choice persists across launches. Disabling it stops the backend and removes the account page and sidebar selector while retaining saved data; active chats, login, and account-switch operations must finish first.
+
+The page supports subscription login, importing saved API relay connections, connection checks, quota display when available, renaming, enabling/disabling accounts, and choosing one global account for local chats. The sidebar account menu shows login status and available quota or credit balances. Selecting an account applies it to new and existing local chats; running turns and their subtasks finish before their chats migrate, retaining IDs and history. Remote/cloud chats remain outside this module.
+
+**Add model connection** supports DeepSeek, OpenRouter, and custom Responses providers with an explicit model and capability configuration. **Edit configuration** is available for existing imported API relays as well as new connections. It saves independent revisions and restores previous configurations and keys. DeepSeek presets and model discovery fill supported capabilities; advanced settings remain available when a service omits metadata. Active chats finish their current turn before moving to the selected revision. Provider rollback leaves the desktop's primary configuration intact; real provider generation still requires acceptance with your own API key.
+
+When first enabled in an already open Codex session, account management is immediately available; chat routing takes effect on the next launch through Loader. Changing the module's startup state can require restarting Codex to reconnect its chat backend. Settings show whether routing is connected.
+
+This module shares Loader's build, version, and installer. It is not a renderer plugin or an extension of the public plugin interface. Existing standalone candidate accounts are copied into Loader's private account store on first enable; the old store remains as a backup. See [account module design and verification](docs/ACCOUNTS.md).
 
 ## Requirements
 
@@ -81,12 +102,12 @@ build/
 ├── app/active.json
 ├── app/previous.json
 ├── app/update-manifest.json
-├── app/versions/0.5.16/win-x64/               # complete Loader host
-├── CodexScriptLoader-0.5.16-windows-x64-setup.exe
-├── CodexScriptLoader-0.5.16-windows-x64-setup.exe.sha256
-├── CodexScriptLoader-0.5.16-windows-x64.zip
-├── CodexScriptLoader-0.5.16-windows-x64.zip.sha256
-└── CodexScriptLoader-0.5.16-x64.spdx.json
+├── app/versions/0.6.0-alpha/win-x64/               # complete Loader host
+├── CodexScriptLoader-0.6.0-alpha-windows-x64-setup.exe
+├── CodexScriptLoader-0.6.0-alpha-windows-x64-setup.exe.sha256
+├── CodexScriptLoader-0.6.0-alpha-windows-x64.zip
+├── CodexScriptLoader-0.6.0-alpha-windows-x64.zip.sha256
+└── CodexScriptLoader-0.6.0-alpha-x64.spdx.json
 ```
 
 The setup executable at the top of `build` is the normal local installation entry. The `build\app` directory is packaging payload, not the recommended launch path. The installer keeps scripts and settings under `%LOCALAPPDATA%\CodexScriptLoader` when upgrading or uninstalling.

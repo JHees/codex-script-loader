@@ -2,8 +2,14 @@
   "version": 1,
   "dependencies": {
     "net10.0-windows7.0": {
-      "codexscriptloader.core": {
+      "codexscriptloader.accounts": {
         "type": "Project"
+      },
+      "codexscriptloader.core": {
+        "type": "Project",
+        "dependencies": {
+          "CodexScriptLoader.Accounts": "[0.5.16, )"
+        }
       }
     },
     "net10.0-windows7.0/win-arm64": {},

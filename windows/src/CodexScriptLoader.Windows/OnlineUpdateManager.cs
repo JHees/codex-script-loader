@@ -287,7 +287,7 @@ internal sealed class OnlineUpdateManager : IAsyncDisposable
     internal static void ValidateRelease(GitHubReleaseInfo release)
     {
         if (string.IsNullOrWhiteSpace(release.TagName) || string.IsNullOrWhiteSpace(release.HtmlUrl) ||
-            !release.TagName.StartsWith('v') || release.TagName[1..] != release.Version ||
+              !release.TagName.StartsWith('v') || release.TagName[1..] != release.Version || release.Version.Contains('-') ||
             !string.Equals(release.HtmlUrl, $"https://github.com/{Repository}/releases/tag/{release.TagName}", StringComparison.Ordinal))
         {
             throw new InvalidDataException("GitHub release identity is invalid or is not a stable release.");

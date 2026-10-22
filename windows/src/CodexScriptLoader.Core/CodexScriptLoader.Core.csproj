@@ -3,4 +3,7 @@
     <AssemblyName>CodexScriptLoader.Core</AssemblyName>
     <RootNamespace>CodexScriptLoader.Core</RootNamespace>
   </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\CodexScriptLoader.Accounts\CodexScriptLoader.Accounts.csproj" />
+  </ItemGroup>
 </Project>

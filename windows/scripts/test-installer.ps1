@@ -3,7 +3,7 @@ param(
   [Parameter(Mandatory)]
   [string]$ArtifactRoot,
   [Parameter(Mandatory)]
-  [ValidatePattern("^\d+\.\d+\.\d+$")]
+  [ValidatePattern("^\d+\.\d+\.\d+(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$")]
   [string]$Version
 )
 

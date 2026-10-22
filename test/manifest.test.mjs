@@ -80,7 +80,12 @@ test("manifest exposes a validated GitHub Release update interface", () => {
   assert.throws(() => validateManifest({ id: "test.valid", update: { provider: "github-releases", repository: "https:\/\/github.com\/Example\/repo", asset: "plugin-{version}.zip" } }, root), /repository/);
   assert.throws(() => validateManifest({ id: "test.valid", update: { provider: "github-releases", repository: "Example/repo", asset: "folder\/plugin-{version}.zip" } }, root), /asset/);
   assert.throws(() => validateManifest({ id: "test.valid", update: { provider: "github-releases", repository: "Example/repo", asset: "plugin-{tag}.zip" } }, root), /asset/);
-  assert.throws(() => validateManifest({ id: "test.valid", version: "1.2.3-beta.1", update: { provider: "github-releases", repository: "Example/repo", asset: "plugin-{version}.zip" } }, root), /stable/);
+  for (const version of ["1.2.3-alpha", "1.2.3-alpha.1", "1.2.3-beta", "1.2.3-beta.2"]) {
+    assert.equal(validateManifest({ id: "test.valid", version, update: { provider: "github-releases", repository: "Example/repo", asset: "plugin-{version}.zip" } }, root).version, version);
+  }
+  for (const version of ["1.2.3-alpha.01", "1.2.3-beta..1", "1.2.3-beta/../other"]) {
+    assert.throws(() => validateManifest({ id: "test.valid", version, update: { provider: "github-releases", repository: "Example/repo", asset: "plugin-{version}.zip" } }, root), /semantic version/);
+  }
   assert.throws(() => validateManifest({ id: "test.valid", version: "1.2.3", update: { provider: "github-releases", repository: "Example/repo.git", asset: "plugin-{version}.zip" } }, root), /repository/);
   assert.throws(() => validateManifest({ id: "test.valid", version: "1.2.3", update: { provider: "github-releases", repository: "Example/repo", asset: "plugin-{version}-{version}.zip" } }, root), /asset/);
   assert.throws(() => validateManifest({ id: "test.valid", version: "1.2.3", update: { provider: "github-releases", repository: "Example/repo", asset: "plugin:{version}.zip" } }, root), /asset/);

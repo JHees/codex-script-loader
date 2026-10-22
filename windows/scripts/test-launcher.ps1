@@ -3,7 +3,7 @@ param(
   [Parameter(Mandatory)]
   [string]$ArtifactRoot,
   [Parameter(Mandatory)]
-  [ValidatePattern("^\d+\.\d+\.\d+$")]
+  [ValidatePattern("^\d+\.\d+\.\d+(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$")]
   [string]$Version
 )
 
@@ -18,7 +18,7 @@ $probePublish = Join-Path $testRoot "probe"
 $layoutRoot = Join-Path $testRoot "layout"
 $dotnet = Join-Path $repositoryRoot ".tools\dotnet\dotnet.exe"
 if (-not (Test-Path -LiteralPath $dotnet)) { $dotnet = (Get-Command dotnet -ErrorAction Stop).Source }
-$parsedVersion = [Version]$Version
+$parsedVersion = [Version]($Version -split '-', 2)[0]
 $candidateVersion = "$($parsedVersion.Major).$($parsedVersion.Minor).$($parsedVersion.Build + 1)"
 
 function Write-Pointer([string]$Path, [string]$PointerVersion, [string]$EntryPoint) {

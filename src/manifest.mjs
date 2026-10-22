@@ -7,7 +7,7 @@ const ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 const RUN_AT = new Set(["document-start", "document-end"]);
 const LIFECYCLE_GLOBAL_PATTERN = /^[A-Za-z_$][A-Za-z0-9_$]{0,127}$/;
 const GITHUB_REPOSITORY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}\/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/;
-const STABLE_VERSION_PATTERN = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
+const VERSION_PATTERN = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$/;
 const PAGE_COMPANION_OPERATION_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
 const PAGE_COMPANION_PERMISSION = "browser-page-companion";
 const PAGE_COMPANION_ORIGINS = new Set(["https://chatgpt.com"]);
@@ -113,7 +113,7 @@ export function validateManifest(input, scriptDirectory) {
       throw new Error("manifest update asset must be a versioned ZIP filename using {version}");
     }
     const version = String(input.version || "0.0.0");
-    if (!STABLE_VERSION_PATTERN.test(version)) throw new Error("manifest update requires a stable major.minor.patch version");
+    if (!VERSION_PATTERN.test(version)) throw new Error("manifest update requires a semantic version, optionally with a prerelease suffix");
     update = Object.freeze({ provider, repository, asset });
   }
 

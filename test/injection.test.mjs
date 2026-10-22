@@ -144,7 +144,7 @@ test("settings API is permission-gated and owned by the loader host", () => {
   assert.equal(typeof context.__settingsApi.registerPage, "function");
   assert.equal(typeof context.__settingsApi.register, "function");
   assert.equal(context.__processKind, "renderer");
-  assert.equal(context.__codexScriptLoader.settingsHost.snapshot().version, "0.5.16");
+  assert.equal(context.__codexScriptLoader.settingsHost.snapshot().version, "0.6.0-alpha");
 
   const withoutPermission = { ...descriptor({ id: "test.no-settings", source: "globalThis.__settingsWithoutPermission = api.settings;" }), permissions: [] };
   vm.runInContext(buildInjectionSource([withoutPermission]), context);
@@ -212,7 +212,7 @@ test("loopback socket opened asynchronously is still cleaned up when the plugin 
 test("settings host groups management and plugin pages under Script-Loader without refreshing Codex", () => {
   const source = buildInjectionSource([]);
   assert.match(source, /loaderGroup: "Script-Loader"/);
-  assert.match(source, /const implementationRevision = "settings-sidebar-identity-6"/);
+  assert.match(source, /const implementationRevision = "settings-accounts-module-7"/);
   assert.match(source, /current\?\.version === version && current\?\.implementationRevision === implementationRevision/);
   assert.match(source, /implementationRevision,/);
   assert.doesNotMatch(source, /tweaksGroup:/);
@@ -268,7 +268,7 @@ test("settings host groups management and plugin pages under Script-Loader witho
   assert.match(source, /enablePluginAutoUpdate: "开启自动更新"/);
   assert.match(source, /disablePluginAutoUpdate: "关闭自动更新"/);
   assert.match(source, /pluginAutoUpdateInline\(value\) \{ return `自动更新：\$\{value\}`; \}/);
-  assert.match(source, /detailParts\.push\(labels\.pluginAutoUpdateInline\(pluginAutoUpdateStatus\(plugin\)\)\)/);
+  assert.match(source, /automatic\.textContent = labels\.pluginAutoUpdateInline\(pluginAutoUpdateStatus\(plugin\)\)/);
   assert.match(source, /plugin\.update\?\.automatic === true \? labels\.disablePluginAutoUpdate : labels\.enablePluginAutoUpdate/);
   assert.match(source, /pluginUpdates: "插件更新"/);
   assert.match(source, /pluginUpdates: "Plugin updates"/);
@@ -309,7 +309,7 @@ test("settings host groups management and plugin pages under Script-Loader witho
   assert.match(source, /px-4 gap-6 py-3/);
   assert.match(source, /mountedGroups/);
   assert.match(source, /get_app_status/);
-  assert.match(source, /updateHeaderStack\.appendChild\(updateFeedback\)/);
+  assert.doesNotMatch(source, /updateFeedback/);
   assert.match(source, /updateCard\.append\([^\n]*updateError\.row/);
   assert.match(source, /function showUpdateError/);
   assert.match(source, /let updateStatusError = null/);

@@ -17,7 +17,7 @@ internal enum ManagedCodexExitReason
 
 internal sealed class LiveSupervisor : IAsyncDisposable
 {
-    public const string Version = "0.5.16";
+    public const string Version = "0.6.0-alpha";
     private const string TrustedInputPermission = "trusted-input";
     private static readonly TimeSpan GracefulRestartShutdownTimeout = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan ForcedRestartShutdownTimeout = TimeSpan.FromSeconds(10);
@@ -28,6 +28,8 @@ internal sealed class LiveSupervisor : IAsyncDisposable
     private static readonly TimeSpan PackageUpdateDetectionGracePeriod = TimeSpan.FromSeconds(90);
     private readonly LoaderPaths paths;
     private readonly JsonlLogger logger;
+    private readonly AccountModule accounts;
+    private readonly string accountUiPath;
     private readonly SemaphoreSlim operation = new(1, 1);
     private readonly SemaphoreSlim hostInvocation = new(1, 1);
     private CancellationTokenSource? activeHostCommand;
@@ -54,6 +56,8 @@ internal sealed class LiveSupervisor : IAsyncDisposable
     {
         this.paths = paths;
         this.logger = logger;
+        accounts = new AccountModule(paths, Environment.ProcessPath ?? throw new InvalidOperationException("Loader executable is unavailable."));
+        accountUiPath = Path.Combine(AppContext.BaseDirectory, "bundled", "accounts-ui.js");
         State = LoaderState.Starting;
     }
 
@@ -285,18 +289,47 @@ internal sealed class LiveSupervisor : IAsyncDisposable
             var settingsHost = Path.Combine(AppContext.BaseDirectory, "bundled", "settings-host.mjs");
             var bundledExample = Path.Combine(AppContext.BaseDirectory, "bundled", "example-ui-plugin");
             registry = new ScriptRegistry(paths, settingsHost, UserSkillRoot(), DirectoryJunction.Create);
+            registry.BuiltinSource = () => accounts.BuildUiSource(File.ReadAllText(accountUiPath));
             await registry.InitializeAsync(cancellationToken).ConfigureAwait(false);
             await registry.EnsureBundledScriptAsync(bundledExample, cancellationToken).ConfigureAwait(false);
             await InitializePluginUpdateManagerAsync(cancellationToken).ConfigureAwait(false);
 
             var port = AllocateLoopbackPort();
             client = new CdpClient(port);
-            activationProcessId = ApplicationActivator.Activate(package,
-            [
+            await RetireAccountPluginAsync(cancellationToken).ConfigureAwait(false);
+            var launchPlan = await registry.BuildPlanAsync(force: false, cancellationToken).ConfigureAwait(false);
+            await accounts.InitializeAsync(launchPlan.SafeMode, cancellationToken).ConfigureAwait(false);
+            var extension = accounts.IsRunning;
+            if (extension) await AtomicJsonFile.WriteAsync(AccountModule.LaunchPath(paths), new AccountLaunch(package.PackageFullName, package.PackageFamilyName), cancellationToken).ConfigureAwait(false);
+            string[] activationArguments = [
                 "--remote-debugging-address=127.0.0.1",
                 $"--remote-debugging-port={port}",
                 $"--remote-allow-origins=http://127.0.0.1:{port}",
-            ]);
+            ];
+            if (!extension) activationProcessId = ApplicationActivator.Activate(package, activationArguments);
+            else
+            {
+                foreach (var variable in new[] { "CODEX_CLI_PATH", "CODEX_APP_SERVER_WS_URL", "CODEX_APP_SERVER_FORCE_CLI", AccountModule.EnvironmentVariable })
+                    if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable(variable))) throw new InvalidOperationException($"Existing {variable} conflicts with the desktop CLI extension.");
+                using var lease = new PackageEnvironmentLease(package.PackageFullName);
+                var launchEnvironment = new Dictionary<string, string>
+                {
+                    ["CODEX_CLI_PATH"] = Environment.ProcessPath!,
+                    [AccountModule.EnvironmentVariable] = "1",
+                };
+                foreach (var variable in new[] { "CODEX_HOME", "CODEX_SQLITE_HOME" })
+                    if (Environment.GetEnvironmentVariable(variable) is { Length: > 0 } value) launchEnvironment[variable] = value;
+                lease.Enable($"\"{Environment.ProcessPath!}\"", launchEnvironment);
+                activationProcessId = ApplicationActivator.Activate(package, activationArguments);
+                var receipt = Path.Combine(paths.StateRoot, $"desktop-cli-resumed-{activationProcessId}.json");
+                var deadline = DateTime.UtcNow.AddSeconds(20);
+                while (!File.Exists(receipt))
+                {
+                    if (DateTime.UtcNow >= deadline) throw new TimeoutException("Desktop CLI activation helper did not complete.");
+                    await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+                }
+                File.Delete(receipt);
+            }
             logger.Info("codex-activated", new { package.PackageFullName, package.AppUserModelId, activationProcessId, port });
 
             var targets = await WaitForTargetsAsync(client, TimeSpan.FromSeconds(20), cancellationToken).ConfigureAwait(false);
@@ -363,7 +396,10 @@ internal sealed class LiveSupervisor : IAsyncDisposable
             var settingsHost = Path.Combine(AppContext.BaseDirectory, "bundled", "settings-host.mjs");
             var bundledExample = Path.Combine(AppContext.BaseDirectory, "bundled", "example-ui-plugin");
             registry = new ScriptRegistry(paths, settingsHost, UserSkillRoot(), DirectoryJunction.Create);
+            registry.BuiltinSource = () => accounts.BuildUiSource(File.ReadAllText(accountUiPath));
             await registry.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            await RetireAccountPluginAsync(cancellationToken).ConfigureAwait(false);
+            await accounts.InitializeAsync(registry.SafeMode, cancellationToken).ConfigureAwait(false);
             await registry.EnsureBundledScriptAsync(bundledExample, cancellationToken).ConfigureAwait(false);
             await InitializePluginUpdateManagerAsync(cancellationToken).ConfigureAwait(false);
 
@@ -420,6 +456,7 @@ internal sealed class LiveSupervisor : IAsyncDisposable
         try
         {
             if (client is null || injector is null) throw new InvalidOperationException("Managed runtime is not ready for handoff suspension.");
+            await accounts.SuspendAsync(CancellationToken.None).ConfigureAwait(false);
             var targets = await client.GetCodexTargetsAsync(CancellationToken.None).ConfigureAwait(false);
             if (transport is not null)
             {
@@ -451,6 +488,7 @@ internal sealed class LiveSupervisor : IAsyncDisposable
 
             var targets = await client.GetCodexTargetsAsync(cancellationToken).ConfigureAwait(false);
             if (targets.Count == 0) throw new InvalidOperationException("No renderer target is available for handoff recovery.");
+            await accounts.InitializeAsync(registry.SafeMode, cancellationToken).ConfigureAwait(false);
             var plan = await registry.BuildPlanAsync(force: true, cancellationToken).ConfigureAwait(false);
             if (transport is not null) await transport.SetAuthorizedPluginsAsync(plan.Scripts, cancellationToken).ConfigureAwait(false);
             if (pageCompanions is not null) await pageCompanions.SetAuthorizedPluginsAsync(plan.Scripts, cancellationToken).ConfigureAwait(false);
@@ -684,6 +722,12 @@ internal sealed class LiveSupervisor : IAsyncDisposable
         return false;
     }
 
+    private async Task RetireAccountPluginAsync(CancellationToken cancellation)
+    {
+        if (Directory.Exists(Path.Combine(paths.ScriptsRoot, AccountModule.LegacyPluginId)))
+            await registry!.QuarantineAsync(AccountModule.LegacyPluginId, cancellation).ConfigureAwait(false);
+    }
+
     private async Task InjectAsync(IReadOnlyList<CdpTarget> targets, IReadOnlySet<string>? forceIds, CancellationToken cancellationToken)
     {
         var plan = await registry!.BuildPlanAsync(forceIds, cancellationToken).ConfigureAwait(false);
@@ -706,6 +750,28 @@ internal sealed class LiveSupervisor : IAsyncDisposable
         {
             var ids = command == "reload_plugins" ? ReadIds(payload) : null;
             return await ReloadPluginsAsync(ids, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (command == "get_accounts_status") return await accounts.StatusAsync(cancellationToken).ConfigureAwait(false);
+        if (command == "set_accounts_enabled")
+        {
+            if (!payload.TryGetProperty("enabled", out var value) || value.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                throw new ArgumentException("A boolean enabled value is required.");
+            await operation.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await accounts.SetEnabledAsync(value.GetBoolean(), cancellationToken).ConfigureAwait(false);
+                var targets = await client!.GetCodexTargetsAsync(cancellationToken).ConfigureAwait(false);
+                await InjectAsync(targets, new HashSet<string>(StringComparer.Ordinal), cancellationToken).ConfigureAwait(false);
+                return await accounts.StatusAsync(cancellationToken).ConfigureAwait(false);
+            }
+            finally { operation.Release(); }
+        }
+        if (command == "accounts_invoke")
+        {
+            var body = payload.TryGetProperty("payload", out var supplied) && supplied.ValueKind == JsonValueKind.Object
+                ? supplied.Clone() : JsonSerializer.SerializeToElement(new { });
+            return (object?)await accounts.InvokeAsync(RequiredPayloadText(payload, "operation", 64), body, cancellationToken).ConfigureAwait(false) ?? new { };
         }
 
         if (command == "page_companion_probe")
@@ -1255,6 +1321,7 @@ internal sealed class LiveSupervisor : IAsyncDisposable
 
     private async Task DisposeBridgeAndTransportAsync()
     {
+        await accounts.DisposeAsync().ConfigureAwait(false);
         var currentPageCompanions = pageCompanions;
         pageCompanions = null;
         if (currentPageCompanions is not null) await currentPageCompanions.DisposeAsync().ConfigureAwait(false);

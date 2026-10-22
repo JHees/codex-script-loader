@@ -6,7 +6,7 @@
 
 **打开 Codex 调试入口，加载用户脚本，并自动管理注入、重载与清理。**
 
-[![Version](https://img.shields.io/badge/version-0.5.16-f97316)](https://github.com/JHees/codex-script-loader)
+[![Version](https://img.shields.io/badge/version-0.6.0--alpha-f97316)](https://github.com/JHees/codex-script-loader)
 [![Windows](https://img.shields.io/badge/Windows-11-0078d4?logo=windows11)](#系统要求)
 [![macOS](https://img.shields.io/badge/macOS-未测试-999999?logo=apple)](#平台支持)
 [![.NET](https://img.shields.io/badge/.NET-10-512bd4?logo=dotnet)](global.json)
@@ -36,6 +36,23 @@ Windows 使用无控制台、无托盘图标的原生 .NET 10 后台宿主，是
 | 插件 Release 更新 | 扫描声明了公开 GitHub 更新源的插件，并对用户单独启用的更新执行校验、原子替换和定向重载。 |
 | 内置示例插件 | 首次运行安装一个由 Loader 自身维护、用于演示插件包契约的小型 UI 插件。 |
 | Windows 打包 | 为 x64/arm64 生成每用户 NSIS 安装器和 portable ZIP。 |
+| 可选账号模块（源码候选） | 在 Loader 设置中启用后显示账号管理页，并为本地聊天选择账号；随 Windows 宿主打包，默认关闭。 |
+
+### 内置账号模块
+
+当前候选版本为 **0.6.0-alpha**，需要手动安装，不通过稳定版更新通道分发。
+
+Loader 与插件均支持带可选序号的 alpha/beta 版本，例如 `0.6.0-alpha.1` 和 `1.2.3-beta.2`。从 GitHub 安装预发布插件时，请粘贴该版本的完整 Release 或 ZIP 链接；仓库首页、latest 链接和自动更新仍选择稳定版。
+
+在包含此功能的候选构建中，打开 **Codex 设置 → Script-Loader → 设置 → 内置功能 → 启动账号模块**。启用后立即启动账号后台，并在设置导航中新增 **账号管理**。开关状态会保留到下次启动；关闭后停止后台、隐藏账号页和侧边栏账号入口，同时保留账号数据。有聊天生成、登录或切换操作进行时，需要先等待结束。
+
+账号页支持订阅账号登录、导入已保存的中转接入、连接检测、可用时展示额度、改名、启停账号，以及选择本地聊天的全局账号。侧边栏账号菜单显示登录状态、可查询的剩余额度和 Credits 余额。切换会应用到新建和已有本地聊天；正在运行的轮次及其子任务先完成，再迁移到所选账号，保留聊天 ID 和历史。远程和云端聊天不由此模块管理。
+
+**添加模型接入**支持 DeepSeek、OpenRouter 和自定义 Responses 服务，可填写模型、上下文长度与模型能力。新建和旧版导入的 API 接入都提供**编辑配置**入口，修改保存为独立版本，可恢复旧配置和对应密钥。DeepSeek 预设和“获取模型并自动配置”会填写服务声明的参数，未声明的信息可在高级设置中补充；运行中的聊天完成当前轮后再切换。模型配置回滚不会改写桌面主配置，真实服务的生成能力仍需使用自己的 API Key 验收。
+
+在已经打开的 Codex 中首次启用时，账号管理立即可用，聊天路由需要下次通过 Loader 启动 Codex 时接入。改变模块启动状态后，可能需要重新启动 Codex 才能重新连接聊天后台；设置页会显示路由是否已经连接。
+
+该模块与 Loader 共用构建、版本和安装包，不作为 renderer 插件，也不扩展公开插件 interface。首次启用时会把旧独立候选中的账号复制到 Loader 私有账号目录，保留旧目录作为备份。实现边界与验证方式见[账号模块说明](docs/ACCOUNTS.md)。
 
 ## 系统要求
 
@@ -76,12 +93,12 @@ build/
 ├── app/active.json
 ├── app/previous.json
 ├── app/update-manifest.json
-├── app/versions/0.5.16/win-x64/               # 完整 Loader 宿主
-├── CodexScriptLoader-0.5.16-windows-x64-setup.exe
-├── CodexScriptLoader-0.5.16-windows-x64-setup.exe.sha256
-├── CodexScriptLoader-0.5.16-windows-x64.zip
-├── CodexScriptLoader-0.5.16-windows-x64.zip.sha256
-└── CodexScriptLoader-0.5.16-x64.spdx.json
+├── app/versions/0.6.0-alpha/win-x64/               # 完整 Loader 宿主
+├── CodexScriptLoader-0.6.0-alpha-windows-x64-setup.exe
+├── CodexScriptLoader-0.6.0-alpha-windows-x64-setup.exe.sha256
+├── CodexScriptLoader-0.6.0-alpha-windows-x64.zip
+├── CodexScriptLoader-0.6.0-alpha-windows-x64.zip.sha256
+└── CodexScriptLoader-0.6.0-alpha-x64.spdx.json
 ```
 
 ### macOS live runtime（尚未测试）

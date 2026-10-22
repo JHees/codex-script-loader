@@ -8,6 +8,8 @@
 /.tools/
 **/bin/
 **/obj/
+**/__pycache__/
+*.pyc
 
 # Local runtime state
 /.runtime/

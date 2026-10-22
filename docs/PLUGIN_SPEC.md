@@ -55,8 +55,8 @@ plugin-id/
 - `documentation` is a safe package-relative Markdown file. Current packages use `README.md`.
 - `settings.mode` is `page` or `none`. A `page` declaration requires the `settings` permission. `pageId` defaults to `main`.
 - Omitting `settings` or `documentation` is accepted only as legacy compatibility behavior.
-- `update` is optional host metadata. Version 1 supports only public `github.com` stable Releases through `provider: "github-releases"`. `repository` is exactly `owner/repository`, `asset` is a ZIP filename with one `{version}` placeholder, the tag is `v{version}`, and the checksum asset is `<ZIP filename>.sha256`.
-- Update-aware packages use a stable three-part numeric version. A candidate must preserve the installed package ID, repository, asset template, and declared update provider. Changing the update source requires a manual installation.
+- `update` is optional host metadata for public `github.com` Releases through `provider: "github-releases"`. Plugin versions may include alpha/beta prerelease suffixes. Automatic discovery selects stable Releases; explicitly pinned installation also accepts published prereleases. `repository` is exactly `owner/repository`, `asset` is a ZIP filename with one `{version}` placeholder, the tag is `v{version}`, and the checksum asset is `<ZIP filename>.sha256`.
+- Update-aware packages use a three-part numeric version with an optional prerelease suffix. A candidate must preserve the installed package ID, repository, asset template, and declared update provider. Changing the update source requires a manual installation.
 - The Loader never includes `update` in renderer `api.manifest`. It is a native package-management interface, not plugin runtime authority.
 - `permissions` are capabilities, not a security sandbox. Renderer plugins execute trusted local JavaScript in Codex and must be reviewed before enabling.
 - The opt-in `loopback-websocket` permission adds `api.localTransport.openWebSocket(endpoint)`. A plugin that does not declare this permission has no `localTransport` property; the rest of its `api` shape is unchanged.
@@ -131,7 +131,7 @@ This is a fixed continuation handshake, not a general input API. It cannot selec
 
 ### Installation from a GitHub link
 
-Native Windows Settings accepts public HTTPS GitHub repository, latest Release, stable tagged Release, and Release ZIP links. The host fetches metadata from a fixed unauthenticated GitHub REST endpoint (no arbitrary API or download URL is exposed to renderer plugins). Eligible assets are safe ZIP filenames up to 8 MiB with an exact same-name `.sha256` asset up to 4 KiB. Multiple candidates require an explicit selection pinned to the displayed Release.
+Native Windows Settings accepts public HTTPS GitHub repository, latest Release, pinned tagged Release, and Release ZIP links. Explicit tag or ZIP links also accept published alpha/beta prereleases, such as `v1.2.3-alpha`, `v1.2.3-beta`, or `v1.2.3-beta.2`. Repository/latest links continue to select stable releases; drafts are rejected. The host fetches metadata from a fixed unauthenticated GitHub REST endpoint (no arbitrary API or download URL is exposed to renderer plugins). Eligible assets are safe ZIP filenames up to 8 MiB with an exact same-name `.sha256` asset up to 4 KiB. Multiple candidates require an explicit selection pinned to the displayed Release.
 
 The complete archive is SHA-256 verified before entering the existing pending-package preview. Its manifest version, `update.repository`, and expanded `update.asset` must match the selected Release. The preview discloses the pinned source URL, verified hash, permissions, optional bundled Skill, and any existing same-ID version. User confirmation invokes the ordinary transactional installer; cancellation discards the pending package. Existing packages are not uninstalled before downloading or validating a candidate. Automatic updates remain a separate, default-off per-plugin preference.
 
@@ -141,7 +141,7 @@ The settings bridge exposes `preview_plugin_github` with `{ "url": "https://gith
 
 The native Windows host scans update-aware third-party plugins once after its first `Healthy` state and on explicit user request. Scanning is independent of automatic replacement. Automatic update is stored per plugin and defaults to off; old packages without `update` continue to load but are not scanned. Bundled packages are released with the Loader and never enter this flow.
 
-The Release must use a stable `vMAJOR.MINOR.PATCH` tag and publish the versioned ZIP plus a same-name `.sha256` file containing exactly one matching SHA-256 record. The Loader follows only official GitHub HTTPS redirects, verifies the repository and tag, bounds downloads and extraction, rejects unsafe ZIP entries, and validates the complete candidate manifest before replacement.
+Automatic update discovery continues to select stable `vMAJOR.MINOR.PATCH` releases. Installed plugin manifests may use a prerelease suffix, including alpha/beta with numeric identifiers. Versions compare by numeric core, then prerelease identifiers: `1.2.3-alpha < 1.2.3-alpha.1 < 1.2.3-beta < 1.2.3-beta.2 < 1.2.3`; numeric identifiers compare numerically. A prerelease plugin can therefore update to a newer stable release without losing its update declaration. Every Release must publish the versioned ZIP plus a same-name `.sha256` file containing exactly one matching SHA-256 record. The Loader follows only official GitHub HTTPS redirects, verifies the repository and tag, bounds downloads and extraction, rejects unsafe ZIP entries, and validates the complete candidate manifest before replacement.
 
 Replacement is transactional under the registry mutation lock. The installed version and full package fingerprint are rechecked, the old directory becomes a temporary backup, the candidate is moved atomically, and only that plugin is reloaded. Every managed renderer must report the new lifecycle as running. Failure restores and reloads the previous package; a persisted journal completes recovery after an interrupted process.
 
@@ -343,6 +343,13 @@ Only defaults should be persisted by consumers. Accessory handles and task
 binding are disposable, and cleanup is owned by Loader. See the disabled-by-default
 composer example in the bundled example plugin. Native model-call and full submit
 behavior still require explicit runtime acceptance before claiming readiness.
+
+Current native layouts may supply the conversation ID and execution host on
+separate ancestors. The host accepts only consistent native execution identity;
+permission-host metadata is not used as a routing identity. A draft may expose
+an additional `executionHostId` hint, and changing that host creates a new
+`draftId`. Pass only `draftId` to draft context/submission methods. An unavailable
+or ambiguous identity remains unavailable instead of guessing a local task.
 
 ## Loopback WebSocket transport
 

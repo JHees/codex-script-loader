@@ -21,7 +21,7 @@ internal static partial class Program
             "http://github.com/Example/plugin-repository", "https://github.com.evil.test/Example/repository",
             "https://user@github.com/Example/repository", "https://github.com:444/Example/repository",
             url + "?token=secret", url + "#readme", url + "/archive/refs/tags/v1.0.0.zip", url + "/tree/main",
-            url + "/releases/tag/v1.0.0-beta", url + "/releases/download/v1.0.0/../evil.zip",
+            url + "/releases/tag/v1.0.0-beta..1", url + "/releases/download/v1.0.0/../evil.zip",
             url + "/releases/download/v1.0.0/%2e%2e.zip", "https://github.com/Example" })
             await ThrowsAsync<Exception>(() => Task.FromResult(GitHubPluginLink.Parse(invalid)), "Unsafe/non-release link rejected: " + invalid);
 
@@ -97,6 +97,30 @@ internal static partial class Program
         await ThrowsAsync<InvalidDataException>(() => new GitHubPluginInstaller(paths, registry, wrongVersion).PreviewAsync(url, null, CancellationToken.None), "Manifest version must match release tag");
         Equal(fingerprint, await registry.ComputePackageFingerprintAsync(preview.Id), "All rejected downloads preserve installed package");
         Equal(false, Directory.EnumerateDirectories(Path.Combine(paths.StateRoot, "github-install-cache")).Any(), "Rejected downloads cleaned up");
+
+        foreach (var version in new[] { "1.2.3-alpha", "1.2.3-alpha.1", "1.2.3-beta", "1.2.3-beta.2" })
+        {
+            var prereleasePaths = LoaderPaths.FromRoot(Path.Combine(testRoot, "github-" + version));
+            await CreateTestPluginAsync(prereleasePaths, "local.prerelease", version: version, updateAware: true);
+            var prereleaseAsset = $"example-plugin-{version}.zip";
+            var prereleaseArchive = Path.Combine(prereleasePaths.StateRoot, prereleaseAsset);
+            ZipFile.CreateFromDirectory(Path.Combine(prereleasePaths.ScriptsRoot, "local.prerelease"), prereleaseArchive);
+            var prereleaseTransport = new FakeGitHubInstallTransport(repository, prereleaseAsset,
+                await File.ReadAllBytesAsync(prereleaseArchive), await UpdatePackageVerifier.ComputeSha256Async(prereleaseArchive))
+                { Tag = "v" + version, Prerelease = true };
+            var prereleaseInstaller = new GitHubPluginInstaller(paths, registry, prereleaseTransport);
+            await ThrowsAsync<InvalidDataException>(() => prereleaseInstaller.PreviewAsync(url, null, CancellationToken.None), "Unpinned install remains on stable releases");
+            var link = version.EndsWith(".2", StringComparison.Ordinal)
+                ? $"{url}/releases/download/v{version}/{prereleaseAsset}"
+                : $"{url}/releases/tag/v{version}";
+            var prereleasePreview = (await prereleaseInstaller.PreviewAsync(link, null, CancellationToken.None)).Preview!;
+            Equal(version, prereleasePreview.Version, "Pinned prerelease preview retains its full version");
+            await registry.InstallPendingAsync(prereleasePreview.Token, true);
+            await manager.RecordInstallationAsync(prereleasePreview.Id, CancellationToken.None);
+            Equal(version, (await registry.ListPluginsAsync()).Single(item => item.Id == prereleasePreview.Id).Version, "Alpha/beta package installed and replaced through ordinary lifecycle");
+            True(manager.SnapshotFor(prereleasePreview.Id).Supported, "Prerelease plugin remains eligible for future stable updates");
+            Equal(false, manager.SnapshotFor(prereleasePreview.Id).Automatic, "Prerelease installation does not opt in to automatic updates");
+        }
     }
 
     private sealed class FakeGitHubInstallTransport(string repository, string asset, byte[] archive, string hash) : IGitHubPluginInstallTransport

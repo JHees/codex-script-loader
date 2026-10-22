@@ -390,7 +390,7 @@ internal sealed class PluginUpdateManager : IAsyncDisposable
 
     private static void ValidateRelease(string repository, PluginReleaseInfo release)
     {
-        if (!string.Equals(release.Repository, repository, StringComparison.Ordinal) || string.IsNullOrWhiteSpace(release.Version) ||
+        if (!string.Equals(release.Repository, repository, StringComparison.Ordinal) || string.IsNullOrWhiteSpace(release.Version) || release.Version.Contains('-') ||
             !string.Equals(release.TagName, $"v{release.Version}", StringComparison.Ordinal) ||
             !string.Equals(release.HtmlUrl, $"https://github.com/{repository}/releases/tag/{release.TagName}", StringComparison.Ordinal))
         {

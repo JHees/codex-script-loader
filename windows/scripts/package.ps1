@@ -2,8 +2,8 @@
 param(
   [ValidateSet("win-x64", "win-arm64")]
   [string]$RuntimeIdentifier = "win-x64",
-  [ValidatePattern("^\d+\.\d+\.\d+$")]
-  [string]$Version = "0.5.16",
+  [ValidatePattern("^\d+\.\d+\.\d+(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$")]
+  [string]$Version = "0.6.0-alpha",
   [string]$NsisPath,
   [string]$CertificatePath,
   [string]$CertificatePassword,
@@ -14,14 +14,15 @@ param(
 $ErrorActionPreference = "Stop"
 $OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new()
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
+$fileVersion = ($Version -split '-', 2)[0] + ".0"
 $productVersion = (Get-Content -LiteralPath (Join-Path $repositoryRoot "package.json") -Raw -Encoding utf8 | ConvertFrom-Json).version
 if ($Version -ne $productVersion) { throw "Requested package version $Version does not match package.json version $productVersion." }
 [xml]$buildProps = Get-Content -LiteralPath (Join-Path $repositoryRoot "Directory.Build.props") -Raw -Encoding utf8
 if ([string]$buildProps.Project.PropertyGroup.Version -ne $Version) { throw "Directory.Build.props version does not match $Version." }
 [xml]$windowsProject = Get-Content -LiteralPath (Join-Path $repositoryRoot "windows\src\CodexScriptLoader.Windows\CodexScriptLoader.Windows.csproj") -Raw -Encoding utf8
-if ([string]$windowsProject.Project.PropertyGroup.ApplicationVersion -ne "$Version.0") { throw "Windows ApplicationVersion does not match $Version.0." }
+if ([string]$windowsProject.Project.PropertyGroup.ApplicationVersion -ne "$fileVersion") { throw "Windows ApplicationVersion does not match $fileVersion." }
 [xml]$launcherProject = Get-Content -LiteralPath (Join-Path $repositoryRoot "windows\src\CodexScriptLoader.Launcher\CodexScriptLoader.Launcher.csproj") -Raw -Encoding utf8
-if ([string]$launcherProject.Project.PropertyGroup.ApplicationVersion -ne "$Version.0") { throw "Launcher ApplicationVersion does not match $Version.0." }
+if ([string]$launcherProject.Project.PropertyGroup.ApplicationVersion -ne "$fileVersion") { throw "Launcher ApplicationVersion does not match $fileVersion." }
 $env:DOTNET_CLI_TELEMETRY_OPTOUT = "1"
 $env:DOTNET_CLI_USE_MSBUILD_SERVER = "0"
 $env:NUGET_PACKAGES = Join-Path $repositoryRoot ".tools\nuget"
@@ -31,7 +32,6 @@ if (-not (Test-Path -LiteralPath $dotnet)) {
 }
 
 $architecture = if ($RuntimeIdentifier -eq "win-arm64") { "arm64" } else { "x64" }
-$fileVersion = "$Version.0"
 $defaultArtifactRoot = [IO.Path]::GetFullPath((Join-Path $repositoryRoot "build"))
 $artifactRoot = if ($OutputRoot) { [IO.Path]::GetFullPath($OutputRoot) } else { $defaultArtifactRoot }
 $publishRoot = Join-Path $artifactRoot "app"
@@ -158,6 +158,7 @@ if ($CertificatePath) {
     "versions\$Version\$RuntimeIdentifier\CodexScriptLoader.Command.exe",
     "versions\$Version\$RuntimeIdentifier\CodexScriptLoader.Command.dll",
     "versions\$Version\$RuntimeIdentifier\CodexScriptLoader.Core.dll",
+    "versions\$Version\$RuntimeIdentifier\CodexScriptLoader.Accounts.dll",
     "versions\$Version\$RuntimeIdentifier\CodexScriptLoader.Interop.dll")) {
     Invoke-Sign (Join-Path $publishRoot $relativePath) $signTool
   }

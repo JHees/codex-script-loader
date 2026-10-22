@@ -15,11 +15,15 @@ internal static partial class Program
 {
     private static int passed;
 
-    private static async Task<int> Main()
+    private static async Task<int> Main(string[] args)
     {
+        if (args.FirstOrDefault() == "--accounts-backend") return await AccountModuleFixtureAsync();
+        if (args.FirstOrDefault() == "--transport-fixture") return await RunTransportFixtureAsync(args);
         var testRoot = Path.Combine(Path.GetTempPath(), $"codex-loader-tests-{Guid.NewGuid():N}");
         try
         {
+            await TestHostTransportProbeAsync(testRoot);
+            await TestAccountModuleAsync(testRoot);
             await TestRuntimeRegressionsAsync(testRoot);
             await TestGitHubPluginInstallAsync(testRoot);
             await TestHostCommandReloadAsync(testRoot);
@@ -208,7 +212,7 @@ internal static partial class Program
         var plan = await registry.BuildPlanAsync(force: true);
         Equal(1, plan.Scripts.Count, "Bundled script count");
         Equal("dev.codex-script-loader.example-ui", plan.Scripts[0].Id, "Bundled script id");
-        True(plan.Source.Contains("runtime.runtimeVersion = \"0.5.16\"", StringComparison.Ordinal), "Runtime version source");
+        True(plan.Source.Contains("runtime.runtimeVersion = \"0.6.0-alpha\"", StringComparison.Ordinal), "Runtime version source");
         True(plan.Source.Contains("__codexScriptLoaderExampleUi", StringComparison.Ordinal), "Lifecycle source");
         True(plan.Source.Contains("installSettingsHost", StringComparison.Ordinal), "Settings host source");
         True(plan.Source.Contains("sha256-" + plan.Scripts[0].Fingerprint, StringComparison.Ordinal), "Integrity source");
@@ -292,9 +296,15 @@ internal static partial class Program
         companionManifest["pageCompanion"]!["origin"] = "https://example.com";
         await File.WriteAllTextAsync(companionManifestPath, companionManifest.ToJsonString());
         await ThrowsAsync<InvalidDataException>(() => ScriptRegistry.LoadDescriptorAsync(companionDirectory), "Native manifest rejects a page companion outside the origin allowlist");
-        updateManifest["version"] = "1.0.0-beta.1";
+        foreach (var version in new[] { "1.0.0-alpha", "1.0.0-alpha.1", "1.0.0-beta", "1.0.0-beta.2" })
+        {
+            updateManifest["version"] = version;
+            await File.WriteAllTextAsync(updateManifestPath, updateManifest.ToJsonString());
+            Equal(version, (await ScriptRegistry.LoadDescriptorAsync(Path.GetDirectoryName(updateManifestPath)!)).Version, "Native update manifest accepts prerelease version");
+        }
+        updateManifest["version"] = "1.0.0-beta.01";
         await File.WriteAllTextAsync(updateManifestPath, updateManifest.ToJsonString());
-        await ThrowsAsync<InvalidDataException>(() => ScriptRegistry.LoadDescriptorAsync(Path.GetDirectoryName(updateManifestPath)!), "Native manifest rejects update prerelease version");
+        await ThrowsAsync<InvalidDataException>(() => ScriptRegistry.LoadDescriptorAsync(Path.GetDirectoryName(updateManifestPath)!), "Native manifest rejects malformed prerelease version");
         updateManifest["version"] = "1.0.0";
         updateManifest["update"]!["repository"] = "https://github.com/Example/plugin-repository";
         await File.WriteAllTextAsync(updateManifestPath, updateManifest.ToJsonString());
@@ -1054,6 +1064,16 @@ internal static partial class Program
         True(VersionedInstallLayout.CompareVersions("0.5.1", "0.5.0") > 0, "Upgrade version accepted");
         True(VersionedInstallLayout.CompareVersions("0.5.0", "0.5.0") == 0, "Same version identified");
         True(VersionedInstallLayout.CompareVersions("0.4.9", "0.5.0") < 0, "Downgrade identified");
+        True(VersionedInstallLayout.CompareVersions("0.6.0-alpha", "0.5.16") > 0, "Alpha upgrades the previous stable core");
+        True(VersionedInstallLayout.CompareVersions("0.6.0-alpha", "0.6.0") < 0, "Stable release supersedes its alpha");
+        True(VersionedInstallLayout.CompareVersions("0.6.0-alpha", "0.6.0-alpha") == 0, "Identical alpha versions compare equally");
+        True(VersionedInstallLayout.CompareVersions("0.6.0-alpha.10", "0.6.0-alpha.2") > 0, "Numeric prerelease identifiers compare numerically");
+        True(VersionedInstallLayout.CompareVersions("0.6.0-alpha", "0.6.0-alpha.1") < 0, "Longer prerelease identifier list follows its prefix");
+        True(VersionedInstallLayout.CompareVersions("0.6.0-1", "0.6.0-alpha") < 0, "Numeric prerelease identifiers precede text");
+        True(VersionedInstallLayout.CompareVersions("0.6.0-alpha", "0.6.0-beta") < 0, "Text prerelease identifiers compare ordinally");
+        Throws<InvalidDataException>(() => VersionedInstallLayout.ValidateVersionAndRid("0.6.0-alpha/../host", "win-x64"), "Prerelease path traversal rejected");
+        Throws<InvalidDataException>(() => VersionedInstallLayout.ValidateVersionAndRid("0.6.0-alpha.01", "win-x64"), "Leading-zero numeric prerelease identifier rejected");
+        Equal("0.6.0-alpha", CodexScriptLoader.Accounts.BackendService.Version, "Account module preserves the product prerelease suffix");
         OnlineUpdateManager.ValidateRelease(new GitHubReleaseInfo("v0.5.1", "https://github.com/JHees/codex-script-loader/releases/tag/v0.5.1"));
         Throws<InvalidDataException>(() => OnlineUpdateManager.ValidateRelease(new GitHubReleaseInfo("v0.5.1", "https://github.com/other/repository/releases/tag/v0.5.1")), "Wrong release repository rejected");
         Throws<InvalidDataException>(() => OnlineUpdateManager.ValidateRelease(new GitHubReleaseInfo("v0.5.1-beta", "https://github.com/JHees/codex-script-loader/releases/tag/v0.5.1-beta")), "Prerelease-style tag rejected");
@@ -1061,7 +1081,7 @@ internal static partial class Program
 
     private static async Task TestOnlineUpdatePipelineAsync(string testRoot)
     {
-        var currentVersion = Version.Parse(LiveSupervisor.Version);
+        var currentVersion = Version.Parse(LiveSupervisor.Version.Split('-', 2)[0]);
         var nextVersion = $"{currentVersion.Major}.{currentVersion.Minor}.{currentVersion.Build + 1}";
         var fixtureRoot = Path.Combine(testRoot, "online-update");
         var installRoot = Path.Combine(fixtureRoot, "install");

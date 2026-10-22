@@ -108,6 +108,53 @@ test("actual renderer host binds one accessory and edits via a selection-preserv
   assert.equal(f.counts().disconnects, 1);
 });
 
+test("current native composer binds split conversation and execution-host props", () => {
+  const f = fixture(windowsComposerSource());
+  delete f.taskProps.hostId;
+  f.view.dom.parentElement.__reactFiber$test.return = {
+    memoizedProps: { isAeonThread: false, executionTargetHostId: "local", permissionsHostId: "other" },
+    return: { memoizedProps: f.taskProps },
+  };
+  const handle = f.host.register("example.context", { id: "control", render() {} });
+  assert.equal(handle.getStatus().taskId, "task-a");
+  assert.equal(handle.getStatus().hostId, "local");
+  handle.prepareSubmission({ taskId: "task-a", hostId: "local", revision: "one", text: "Visible context" });
+  assert.equal(f.counts().edits, 1);
+  handle.unregister();
+});
+
+test("conflicting native hosts and Work-only execution props do not acquire a task binding", () => {
+  for (const aeon of [false, true]) {
+    const f = fixture();
+    f.view.dom.parentElement.__reactFiber$test.return = {
+      memoizedProps: { isAeonThread: aeon, executionTargetHostId: "remote" },
+      return: { memoizedProps: f.taskProps },
+    };
+    if (aeon) delete f.taskProps.hostId;
+    const handle = f.host.register("example.context", { id: "control", render() {} });
+    assert.equal(handle.getStatus().available, false);
+    assert.equal(f.row.children.length, 0);
+    handle.unregister();
+  }
+});
+
+test("changing a draft execution host changes its identity without editing the draft", async () => {
+  const f = fixture();
+  delete f.taskProps.conversationId;
+  delete f.taskProps.hostId;
+  Object.assign(f.taskProps, { isAeonThread: false, executionTargetHostId: "local" });
+  const handle = f.host.register("example.context", { id: "control", render() {} });
+  const first = handle.getStatus();
+  assert.equal(first.executionHostId, "local");
+  f.taskProps.executionTargetHostId = "remote";
+  await f.refresh();
+  const next = handle.getStatus();
+  assert.notEqual(next.draftId, first.draftId);
+  assert.equal(next.executionHostId, "remote");
+  assert.equal(f.counts().edits, 0);
+  handle.unregister();
+});
+
 test("visible context uses native line breaks that survive normal draft editing", () => {
   const f = fixture();
   const handle = f.host.register("example.context", { id: "control", render() {} });
