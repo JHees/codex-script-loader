@@ -6,7 +6,7 @@
 
 **打开 Codex 调试入口，加载用户脚本，并自动管理注入、重载与清理。**
 
-[![Version](https://img.shields.io/badge/version-0.5.16-f97316)](https://github.com/JHees/codex-script-loader)
+[![Version](https://img.shields.io/badge/version-0.5.17-f97316)](https://github.com/JHees/codex-script-loader)
 [![Windows](https://img.shields.io/badge/Windows-11-0078d4?logo=windows11)](#系统要求)
 [![macOS](https://img.shields.io/badge/macOS-未测试-999999?logo=apple)](#平台支持)
 [![.NET](https://img.shields.io/badge/.NET-10-512bd4?logo=dotnet)](global.json)
@@ -55,7 +55,7 @@ Windows 使用无控制台、无托盘图标的原生 .NET 10 后台宿主，是
 
 0.5.3 新增默认关闭、逐插件启用的 GitHub Release 更新。声明更新源的第三方插件会被独立扫描，通过相同的受限传输下载，经强制 `.sha256` 校验后以事务方式替换并原位重载。Loader 自有的示例插件仍随 Loader 打包，不进入第三方更新流程。
 
-0.5.16 修复新版 Codex 设置页识别问题，避免 Loader 和插件设置导航错误出现在聊天侧栏旁边，并在退出设置时完整清理界面。兼容性与升级详情见[发布说明](docs/RELEASE-0.5.16.md)。
+0.5.17 是 Codex 26.1021 兼容补丁：延长 Codex 启动等待时间，并在注入完成前先向启动器报告宿主已就绪，避免应用商店更新后的首次启动被误判为启动失败。本版本不包含 0.6.0 的账号功能。详情见[发布说明](docs/RELEASE-0.5.17.md)。
 
 0.5.10 新增 **从 GitHub 安装**、已校验的同 ID 插件替换、插件附带 Skill 的一包安装，以及按操作白名单调用 renderer 插件的原生命令客户端。标准安装可沿用在线宿主更新，无需重新手工安装；启动器与接管协议保持不变。插件自动更新仍需单独开启。新增的 GitHub 安装入口仅使用公开 Release API 发现安装资产，不读取 GitHub 登录凭据。
 
@@ -76,12 +76,12 @@ build/
 ├── app/active.json
 ├── app/previous.json
 ├── app/update-manifest.json
-├── app/versions/0.5.16/win-x64/               # 完整 Loader 宿主
-├── CodexScriptLoader-0.5.16-windows-x64-setup.exe
-├── CodexScriptLoader-0.5.16-windows-x64-setup.exe.sha256
-├── CodexScriptLoader-0.5.16-windows-x64.zip
-├── CodexScriptLoader-0.5.16-windows-x64.zip.sha256
-└── CodexScriptLoader-0.5.16-x64.spdx.json
+├── app/versions/0.5.17/win-x64/               # 完整 Loader 宿主
+├── CodexScriptLoader-0.5.17-windows-x64-setup.exe
+├── CodexScriptLoader-0.5.17-windows-x64-setup.exe.sha256
+├── CodexScriptLoader-0.5.17-windows-x64.zip
+├── CodexScriptLoader-0.5.17-windows-x64.zip.sha256
+└── CodexScriptLoader-0.5.17-x64.spdx.json
 ```
 
 ### macOS live runtime（尚未测试）

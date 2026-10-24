@@ -40,6 +40,10 @@ internal sealed class LoaderApplicationContext : ApplicationContext
     {
         try
         {
+            // Codex 26.1021 can take longer on first start after a Store update.
+            // Let the launcher return as soon as the host is alive, not only after
+            // CDP injection completes.
+            await LauncherHealthSignal.SendAsync(launcherReadyPipeName, CancellationToken.None);
             if (candidate is null)
             {
                 await supervisor.StartAsync(CancellationToken.None);
@@ -52,7 +56,6 @@ internal sealed class LoaderApplicationContext : ApplicationContext
                 try { await updateManager.RefreshTransactionStateAsync(CancellationToken.None, preserveTerminalState: true); }
                 catch (Exception exception) when (exception is IOException or System.Text.Json.JsonException) { logger.Warn("update-status-restore-failed", new { message = JsonlLogger.Redact(exception.Message) }); }
             }
-            await LauncherHealthSignal.SendAsync(launcherReadyPipeName, CancellationToken.None);
             _ = updateManager.StartAfterHealthyAsync(CancellationToken.None);
         }
         catch (Exception exception)

@@ -17,7 +17,7 @@ internal enum ManagedCodexExitReason
 
 internal sealed class LiveSupervisor : IAsyncDisposable
 {
-    public const string Version = "0.5.16";
+    public const string Version = "0.5.17";
     private const string TrustedInputPermission = "trusted-input";
     private static readonly TimeSpan GracefulRestartShutdownTimeout = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan ForcedRestartShutdownTimeout = TimeSpan.FromSeconds(10);
@@ -299,7 +299,7 @@ internal sealed class LiveSupervisor : IAsyncDisposable
             ]);
             logger.Info("codex-activated", new { package.PackageFullName, package.AppUserModelId, activationProcessId, port });
 
-            var targets = await WaitForTargetsAsync(client, TimeSpan.FromSeconds(20), cancellationToken).ConfigureAwait(false);
+            var targets = await WaitForTargetsAsync(client, TimeSpan.FromSeconds(120), cancellationToken).ConfigureAwait(false);
             var listeners = TcpOwnerLookup.GetIPv4LoopbackListeners(port);
             if (listeners.Count != 1)
             {
@@ -1208,7 +1208,7 @@ internal sealed class LiveSupervisor : IAsyncDisposable
             await Task.Delay(250, cancellationToken).ConfigureAwait(false);
         }
 
-        throw new TimeoutException("Codex CDP did not become ready within 20 seconds.", lastError);
+        throw new TimeoutException("Codex CDP did not become ready within 120 seconds.", lastError);
     }
 
     private static string GetSignatureStatus()
