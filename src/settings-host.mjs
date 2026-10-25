@@ -11,7 +11,7 @@ function installSettingsHost(version) {
   // Using the approved mark as a mask keeps the sidebar icon aligned with
   // Codex's currentColor-based system settings icons in light and dark themes.
   const loaderBrandMask = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAYAAACNiR0NAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAEYSURBVDhP7dK9K4ZhFMfxj1LkJQMp5CULEjYZFH+ASZn8DwaDyWSRySSLyWgQk1UGYhIZDLIgWQwmyUtXnXJ39eh5PKN8l7vfOdc517nu3+GvUIs21OeJakmNrnCD1jxZLUd4w2ye+C018d3GA2ayfMX04hIDoQ9whjE0ZWfL0oNn7IZewCO6sYFrNGQ1P9KBJ+yEnsI7JkM34xgXaCnUlSS5eYu9Qmwd94WGibRGpzgp/OOSpGe8YLMQm48Ji7HEFu7KNUyM4BUroeuwhg8MRyxd8hkGVcR4FCyFTk9M06xiKHJzWU1ZkhmpcCImSUYt4jAaV8VgOLmPczSiMz/0G7owGnu3jOnYxapJ0/ShHf1hWNrTf775Amv8Ll/zMvAfAAAAAElFTkSuQmCC";
-  const implementationRevision = "settings-sidebar-identity-6";
+  const implementationRevision = "settings-plugin-updates-7";
   const current = runtime.settingsHost;
   if (current?.version === version && current?.implementationRevision === implementationRevision) {
     current.start();
@@ -312,7 +312,7 @@ function installSettingsHost(version) {
         addArchive: "安装插件 ZIP",
         addGitHub: "从 GitHub 安装",
         githubUrl: "GitHub 仓库或 Release 链接",
-        githubHelp: "粘贴公开仓库、正式 Release 或 Release ZIP 链接。Loader 会下载并校验 ZIP 和同名 SHA-256 文件，然后显示权限供你确认。请仅安装你信任的发布者提供的插件。",
+        githubHelp: "粘贴公开仓库、指定版本的 Release 或 Release ZIP 链接（支持 alpha/beta）。Loader 会下载并校验 ZIP 和同名 SHA-256 文件，然后显示权限供你确认。请仅安装你信任的发布者提供的插件。",
         githubContinue: "获取安装包",
         githubAsset: "选择插件 ZIP",
         githubAssetHelp: "此 Release 包含多个安装包，请选择要安装的插件。",
@@ -327,6 +327,12 @@ function installSettingsHost(version) {
         pluginRetryUpdate: "检查更新",
         pluginCheckingUpdate: "检查中…",
         pluginUpdating: "更新中…",
+        pluginChecked: "已检查",
+        pluginCheckFailed: "检查失败",
+        pluginUpdateDetails: "更新详情",
+        pluginReleaseNotes: "更新说明",
+        pluginReleaseNotesUnavailable: "未提供 GitHub 更新来源",
+        close: "关闭",
         pluginBundledUpdate: "随 Loader 更新",
         pluginUnsupportedUpdate: "未提供更新源",
         moreActions: "更多操作",
@@ -472,7 +478,7 @@ function installSettingsHost(version) {
       addArchive: "Install plugin ZIP",
       addGitHub: "Install from GitHub",
       githubUrl: "GitHub repository or Release link",
-      githubHelp: "Paste a public repository, stable Release, or Release ZIP link. Loader will download and verify the ZIP and its SHA-256 file, then ask you to confirm permissions. Only install plugins from publishers you trust.",
+      githubHelp: "Paste a public repository, pinned Release, or Release ZIP link (including alpha/beta). Loader will download and verify the ZIP and its SHA-256 file, then ask you to confirm permissions. Only install plugins from publishers you trust.",
       githubContinue: "Get package",
       githubAsset: "Choose plugin ZIP",
       githubAssetHelp: "This Release contains multiple packages. Choose the plugin to install.",
@@ -487,6 +493,12 @@ function installSettingsHost(version) {
       pluginRetryUpdate: "Check for updates",
       pluginCheckingUpdate: "Checking…",
       pluginUpdating: "Updating…",
+      pluginChecked: "Checked",
+      pluginCheckFailed: "Check failed",
+      pluginUpdateDetails: "Update details",
+      pluginReleaseNotes: "Release notes",
+      pluginReleaseNotesUnavailable: "No GitHub update source provided",
+      close: "Close",
       pluginBundledUpdate: "Updated with Loader",
       pluginUnsupportedUpdate: "No update source",
       moreActions: "More actions",
@@ -718,9 +730,13 @@ function installSettingsHost(version) {
     let pluginUpdateRefreshGrace = 0;
     const pluginOperationIds = new Set();
     let openPluginMenuId = null;
+    let checkingPluginUpdates = false;
     let renderedUpdateSnapshot = "";
     root.className = "flex flex-col gap-10";
     root.style.cssText = "";
+    const updateStyles = document.createElement("style");
+    updateStyles.textContent = "@keyframes codex-loader-update-spin{to{transform:rotate(360deg)}} [data-codex-loader-update-spinner]{animation:codex-loader-update-spin 1s linear infinite} @media(prefers-reduced-motion:reduce){[data-codex-loader-update-spinner]{animation:none}}";
+    root.appendChild(updateStyles);
 
     const overviewSection = settingsSection(labels.runtime);
     const overviewCard = settingsCard();
@@ -737,10 +753,6 @@ function installSettingsHost(version) {
     updateDescription.className = "text-sm text-secondary";
     updateDescription.textContent = labels.updateDescription;
     updateHeaderStack.appendChild(updateDescription);
-    const updateFeedback = document.createElement("div");
-    updateFeedback.className = "min-h-4 text-xs text-secondary";
-    updateFeedback.setAttribute("aria-live", "polite");
-    updateHeaderStack.appendChild(updateFeedback);
     const updateActions = document.createElement("div");
     updateActions.className = "flex items-center gap-2";
     const checkUpdateButton = actionButton(labels.checkUpdate);
@@ -786,6 +798,7 @@ function installSettingsHost(version) {
     const addGitHubButton = actionButton(labels.addGitHub);
     const reloadAllButton = actionButton(labels.reloadAll);
     const checkPluginUpdatesButton = actionButton(labels.checkPluginUpdates);
+    checkPluginUpdatesButton.style.minWidth = "132px";
     pluginHeaderActions.append(checkPluginUpdatesButton, reloadAllButton, addGitHubButton, addArchiveButton);
     pluginsHeaderRow.appendChild(pluginHeaderActions);
     const pluginDescription = document.createElement("div");
@@ -795,6 +808,7 @@ function installSettingsHost(version) {
     const feedback = document.createElement("div");
     feedback.className = "min-h-4 text-xs text-secondary";
     feedback.setAttribute("aria-live", "polite");
+    feedback.style.cssText = "min-height:20px;line-height:20px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
     pluginsHeaderStack.appendChild(feedback);
     const pluginList = document.createElement("div");
     pluginList.dataset.codexLoaderSettings = "plugin-native-list";
@@ -866,11 +880,6 @@ function installSettingsHost(version) {
       installUpdateButton.disabled = state !== "available" || status.requiresInstaller || !connected;
       cancelUpdateButton.disabled = state !== "downloading" || !connected;
       cancelUpdateButton.style.display = state === "downloading" ? "inline-flex" : "none";
-      updateFeedback.className = state === "failed" || state === "rolledBack" ? "min-h-4 text-xs text-token-charts-red" : "min-h-4 text-xs text-secondary";
-      if (state === "switching") updateFeedback.textContent = labels.updateNotice(status.availableVersion || "");
-      else if (state === "succeeded") updateFeedback.textContent = labels.updateSucceeded(status.currentVersion || "");
-      else if (state === "rolledBack") updateFeedback.textContent = labels.updateRolledBack(status.currentVersion || "");
-      else updateFeedback.textContent = "";
     }
 
     function showUpdateError(error, code = "networkOrPackage") {
@@ -878,7 +887,6 @@ function installSettingsHost(version) {
       updateError.value.textContent = errorText;
       updateError.value.title = errorText;
       updateError.value.className = "min-w-0 max-w-[62%] shrink-0 truncate text-right text-sm text-token-charts-red";
-      updateFeedback.textContent = "";
     }
 
     async function refreshUpdateStatus(force = false) {
@@ -1022,13 +1030,13 @@ function installSettingsHost(version) {
       const state = plugin.bundled ? "bundled" : String(plugin.update?.state || "unsupported");
       const failed = state === "failed" || state === "rolledBack";
       const stateText = plugin.bundled ? labels.pluginBundledUpdate : plugin.update?.supported ? labels.pluginUpdateState(state) : labels.pluginUnsupportedUpdate;
-      const available = plugin.update?.availableVersion ? labels.pluginUpdateAvailable(plugin.update.availableVersion) : "";
-      const progress = typeof plugin.update?.progress === "number" && pluginUpdateIsActive(plugin) ? `${Math.max(0, Math.min(100, Math.round(plugin.update.progress * 100)))}%` : "";
-      const primaryText = failed ? labels.pluginUpdateFailedTitle : [stateText, available, progress].filter(Boolean).join(" · ");
+      const active = pluginUpdateIsActive(plugin);
       let updateAction = null;
       if (!plugin.bundled && plugin.update?.supported) {
         updateAction = actionButton(pluginUpdateActionLabel(plugin));
         updateAction.className += " shrink-0";
+        updateAction.style.minWidth = "112px";
+        updateAction.setAttribute("aria-busy", active ? "true" : "false");
         const updateStateForAction = String(plugin.update?.state || "unsupported");
         const updateIsActive = pluginUpdateIsActive(plugin);
         const updateActionKind = updateStateForAction === "downloading"
@@ -1041,15 +1049,69 @@ function installSettingsHost(version) {
         if (updateActionKind === "update" && !plugin.enabled) updateAction.title = labels.pluginEnableFirst;
         updateAction.addEventListener("click", () => runPluginAction(plugin, updateActionKind));
       }
-      const detailParts = [primaryText];
-      if (failed && plugin.update?.lastCheckedAt) detailParts.push(labels.pluginLastChecked(formatTime(plugin.update.lastCheckedAt, labels)));
-      if (!plugin.bundled) detailParts.push(labels.pluginAutoUpdateInline(pluginAutoUpdateStatus(plugin)));
       const summary = document.createElement("div");
-      summary.className = failed ? "truncate text-xs text-token-charts-red" : "truncate text-xs text-secondary";
-      summary.setAttribute("aria-live", pluginUpdateIsActive(plugin) ? "polite" : "off");
-      summary.textContent = detailParts.join(" · ");
-      summary.title = plugin.update?.error || summary.textContent;
-      return { summary, action: updateAction };
+      summary.className = "flex min-w-0 flex-wrap items-center gap-2 text-xs text-secondary";
+      summary.style.minHeight = "24px";
+      const badge = document.createElement("button");
+      badge.type = "button";
+      badge.dataset.codexLoaderSettings = "plugin-update-status";
+      badge.className = "inline-flex shrink-0 items-center gap-1.5 rounded-md border border-default px-2 py-0.5 text-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2";
+      badge.style.color = failed ? "var(--color-text-danger,#dc2626)" : ["available", "awaitingConfirmation", "waitingForEnable", "waitingForRenderer"].includes(state) ? "var(--color-accent-blue,#2f9bf4)" : "inherit";
+      badge.setAttribute("aria-label", `${plugin.name || plugin.id}: ${stateText}, ${labels.pluginUpdateDetails}`);
+      badge.setAttribute("aria-haspopup", "dialog");
+      const indicator = document.createElement("span");
+      indicator.setAttribute("aria-hidden", "true");
+      indicator.style.cssText = "display:inline-flex;width:12px;height:12px;align-items:center;justify-content:center;";
+      indicator.innerHTML = active
+        ? '<svg data-codex-loader-update-spinner width="12" height="12" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="2" opacity=".2"/><path d="M8 2a6 6 0 0 1 6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>'
+        : `<span>${failed ? "!" : ["upToDate", "succeeded"].includes(state) ? "✓" : "•"}</span>`;
+      const badgeLabel = document.createElement("span");
+      badgeLabel.textContent = stateText;
+      badge.append(indicator, badgeLabel);
+      badge.addEventListener("click", () => showDialog({
+        title: `${plugin.name || plugin.id} · ${labels.pluginUpdateDetails}`,
+        body: [stateText, `${labels.currentVersion}: ${plugin.version}`, plugin.update?.availableVersion ? `${labels.availableVersion}: ${plugin.update.availableVersion}` : "", labels.pluginLastChecked(formatTime(plugin.update?.lastCheckedAt, labels)), plugin.update?.error || ""].filter(Boolean).join("\n\n"),
+        buttons: [{ label: labels.close, value: "close" }],
+      }));
+      summary.appendChild(badge);
+      if (!plugin.bundled) {
+        const automatic = document.createElement("span");
+        automatic.className = "truncate";
+        automatic.textContent = labels.pluginAutoUpdateInline(pluginAutoUpdateStatus(plugin));
+        summary.appendChild(automatic);
+      }
+      const releaseNotes = document.createElement("a");
+      releaseNotes.dataset.codexLoaderSettings = "plugin-release-notes";
+      releaseNotes.className = "shrink-0 rounded-md px-1 underline underline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2";
+      releaseNotes.textContent = labels.pluginReleaseNotes;
+      const releaseUrl = String(plugin.update?.releaseUrl || "");
+      const repository = pluginRepository(plugin);
+      if (/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/releases\/(?:tag\/[^\s?#]+|latest)$/.test(releaseUrl)) releaseNotes.href = releaseUrl;
+      else if (/^[\w.-]+\/[\w.-]+$/.test(repository)) releaseNotes.href = `https://github.com/${repository}/releases/latest`;
+      if (releaseNotes.href) {
+        releaseNotes.target = "_blank";
+        releaseNotes.rel = "noopener noreferrer";
+        releaseNotes.title = releaseNotes.href;
+      } else {
+        releaseNotes.setAttribute("aria-disabled", "true");
+        releaseNotes.style.opacity = ".4";
+        releaseNotes.title = labels.pluginReleaseNotesUnavailable;
+      }
+      summary.appendChild(releaseNotes);
+      const progress = document.createElement("div");
+      progress.dataset.codexLoaderSettings = "plugin-update-progress";
+      progress.style.cssText = `height:3px;border-radius:99px;overflow:hidden;background:color-mix(in srgb,currentColor 10%,transparent);visibility:${active ? "visible" : "hidden"};`;
+      progress.setAttribute("role", "progressbar");
+      progress.setAttribute("aria-label", `${plugin.name || plugin.id}: ${stateText}`);
+      progress.setAttribute("aria-hidden", active ? "false" : "true");
+      progress.setAttribute("aria-valuemin", "0");
+      progress.setAttribute("aria-valuemax", "100");
+      const amount = typeof plugin.update?.progress === "number" ? Math.max(0, Math.min(100, Math.round(plugin.update.progress * 100))) : null;
+      if (amount !== null) progress.setAttribute("aria-valuenow", String(amount));
+      const fill = document.createElement("div");
+      fill.style.cssText = `height:100%;border-radius:inherit;background:var(--color-accent-blue,#2f9bf4);width:${amount === null ? 100 : amount}%;opacity:${amount === null ? ".45" : "1"};`;
+      progress.appendChild(fill);
+      return { summary, progress, action: updateAction };
     }
 
     function pluginAutoUpdateStatus(plugin) {
@@ -1113,7 +1175,7 @@ function installSettingsHost(version) {
           info.appendChild(skillStatus);
         }
         const updateView = pluginUpdatePanel(plugin);
-        info.appendChild(updateView.summary);
+        info.append(updateView.summary, updateView.progress);
         if (plugin.error) {
           const error = document.createElement("div");
           error.className = "truncate text-xs text-token-charts-red";
@@ -1160,14 +1222,11 @@ function installSettingsHost(version) {
         if (choice !== "confirm") return;
       }
       pluginOperationIds.add(plugin.id);
-      feedback.className = "min-h-4 text-xs text-secondary";
       try {
         if (action === "check-update") {
           plugin.update = { ...plugin.update, state: "checking", progress: null, error: null };
-          feedback.textContent = labels.pluginCheckingOne(plugin.name || plugin.id);
           renderPlugins();
-          const snapshots = await requestBridge("check_plugin_updates", { ids: [plugin.id] });
-          feedback.textContent = pluginUpdateSummary(snapshots);
+          await requestBridge("check_plugin_updates", { ids: [plugin.id] });
         } else if (action === "cancel-update") {
           await requestBridge("cancel_plugin_update", { id: plugin.id });
         } else if (plugin.update?.state === "awaitingConfirmation") {
@@ -1183,8 +1242,6 @@ function installSettingsHost(version) {
         await refresh({ preserveFeedback: true });
       } catch (error) {
         plugin.update = { ...plugin.update, state: "failed", progress: null, error: String(error?.message || error) };
-        feedback.className = "min-h-4 text-xs text-token-charts-red";
-        feedback.textContent = String(error?.message || error);
       } finally {
         pluginOperationIds.delete(plugin.id);
         if (!disposed) {
@@ -1403,22 +1460,31 @@ function installSettingsHost(version) {
         renderPlugins();
       }
       for (const button of [checkPluginUpdatesButton, addArchiveButton, addGitHubButton, reloadAllButton, restartButton]) button.disabled = busy || !connected;
+      checkPluginUpdatesButton.disabled ||= !plugins.some(plugin => !plugin.bundled && plugin.update?.supported) || pluginOperationIds.size > 0;
     }
 
     checkPluginUpdatesButton.addEventListener("click", async () => {
-      if (busy) return;
+      if (busy || checkingPluginUpdates || pluginOperationIds.size > 0) return;
       const candidates = plugins.filter((plugin) => !plugin.bundled && plugin.update?.supported);
+      if (!candidates.length) return;
+      checkingPluginUpdates = true;
+      checkPluginUpdatesButton.textContent = labels.pluginCheckingUpdate;
+      checkPluginUpdatesButton.setAttribute("aria-busy", "true");
       for (const plugin of candidates) plugin.update = { ...plugin.update, state: "checking", progress: null, error: null };
-      setBusy(true, labels.pluginCheckingAll(candidates.length));
+      setBusy(true);
       try {
         const snapshots = await requestBridge("check_plugin_updates", {});
-        feedback.textContent = pluginUpdateSummary(snapshots);
+        checkPluginUpdatesButton.title = pluginUpdateSummary(snapshots);
+        checkPluginUpdatesButton.textContent = snapshots.some(snapshot => ["failed", "rolledBack"].includes(snapshot.state)) ? labels.pluginCheckFailed : labels.pluginChecked;
         await refresh({ preserveFeedback: true });
       } catch (error) {
-        feedback.className = "min-h-4 text-xs text-token-charts-red";
-        feedback.textContent = String(error?.message || error);
+        checkPluginUpdatesButton.textContent = labels.pluginCheckFailed;
+        checkPluginUpdatesButton.title = String(error?.message || error);
+        for (const plugin of candidates) plugin.update = { ...plugin.update, state: "failed", progress: null, error: String(error?.message || error) };
       } finally {
-        if (!disposed) setBusy(false, feedback.textContent);
+        checkingPluginUpdates = false;
+        checkPluginUpdatesButton.setAttribute("aria-busy", "false");
+        if (!disposed) setBusy(false);
       }
     });
     addArchiveButton.addEventListener("click", () => addPlugin("pick_plugin_archive"));
@@ -1469,7 +1535,6 @@ function installSettingsHost(version) {
     });
     installUpdateButton.addEventListener("click", async () => {
       installUpdateButton.disabled = true;
-      updateFeedback.textContent = labels.updateNotice(updateStatus?.availableVersion || "");
       try {
         await requestBridge("start_update", {});
         await refreshUpdateStatus();

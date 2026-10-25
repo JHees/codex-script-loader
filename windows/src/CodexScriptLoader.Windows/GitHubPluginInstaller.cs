@@ -34,7 +34,7 @@ internal sealed record GitHubPluginLink(string Repository, string? Tag, string? 
             ((parts.Length == 5 && parts[3] == "tag") || (parts.Length == 6 && parts[3] == "download")))
         {
             var tag = parts[4];
-            if (!tag.StartsWith('v')) throw new InvalidDataException("Release tag must use vMAJOR.MINOR.PATCH.");
+            if (!tag.StartsWith('v')) throw new InvalidDataException("Release tag must use vMAJOR.MINOR.PATCH with an optional prerelease suffix.");
             VersionedInstallLayout.ValidateVersionAndRid(tag[1..], "win-x64");
             var asset = parts.Length == 6 ? parts[5] : null;
             if (asset is not null && !SafeAsset(asset)) throw new InvalidDataException("Release asset must be a safe ZIP filename.");
@@ -93,9 +93,11 @@ internal sealed class GitHubPluginInstaller(LoaderPaths paths, ScriptRegistry re
         {
             using var document = JsonDocument.Parse(json);
             var root = document.RootElement;
-            if (root.GetProperty("draft").GetBoolean() || root.GetProperty("prerelease").GetBoolean()) throw new InvalidDataException("Only published stable Releases can be installed.");
+            if (root.GetProperty("draft").GetBoolean()) throw new InvalidDataException("Draft Releases cannot be installed.");
             var tag = root.GetProperty("tag_name").GetString() ?? string.Empty;
-            if (!tag.StartsWith('v')) throw new InvalidDataException("Release must use a stable version tag.");
+            if (source.Tag is null && (root.GetProperty("prerelease").GetBoolean() || tag.Contains('-')))
+                throw new InvalidDataException("Use a pinned Release or ZIP link to install a prerelease.");
+            if (!tag.StartsWith('v')) throw new InvalidDataException("Release must use a version tag.");
             VersionedInstallLayout.ValidateVersionAndRid(tag[1..], "win-x64");
             var releaseUrl = root.GetProperty("html_url").GetString() ?? string.Empty;
             if ((source.Tag is not null && source.Tag != tag) ||

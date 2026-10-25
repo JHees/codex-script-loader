@@ -182,7 +182,8 @@ function createSubmissionReceipts() {
       const inputs = request.params.input.filter(part => part?.type === "text" && typeof part.text === "string");
       for (const record of records.values()) {
         const previous = record.receipt;
-        if (!inputs.some(part => part.text.includes(previous.bindingId))) continue;
+        const marker = new RegExp("\\[Loader context: [^\\]\\r\\n]+ / " + previous.bindingId + "\\]");
+        if (!inputs.some(part => marker.test(part.text))) continue;
         let count = 0;
         for (const part of inputs) {
           let offset = -1;
@@ -220,7 +221,7 @@ function createSubmissionReceipts() {
 function installComposerHost() {
   const runtime = globalThis.__codexScriptLoader;
   if (!runtime) return;
-  const revision = "composer-native-submission-10";
+  const revision = "composer-native-submission-12";
   if (runtime.composerHost?.revision === revision) return;
   runtime.composerHost?.stop();
   const registrations = new Map();
@@ -248,20 +249,32 @@ function installComposerHost() {
     if (editors.length !== 1) return null;
     const editor = editors[0], parent = editor.parentElement;
     const key = Object.getOwnPropertyNames(parent || {}).find(k => k.startsWith("__reactFiber$"));
-    let fiber = parent?.[key], controller = null, identity = null, hasTask = false;
+    let fiber = parent?.[key], controller = null, identity = null, hasTask = false, conversationId = null, executionHost = null;
     for (let depth = 0; fiber && depth < 60; depth++, fiber = fiber.return) {
       const props = fiber.memoizedProps;
       const candidate = props?.composerController;
-      if (typeof props?.conversationId === "string" && props.conversationId) hasTask = true;
+      if (typeof props?.conversationId === "string" && props.conversationId) {
+        hasTask = true;
+        if (conversationId && conversationId !== props.conversationId) return null;
+        conversationId = props.conversationId;
+      }
+      if (props?.isAeonThread === false && typeof props.executionTargetHostId === "string" && props.executionTargetHostId) {
+        if (executionHost && executionHost !== props.executionTargetHostId) return null;
+        executionHost = props.executionTargetHostId;
+      }
       if (candidate?.view?.dom === editor) {
         if (controller && controller !== candidate) return null;
         controller = candidate;
       }
-      if (typeof props?.conversationId === "string" && typeof props?.hostId === "string") {
+      if (typeof props?.conversationId === "string" && props.conversationId && typeof props?.hostId === "string" && props.hostId) {
         const next = { taskId: props.conversationId, hostId: props.hostId };
         if (identity && (identity.taskId !== next.taskId || identity.hostId !== next.hostId)) return null;
         identity = next;
       }
+    }
+    if (executionHost && conversationId) {
+      if (identity && (identity.taskId !== conversationId || identity.hostId !== executionHost)) return null;
+      identity = { taskId: conversationId, hostId: executionHost };
     }
     const footer = editor.closest("[data-composer-footer-responsive]");
     let anchor = footer?.querySelector("[data-codex-intelligence-trigger]");
@@ -278,8 +291,9 @@ function installComposerHost() {
     if (!layoutFound) return null;
     if (!identity) {
       if (hasTask || typeof globalThis.crypto?.randomUUID !== "function") return null;
-      if (!draftIds.has(controller)) draftIds.set(controller, "draft-" + globalThis.crypto.randomUUID());
-      identity = { draftId: draftIds.get(controller) };
+      if (!draftIds.has(controller) || draftIds.get(controller).host !== executionHost)
+        draftIds.set(controller, { id: "draft-" + globalThis.crypto.randomUUID(), host: executionHost });
+      identity = { draftId: draftIds.get(controller).id, ...(executionHost ? { executionHostId: executionHost } : {}) };
     }
     return { editor, controller, identity, anchor };
   }

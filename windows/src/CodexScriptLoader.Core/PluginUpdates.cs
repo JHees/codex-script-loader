@@ -101,22 +101,38 @@ public sealed partial class ScriptRegistry
             var target = paths.EnsureWithin(paths.ScriptsRoot, Path.Combine(paths.ScriptsRoot, pending.Descriptor.Id), "Plugin update target");
             var previousDescriptor = await LoadDescriptorAsync(target, cancellationToken).ConfigureAwait(false);
             var actualFingerprint = await ComputeDirectoryFingerprintAsync(target, cancellationToken).ConfigureAwait(false);
+            var candidateFingerprint = await ComputeDirectoryFingerprintAsync(pending.PackageRoot, cancellationToken).ConfigureAwait(false);
             if (!string.Equals(actualFingerprint, expectedInstalledFingerprint, StringComparison.Ordinal))
             {
                 if (Directory.Exists(pending.StageRoot)) Directory.Delete(pending.StageRoot, recursive: true);
                 throw new PluginUpdateStateChangedException("Installed plugin changed after the update was prepared.");
             }
 
-            var backup = paths.EnsureWithin(paths.StateRoot, Path.Combine(paths.StateRoot, $"plugin-update-backup-{token}"), "Plugin update backup");
-            var transaction = new PluginUpdateTransaction(1, token, pending.Descriptor.Id, target, backup, pending.StageRoot, pending.PackageRoot, "prepared");
-            await AtomicJsonFile.WriteAsync(paths.PluginUpdateTransactionPath, transaction, cancellationToken).ConfigureAwait(false);
+            var pendingRoot = paths.EnsureWithin(paths.StateRoot, Path.Combine(paths.StateRoot, "pending"), "Pending package root");
+            var backup = paths.EnsureWithin(pendingRoot, Path.Combine(pendingRoot, $"rollback-{token}"), "Plugin update backup");
+            try { CopyPackageFiles(target, backup, replace: false, cancellationToken); }
+            catch { TryDeleteDirectory(backup); TryDeleteDirectory(pending.StageRoot); throw; }
+            if (!string.Equals(await ComputeDirectoryFingerprintAsync(backup, cancellationToken).ConfigureAwait(false), expectedInstalledFingerprint, StringComparison.Ordinal))
+            {
+                TryDeleteDirectory(backup);
+                TryDeleteDirectory(pending.StageRoot);
+                throw new InvalidDataException("Plugin backup differs from the verified installed package.");
+            }
+            var transaction = new PluginUpdateTransaction(2, token, pending.Descriptor.Id, target, backup, pending.StageRoot, pending.PackageRoot, "prepared", expectedInstalledFingerprint);
+            try { await AtomicJsonFile.WriteAsync(paths.PluginUpdateTransactionPath, transaction, cancellationToken).ConfigureAwait(false); }
+            catch { TryDeleteDirectory(backup); throw; }
             var candidateActivationAttempted = false;
+            var filesStarted = false;
             try
             {
-                Directory.Move(target, backup);
-                transaction = transaction with { State = "backup-created" };
-                await AtomicJsonFile.WriteAsync(paths.PluginUpdateTransactionPath, transaction, cancellationToken).ConfigureAwait(false);
-                Directory.Move(pending.PackageRoot, target);
+                var unchangedFingerprint = await ComputeDirectoryFingerprintAsync(target, cancellationToken).ConfigureAwait(false);
+                if (!string.Equals(unchangedFingerprint, expectedInstalledFingerprint, StringComparison.Ordinal))
+                    throw new PluginUpdateStateChangedException("Installed plugin changed while its rollback copy was made.");
+                filesStarted = true;
+                ReplacePackageFiles(pending.PackageRoot, target, cancellationToken);
+                var installedCandidateFingerprint = await ComputeDirectoryFingerprintAsync(target, cancellationToken).ConfigureAwait(false);
+                if (!string.Equals(installedCandidateFingerprint, candidateFingerprint, StringComparison.Ordinal))
+                    throw new InvalidDataException("Installed plugin files differ from the verified candidate.");
                 transaction = transaction with { State = "candidate-installed" };
                 await AtomicJsonFile.WriteAsync(paths.PluginUpdateTransactionPath, transaction, cancellationToken).ConfigureAwait(false);
                 await SyncSkillAsync(pending.Descriptor, globalEnabled && !safeMode && (!enabledOverrides.TryGetValue(pending.Descriptor.Id, out var enabled) || enabled), cancellationToken).ConfigureAwait(false);
@@ -129,10 +145,9 @@ public sealed partial class ScriptRegistry
             {
                 try
                 {
-                    if (Directory.Exists(backup))
+                    if (filesStarted && Directory.Exists(backup))
                     {
-                        if (Directory.Exists(target)) Directory.Delete(target, recursive: true);
-                        Directory.Move(backup, target);
+                        RestorePackageFiles(backup, target);
                     }
                     else if (!Directory.Exists(target))
                     {
@@ -145,6 +160,13 @@ public sealed partial class ScriptRegistry
                         "The previous plugin package could not be restored.",
                         new AggregateException(updateException, restorePackageException));
                 }
+                if (updateException is PluginUpdateStateChangedException)
+                {
+                    TryDeleteDirectory(backup);
+                    TryDeleteDirectory(pending.StageRoot);
+                    TryDeleteFile(paths.PluginUpdateTransactionPath);
+                    throw;
+                }
                 Exception? restoreException = null;
                 try
                 {
@@ -154,8 +176,9 @@ public sealed partial class ScriptRegistry
                 catch (Exception exception) { restoreException = exception; }
                 finally
                 {
-                    TryDeleteDirectory(pending.StageRoot);
-                    TryDeleteFile(paths.PluginUpdateTransactionPath);
+                    var rollbackBackupRemoved = TryDeleteDirectory(backup);
+                    var rollbackStageRemoved = TryDeleteDirectory(pending.StageRoot);
+                    if (rollbackBackupRemoved && rollbackStageRemoved) TryDeleteFile(paths.PluginUpdateTransactionPath);
                 }
                 if (restoreException is not null)
                 {
@@ -195,9 +218,10 @@ public sealed partial class ScriptRegistry
     {
         var transaction = await AtomicJsonFile.ReadAsync<PluginUpdateTransaction>(paths.PluginUpdateTransactionPath, cancellationToken).ConfigureAwait(false);
         if (transaction is null) return;
-        if (transaction.SchemaVersion != 1 || !ScriptIdRegex().IsMatch(transaction.PluginId) || transaction.Token.Length != 36 ||
+        if (transaction.SchemaVersion is not (1 or 2) || !ScriptIdRegex().IsMatch(transaction.PluginId) || transaction.Token.Length != 36 ||
             transaction.Token.Any(character => character is not (>= '0' and <= '9') and not (>= 'a' and <= 'f')) ||
-            transaction.State is not ("prepared" or "backup-created" or "candidate-installed" or "committed"))
+            (transaction.SchemaVersion == 1 && transaction.State is not ("prepared" or "backup-created" or "candidate-installed" or "committed")) ||
+            (transaction.SchemaVersion == 2 && transaction.State is not ("prepared" or "candidate-installed" or "committed")))
         {
             throw new InvalidDataException("Plugin update transaction journal is invalid.");
         }
@@ -205,8 +229,10 @@ public sealed partial class ScriptRegistry
         var backup = paths.EnsureWithin(paths.StateRoot, transaction.Backup, "Recovered plugin backup");
         var stageRoot = paths.EnsureWithin(paths.StateRoot, transaction.StageRoot, "Recovered plugin stage");
         var expectedTarget = paths.EnsureWithin(paths.ScriptsRoot, Path.Combine(paths.ScriptsRoot, transaction.PluginId), "Expected plugin target");
-        var expectedBackup = paths.EnsureWithin(paths.StateRoot, Path.Combine(paths.StateRoot, $"plugin-update-backup-{transaction.Token}"), "Expected plugin backup");
         var pendingRoot = paths.EnsureWithin(paths.StateRoot, Path.Combine(paths.StateRoot, "pending"), "Pending package root");
+        var expectedBackup = transaction.SchemaVersion == 1
+            ? paths.EnsureWithin(paths.StateRoot, Path.Combine(paths.StateRoot, $"plugin-update-backup-{transaction.Token}"), "Expected plugin backup")
+            : paths.EnsureWithin(pendingRoot, Path.Combine(pendingRoot, $"rollback-{transaction.Token}"), "Expected plugin backup");
         var expectedStageRoot = paths.EnsureWithin(pendingRoot, Path.Combine(pendingRoot, transaction.Token), "Expected plugin stage");
         var packageRoot = Path.GetFullPath(transaction.PackageRoot);
         if (!string.Equals(target, expectedTarget, StringComparison.OrdinalIgnoreCase) ||
@@ -221,16 +247,158 @@ public sealed partial class ScriptRegistry
         {
             var backupRemoved = TryDeleteDirectory(backup);
             var stageRemoved = TryDeleteDirectory(stageRoot);
-            if (backupRemoved && stageRemoved) TryDeleteFile(paths.PluginUpdateTransactionPath);
+            if (!backupRemoved || !stageRemoved) throw new IOException("Committed plugin update cleanup must finish before startup.");
+            TryDeleteFile(paths.PluginUpdateTransactionPath);
+            return;
+        }
+        if (transaction.SchemaVersion == 2)
+        {
+            if (!Directory.Exists(backup)) throw new IOException("Plugin update rollback copy is unavailable.");
+            if (transaction.BackupFingerprint is null || !string.Equals(
+                await ComputeDirectoryFingerprintAsync(backup, cancellationToken).ConfigureAwait(false), transaction.BackupFingerprint, StringComparison.Ordinal))
+                throw new InvalidDataException("Plugin update rollback copy does not match its verified fingerprint.");
+            if (!Directory.Exists(target)) CopyPackageFiles(backup, target, replace: false, cancellationToken);
+            else RestorePackageFiles(backup, target);
+            if (!string.Equals(await ComputeDirectoryFingerprintAsync(target, cancellationToken).ConfigureAwait(false), transaction.BackupFingerprint, StringComparison.Ordinal))
+                throw new InvalidDataException("Recovered plugin files differ from the rollback copy.");
+            var stageRemoved = TryDeleteDirectory(stageRoot);
+            var backupRemoved = TryDeleteDirectory(backup);
+            if (!stageRemoved || !backupRemoved) throw new IOException("Plugin update recovery cleanup must finish before startup.");
+            TryDeleteFile(paths.PluginUpdateTransactionPath);
             return;
         }
         if (Directory.Exists(backup))
         {
-            if (Directory.Exists(target)) Directory.Delete(target, recursive: true);
-            Directory.Move(backup, target);
+            if (!Directory.Exists(target)) Directory.Move(backup, target);
+            else
+            {
+                RestorePackageFiles(backup, target);
+                if (!TryDeleteDirectory(backup)) return;
+            }
         }
         if (Directory.Exists(stageRoot)) Directory.Delete(stageRoot, recursive: true);
         File.Delete(paths.PluginUpdateTransactionPath);
+    }
+
+    private static void CopyPackageFiles(string source, string target, bool replace, CancellationToken cancellationToken)
+    {
+        foreach (var directory in EnumerateSafePackageDirectories(source))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Directory.CreateDirectory(TransferPath(source, target, directory));
+        }
+        foreach (var file in EnumerateSafePackageFiles(source))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var destination = TransferPath(source, target, file.Path);
+            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+            File.Copy(file.Path, destination, overwrite: replace);
+        }
+    }
+
+    private static void ReplacePackageFiles(string source, string target, CancellationToken cancellationToken)
+    {
+        var files = EnumerateSafePackageFiles(source);
+        var candidateFiles = files.ToDictionary(file => file.RelativePath, StringComparer.OrdinalIgnoreCase);
+        foreach (var file in EnumerateSafePackageFiles(target))
+        {
+            if (!candidateFiles.TryGetValue(file.RelativePath, out var candidate) || !string.Equals(file.RelativePath, candidate.RelativePath, StringComparison.Ordinal)) File.Delete(file.Path);
+        }
+        RemoveConflictingDirectories(target, candidateFiles.Keys);
+        foreach (var directory in EnumerateSafePackageDirectories(source).OrderBy(directory => directory.Length))
+            Directory.CreateDirectory(TransferPath(source, target, directory));
+        foreach (var file in files.OrderBy(entry => string.Equals(entry.RelativePath, "manifest.json", StringComparison.OrdinalIgnoreCase) ? 1 : 0)
+                     .ThenBy(entry => entry.RelativePath, StringComparer.OrdinalIgnoreCase))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var destination = TransferPath(source, target, file.Path);
+            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+            ReplaceFile(file.Path, destination);
+        }
+    }
+
+    private static void RestorePackageFiles(string backup, string target)
+    {
+        ReplacePackageFiles(backup, target, CancellationToken.None);
+    }
+
+    private static void RemoveConflictingDirectories(string target, IEnumerable<string> filePaths)
+    {
+        var files = filePaths.ToArray();
+        foreach (var directory in EnumerateSafePackageDirectories(target).OrderByDescending(directory => directory.Length))
+        {
+            var relative = Path.GetRelativePath(target, directory).Replace(Path.DirectorySeparatorChar, '/');
+            if (files.Any(file => string.Equals(relative, file, StringComparison.OrdinalIgnoreCase) || relative.StartsWith(file + "/", StringComparison.OrdinalIgnoreCase)))
+                Directory.Delete(directory, recursive: false);
+        }
+    }
+
+    private static void ReplaceFile(string source, string destination)
+    {
+        var temporary = destination + ".plugin-update-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            File.Copy(source, temporary, overwrite: false);
+            File.Move(temporary, destination, overwrite: true);
+        }
+        finally { if (File.Exists(temporary)) File.Delete(temporary); }
+    }
+
+    private static string TransferPath(string sourceRoot, string targetRoot, string sourcePath)
+    {
+        var relative = Path.GetRelativePath(sourceRoot, sourcePath);
+        var root = Path.GetFullPath(targetRoot).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        var target = Path.GetFullPath(Path.Combine(targetRoot, relative));
+        if (!target.StartsWith(root, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Plugin package entry escapes its root.");
+        return target;
+    }
+
+    private static IReadOnlyList<string> EnumerateSafePackageDirectories(string root)
+    {
+        ValidatePackageRoot(root);
+        var pending = new Stack<string>();
+        var directories = new List<string>();
+        pending.Push(Path.GetFullPath(root));
+        while (pending.TryPop(out var parent))
+        {
+            foreach (var directory in Directory.EnumerateDirectories(parent, "*", SearchOption.TopDirectoryOnly))
+            {
+                if (File.GetAttributes(directory).HasFlag(FileAttributes.ReparsePoint)) throw new InvalidDataException("Plugin packages cannot contain links or reparse points.");
+                directories.Add(directory);
+                pending.Push(directory);
+            }
+        }
+        return directories;
+    }
+
+    private static IReadOnlyList<(string Path, string RelativePath)> EnumerateSafePackageFiles(string root)
+    {
+        ValidatePackageRoot(root);
+        var fullRoot = Path.GetFullPath(root);
+        var pending = new Stack<string>();
+        var files = new List<(string, string)>();
+        var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        pending.Push(fullRoot);
+        while (pending.TryPop(out var parent))
+        {
+            foreach (var entry in Directory.EnumerateFileSystemEntries(parent, "*", SearchOption.TopDirectoryOnly))
+            {
+                var attributes = File.GetAttributes(entry);
+                if (attributes.HasFlag(FileAttributes.ReparsePoint)) throw new InvalidDataException("Plugin packages cannot contain links or reparse points.");
+                if (attributes.HasFlag(FileAttributes.Directory)) { pending.Push(entry); continue; }
+                var relative = Path.GetRelativePath(fullRoot, entry).Replace(Path.DirectorySeparatorChar, '/');
+                if (!paths.Add(relative)) throw new InvalidDataException("Plugin package contains colliding paths.");
+                files.Add((entry, relative));
+            }
+        }
+        return files;
+    }
+
+    private static void ValidatePackageRoot(string root)
+    {
+        var directory = Path.GetFullPath(root);
+        if (!Directory.Exists(directory) || File.GetAttributes(directory).HasFlag(FileAttributes.ReparsePoint))
+            throw new InvalidDataException("Plugin package root is missing or linked.");
     }
 
     private void CleanupOrphanedPendingPackages()
@@ -290,5 +458,6 @@ public sealed partial class ScriptRegistry
         string Backup,
         string StageRoot,
         string PackageRoot,
-        string State);
+        string State,
+        string? BackupFingerprint = null);
 }

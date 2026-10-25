@@ -4,7 +4,7 @@ namespace CodexScriptLoader.Core;
 
 public sealed class VersionedInstallLayout
 {
-    private static readonly Regex VersionPattern = new("^[0-9]+\\.[0-9]+\\.[0-9]+$", RegexOptions.CultureInvariant);
+    private static readonly Regex VersionPattern = new("^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$", RegexOptions.CultureInvariant);
     private static readonly HashSet<string> SupportedRids = new(StringComparer.Ordinal) { "win-x64", "win-arm64" };
 
     public VersionedInstallLayout(string installRoot)
@@ -67,17 +67,38 @@ public sealed class VersionedInstallLayout
 
     public static void ValidateVersionAndRid(string version, string rid)
     {
-        if (!VersionPattern.IsMatch(version) || !SupportedRids.Contains(rid))
+        if (!IsValidVersion(version) || !SupportedRids.Contains(rid))
         {
             throw new InvalidDataException("Version or runtime identifier is invalid.");
         }
     }
 
+    public static bool IsValidVersion(string version) => VersionPattern.IsMatch(version);
+
     public static int CompareVersions(string left, string right)
     {
         ValidateVersionAndRid(left, "win-x64");
         ValidateVersionAndRid(right, "win-x64");
-        return Version.Parse(left).CompareTo(Version.Parse(right));
+        var leftParts = left.Split('-', 2);
+        var rightParts = right.Split('-', 2);
+        var core = Version.Parse(leftParts[0]).CompareTo(Version.Parse(rightParts[0]));
+        if (core != 0) return core;
+        if (leftParts.Length != rightParts.Length) return rightParts.Length.CompareTo(leftParts.Length);
+        if (leftParts.Length == 1) return 0;
+        var leftIds = leftParts[1].Split('.');
+        var rightIds = rightParts[1].Split('.');
+        for (var index = 0; index < Math.Min(leftIds.Length, rightIds.Length); index++)
+        {
+            var a = leftIds[index];
+            var b = rightIds[index];
+            var aNumeric = a.All(char.IsAsciiDigit);
+            var bNumeric = b.All(char.IsAsciiDigit);
+            var order = aNumeric != bNumeric ? (aNumeric ? -1 : 1)
+                : aNumeric && a.Length != b.Length ? a.Length.CompareTo(b.Length)
+                : string.CompareOrdinal(a, b);
+            if (order != 0) return order;
+        }
+        return leftIds.Length.CompareTo(rightIds.Length);
     }
 
     public static string EnsureWithin(string root, string candidate, string label)

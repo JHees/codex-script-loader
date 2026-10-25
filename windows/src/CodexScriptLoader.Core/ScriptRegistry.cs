@@ -488,9 +488,9 @@ public sealed partial class ScriptRegistry
             }
 
             var version = OptionalText(root, "version", "0.0.0", 64);
-            if (!StableVersionRegex().IsMatch(version))
+            if (!VersionedInstallLayout.IsValidVersion(version))
             {
-                throw new InvalidDataException("Manifest update requires a stable major.minor.patch version.");
+                throw new InvalidDataException("Manifest update requires a semantic version, optionally with a prerelease suffix.");
             }
 
             update = new PluginUpdateDescriptor(provider, repository, asset);
@@ -559,9 +559,6 @@ public sealed partial class ScriptRegistry
 
     [GeneratedRegex("^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$", RegexOptions.CultureInvariant)]
     private static partial Regex GitHubRepositoryRegex();
-
-    [GeneratedRegex("^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)$", RegexOptions.CultureInvariant)]
-    private static partial Regex StableVersionRegex();
 
     [GeneratedRegex("^[a-z][a-z0-9_]{0,63}$", RegexOptions.CultureInvariant)]
     private static partial Regex PageCompanionOperationRegex();

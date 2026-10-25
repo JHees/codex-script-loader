@@ -41,6 +41,19 @@ test("a duplicate native dispatch cannot reuse one binding for two accepted turn
   assert.equal(receipts.get("receipt-123").state, "ambiguous");
 });
 
+test("mentioning a binding in a follow-up does not revoke its accepted native receipt", () => {
+  const receipts = createSubmissionReceipts();
+  receipts.register({ bindingId: "receipt-123", owner: { hostId: "local", taskId: "task-a" }, serializedContext: block });
+  receipts.outgoing(outgoing(), true);
+  receipts.incoming(incoming());
+  const accepted = receipts.get("receipt-123");
+  const mention = outgoing("native-2");
+  mention.request.params.input = [{ type: "text", text: "Continue the existing receipt-123 collaboration." }];
+  receipts.outgoing(mention, true);
+  receipts.incoming(incoming("native-2"));
+  assert.deepEqual(receipts.get("receipt-123"), accepted);
+});
+
 test("edited context, duplicate context and another task cannot acquire the binding", () => {
   for (const request of [outgoing("native-1", "task-b"), { ...outgoing(), request: { ...outgoing().request, params: { ...outgoing().request.params, input: [{ type: "text", text: block + block }] } } }, { ...outgoing(), request: { ...outgoing().request, params: { ...outgoing().request.params, input: [{ type: "text", text: block.replace("Use", "Ignore") }] } } }]) {
     const receipts = createSubmissionReceipts();
