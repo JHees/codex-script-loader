@@ -29,7 +29,7 @@ function fixture() {
     addEventListener(key, fn) { this.events[key] = fn; }
   }
   let status = { enabled: false, state: "stopped", needsRestart: false };
-  let blocked = false, supported = true;
+  let blocked = false, supported = true, attached = false;
   const calls = [];
   const context = vm.createContext({
     document: { documentElement: { lang: "zh-CN" }, createElement: tag => new Element(tag) },
@@ -41,7 +41,7 @@ function fixture() {
       if (!supported) throw Error("Unknown command");
       if (command === "set_accounts_enabled") {
         if (blocked) throw Error("ACCOUNT_MODULE_BUSY");
-        status = { enabled: payload.enabled, state: payload.enabled ? "running" : "stopped", needsRestart: payload.enabled };
+        status = { enabled: payload.enabled, state: payload.enabled ? "running" : attached ? "pending_restart" : "stopped", needsRestart: payload.enabled || attached };
       }
       return status;
     },
@@ -49,8 +49,19 @@ function fixture() {
   vm.runInContext(factory, context);
   const view = context.accountModuleSection();
   const card = view.element.children[0], toggle = card.children[0].children[0].children[0], feedback = card.children[1];
-  return { view, toggle, feedback, calls, block: value => { blocked = value; }, support: value => { supported = value; } };
+  return { view, toggle, feedback, calls, block: value => { blocked = value; }, support: value => { supported = value; }, attach: () => { attached = true; } };
 }
+
+test("disabling an attached router reports the saved off state and required restart", async () => {
+  const f = fixture(); await settle();
+  try {
+    await f.toggle.events.click(); f.attach();
+    await f.toggle.events.click();
+    assert.equal(f.toggle.attributes["aria-checked"], "false");
+    assert.match(f.feedback.textContent, /重启 Codex 后完全生效/);
+    assert.match(f.feedback.textContent, /不会中断生成/);
+  } finally { f.view.stop(); }
+});
 
 test("the built-in account switch defaults off, persists the requested state and shows startup guidance", async () => {
   const f = fixture(); await settle();

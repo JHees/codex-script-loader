@@ -33,20 +33,34 @@ public static class ProviderCatalog
         {
             if (item["id"] is not JsonValue idValue || !idValue.TryGetValue<string>(out var id) ||
                 id.Length is < 1 or > 160 || id.Any(char.IsWhiteSpace) || id.Any(char.IsControl)) continue;
-            var name = item["name"]?.GetValue<string>() ?? id;
+            var name = item["display_name"]?.GetValue<string>() ?? item["displayName"]?.GetValue<string>()
+                ?? item["name"]?.GetValue<string>() ?? id;
             if (name.Length > 240) name = id;
-            var context = (item["context_window"] ?? item["context_length"])?.GetValue<int>();
+            var context = (item["context_window"] ?? item["contextWindow"] ?? item["context_length"] ?? item["max_context_tokens"])?.GetValue<int>();
             if (context < 1024) context = null;
             var modalities = item["input_modalities"] as JsonArray ?? item["architecture"]?["input_modalities"] as JsonArray;
             var parameters = item["supported_parameters"] as JsonArray;
             bool Has(string value) => parameters?.Any(parameter => parameter?.GetValue<string>() == value) == true;
-            var levels = (item["effort"]?["supported_levels"] as JsonArray)?.Select(level => level!.GetValue<string>())
-                .Where(level => level is "minimal" or "low" or "medium" or "high" or "xhigh" or "max" or "ultra").ToArray() ?? [];
-            var deepseek = provider == "deepseek" && id is "deepseek-flash" or "deepseek-v4-pro";
+            var levels = (item["effort"]?["supported_levels"] as JsonArray
+                    ?? item["supported_reasoning_levels"] as JsonArray
+                    ?? item["supported_reasoning_efforts"] as JsonArray
+                    ?? item["reasoning_efforts"] as JsonArray)?
+                .Select(level => level is JsonObject entry
+                    ? entry["reasoningEffort"]?.GetValue<string>() ?? entry["effort"]?.GetValue<string>()
+                    : level?.GetValue<string>())
+                .Where(level => level is "minimal" or "low" or "medium" or "high" or "xhigh" or "max" or "ultra")
+                .Select(level => level!).Distinct(StringComparer.Ordinal).ToArray() ?? [];
+            var deepseek = provider == "deepseek";
+            if (deepseek && levels.Length == 0) levels = ["low", "high", "max"];
             var reasoning = levels.Length > 0 ? true : parameters is null ? (bool?)null : Has("reasoning") || Has("reasoning_effort");
+            if (reasoning == true && levels.Length == 0) levels = ["low", "medium", "high"];
+            var defaultEffort = item["effort"]?["default_level"]?.GetValue<string>();
+            if (defaultEffort is not ("minimal" or "low" or "medium" or "high" or "xhigh" or "max" or "ultra") ||
+                levels.Length > 0 && !levels.Contains(defaultEffort))
+                defaultEffort = levels.FirstOrDefault();
             result.Add(new(id, name, context, modalities?.Any(value => value?.GetValue<string>() == "image"),
                 deepseek ? true : parameters is null ? null : Has("tools"), reasoning, levels,
-                item["effort"]?["default_level"]?.GetValue<string>() ?? (reasoning == true ? "low" : null),
+                defaultEffort,
                 deepseek ? "freeform" : "function", deepseek || Has("parallel_tool_calls")));
         }
         return result.DistinctBy(model => model.Id).OrderBy(model => model.Name, StringComparer.OrdinalIgnoreCase).ToArray();

@@ -3,6 +3,12 @@
   "dependencies": {
     "net10.0-windows7.0": {
       "codexscriptloader.accounts": {
+        "type": "Project",
+        "dependencies": {
+          "CodexScriptLoader.Interop": "[0.6.0-alpha, )"
+        }
+      },
+      "codexscriptloader.interop": {
         "type": "Project"
       }
     },

@@ -52,13 +52,24 @@ internal static partial class Program
         True(File.Exists(Path.Combine(legacy.Home(original.Id), "credential.json")), "Legacy credentials remain recoverable");
         True(module.BuildUiSource("fixture").Contains("registerPage(\"loader\"", StringComparison.Ordinal), "Enabled account settings are registered as a Loader page");
         using var empty = JsonDocument.Parse("{}");
+        var beforeDisable = await module.InvokeAsync("status", empty.RootElement, CancellationToken.None);
         await module.InvokeAsync("begin_probe", empty.RootElement, CancellationToken.None);
-        await ThrowsAsync<AccountModuleException>(() => module.SetEnabledAsync(false, CancellationToken.None), "Active operations refuse module shutdown");
-        True((await module.StatusAsync(CancellationToken.None)).Enabled, "Refused shutdown keeps the preference and page enabled");
         await ThrowsAsync<AccountModuleException>(() => module.InvokeAsync("not_allowed", empty.RootElement, CancellationToken.None), "Account operations remain bounded");
+        await module.SetEnabledAsync(false, CancellationToken.None);
+        status = await module.StatusAsync(CancellationToken.None);
+        True(!module.IsRunning && !status.Enabled && status.NeedsRestart && status.State == "pending_restart",
+            "Disabling persists immediately without cutting off the attached backend");
+        True(!(await AtomicJsonFile.ReadAsync<AccountModulePreferences>(AccountModule.PreferencesPath(paths), CancellationToken.None))!.Enabled,
+            "The disabled preference is saved even while an operation is active");
+        await ThrowsAsync<AccountModuleException>(() => module.InvokeAsync("status", empty.RootElement, CancellationToken.None), "Disabled management commands are rejected");
+        await module.SetEnabledAsync(true, CancellationToken.None);
+        var afterEnable = await module.InvokeAsync("status", empty.RootElement, CancellationToken.None);
+        Equal(beforeDisable!["data"]!["pid"]!.GetValue<int>(), afterEnable!["data"]!["pid"]!.GetValue<int>(), "Re-enabling reuses the live backend");
+        await ThrowsAsync<AccountModuleException>(() => module.SuspendAsync(CancellationToken.None), "Host handoff still protects active operations");
         await module.InvokeAsync("cancel_operation", empty.RootElement, CancellationToken.None);
         await module.SetEnabledAsync(false, CancellationToken.None);
-        True(!module.IsRunning && !(await module.StatusAsync(CancellationToken.None)).Enabled, "Disabling stops the process");
+        await module.SuspendAsync(CancellationToken.None);
+        True(!(await module.StatusAsync(CancellationToken.None)).NeedsRestart, "No restart is pending after the backend is detached");
         True(migrated.List().Single().Id == original.Id, "Disabling retains account data");
         await using var next = new AccountModule(paths, Environment.ProcessPath!);
         await next.InitializeAsync(false, CancellationToken.None);

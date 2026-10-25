@@ -72,6 +72,69 @@ Var StartMenuFolder
 Function .onInit
   SetShellVarContext current
   SetRegView 64
+
+  ; Ask a running Loader to shut down gracefully and retry instead of showing a
+  ; preflight warning. The installer never force-kills Codex or Loader.
+  StrCpy $R0 0
+  StrCpy $R1 0
+  StrCpy $R3 0
+loader_wait:
+  IfFileExists "$LOCALAPPDATA\CodexScriptLoader\state\instance.v0.3.lock" 0 codex_wait
+  FileOpen $9 "$LOCALAPPDATA\CodexScriptLoader\state\instance.v0.3.lock" a
+  IfErrors loader_busy
+  FileClose $9
+  Goto codex_wait
+loader_busy:
+  StrCpy $R3 1
+  ${If} $R0 == 0
+    IfFileExists "$LOCALAPPDATA\Programs\CodexScriptLoader\CodexScriptLoader.exe" 0 loader_busy_wait
+    nsExec::ExecToStack '"$LOCALAPPDATA\Programs\CodexScriptLoader\CodexScriptLoader.exe" --exit'
+    Pop $0
+    Pop $1
+  ${EndIf}
+  ${If} $R0 == 5
+    ; Fallback for a Loader that predates the --exit command: close the Codex
+    ; window normally. The Loader observes the process exit and shuts down.
+    System::Call 'user32::FindWindowW(w 0, w "ChatGPT") i .r2'
+    ${If} $R2 != 0
+      System::Call 'user32::PostMessageW(i $R2, i 0x0010, i 0, i 0)'
+    ${EndIf}
+  ${EndIf}
+loader_busy_wait:
+  IntOp $R0 $R0 + 1
+  ${If} $R0 >= 20
+    MessageBox MB_OK|MB_ICONEXCLAMATION "Codex Script Loader is still running. Close Codex and let Loader exit, then run this installer again.$\r$\n$\r$\nCodex Script Loader 仍在运行。请关闭 Codex 并等待 Loader 退出后重新运行安装程序。"
+    Abort
+  ${EndIf}
+  Sleep 1000
+  Goto loader_wait
+codex_wait:
+  nsExec::ExecToStack 'cmd /c tasklist /FI "IMAGENAME eq ChatGPT.exe" /NH | findstr /I /C:"ChatGPT.exe"'
+  Pop $0
+  Pop $1
+  ${If} $0 == 0
+    ${If} $R1 == 0
+      IfFileExists "$LOCALAPPDATA\Programs\CodexScriptLoader\CodexScriptLoader.exe" 0 codex_busy_wait
+      nsExec::ExecToStack '"$LOCALAPPDATA\Programs\CodexScriptLoader\CodexScriptLoader.exe" --exit'
+      Pop $0
+      Pop $1
+    ${EndIf}
+    ${If} $R3 == 1
+    ${AndIf} $R1 == 5
+      System::Call 'user32::FindWindowW(w 0, w "ChatGPT") i .r2'
+      ${If} $R2 != 0
+        System::Call 'user32::PostMessageW(i $R2, i 0x0010, i 0, i 0)'
+      ${EndIf}
+    ${EndIf}
+codex_busy_wait:
+    IntOp $R1 $R1 + 1
+    ${If} $R1 >= 20
+      MessageBox MB_OK|MB_ICONEXCLAMATION "Codex is still running. Close it completely, then run this installer again.$\r$\n$\r$\nCodex 仍在运行。请完全关闭 Codex 后重新运行安装程序。"
+      Abort
+    ${EndIf}
+    Sleep 1000
+    Goto loader_wait
+  ${EndIf}
 FunctionEnd
 
 Function un.onInit

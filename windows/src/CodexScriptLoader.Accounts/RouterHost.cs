@@ -23,18 +23,25 @@ public sealed class RouterHost : IAccountRouterControl
     private readonly Task listener;
     private readonly Task globalRouting;
     private AccountRouter? router;
+    private HistoryLayout? sharedHistory;
+    private string? historyError;
     private string[]? launchArguments;
     private volatile bool configurationLocked;
     private FileStream? lease;
     public bool CanStop => router?.CanStop != false;
     public bool Connected => router?.IsConnected == true;
+    public bool HistoryShared => sharedHistory is not null;
+    public string? HistoryError => historyError;
     public bool AccountBusy(string id) => router?.AccountBusy(id) == true;
     public int BoundCount(string accountId) => ownership.BoundTo(accountId).Length;
     public GlobalAccountStatus GlobalStatus => router?.GlobalStatus() ?? new(store.DefaultAccountId, 0, 0, 0);
     public void RetryGlobalSwitch() => router?.RetryGlobalSwitch();
     public object ThreadStatus(string id) => router?.Status(id) ?? new { threadId = id, accountId = ownership.Get(id).AccountId, busy = false, switching = false, connected = false };
-    public async Task SwitchAsync(string id, string accountId, CancellationToken cancellation) =>
-        await (await LockConfigurationAsync(cancellation)).SwitchAsync(id, accountId, cancellation);
+    public async Task<object> ListThreadsAsync(string? query, int limit, CancellationToken cancellation) =>
+        await (await LockConfigurationAsync(cancellation)).ListThreadsAsync(query, limit, cancellation);
+    public async Task SwitchAsync(string id, string accountId, CancellationToken cancellation, bool pinned = false) =>
+        // An explicit per-thread switch away from the global account is a deliberate model choice.
+        await (await LockConfigurationAsync(cancellation)).SwitchAsync(id, accountId, cancellation, pinned || accountId != store.DefaultAccountId);
     public async Task<AccountEntry> ReadAccountAsync(string id, CancellationToken cancellation) =>
         await (await LockConfigurationAsync(cancellation)).ReadAccountAsync(id, cancellation);
     public async Task LoginAsync(string id, Func<LoginPrompt, Task> prompt, CancellationToken cancellation) =>
@@ -61,18 +68,17 @@ public sealed class RouterHost : IAccountRouterControl
         lease = new FileStream(Path.Combine(directory, "router.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
         File.WriteAllText(connectionPath, JsonSerializer.Serialize(connection, AccountStore.JsonOptions));
         listener = ListenAsync();
-        globalRouting = ReconcileGlobalAsync();
-    }
-
-    private async Task ReconcileGlobalAsync()
-    {
-        try
+        // Chats follow the default lazily on their next turn; do not migrate them in the background.
+        globalRouting = Task.CompletedTask;
+        var primaryHome = Environment.GetEnvironmentVariable("CODEX_HOME");
+        if (string.IsNullOrEmpty(primaryHome)) primaryHome = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
+        try { sharedHistory = HistoryLayout.Migrate(store, directory, primaryHome, Environment.GetEnvironmentVariable("CODEX_SQLITE_HOME")); }
+        catch (Exception error)
         {
-            using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(500));
-            while (await timer.WaitForNextTickAsync(stop.Token))
-                if (configurationLocked && router is not null) await router.ReconcileGlobalAsync(stop.Token);
+            // Keep the previous isolated layout rather than leaving a half-migrated store.
+            historyError = error.Message;
+            sharedHistory = null;
         }
-        catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
     }
 
     private async Task ListenAsync()
@@ -92,6 +98,7 @@ public sealed class RouterHost : IAccountRouterControl
     private async Task ServeAsync(string id, NamedPipeServerStream pipe)
     {
         await using var peer = new Peer(pipe);
+        using var disconnected = CancellationTokenSource.CreateLinkedTokenSource(stop.Token);
         var requests = new List<Task>();
         try
         {
@@ -120,18 +127,18 @@ public sealed class RouterHost : IAccountRouterControl
                     if (string.IsNullOrEmpty(home)) home = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
                     var factory = new RouterBackendFactory(store, OfficialCliLocator.Find(), home,
                         Environment.GetEnvironmentVariable("CODEX_SQLITE_HOME"), args,
-                        hello["packageFamily"]?.GetValue<string>());
+                        hello["packageFamily"]?.GetValue<string>(), sharedHistory);
                     router = new AccountRouter(store, ownership, factory.Start, factory.Home);
                     router.Outgoing += Publish;
                     launchArguments = args;
                 }
+                peers[id] = peer;
             }
             finally { initialization.Release(); }
-            peers[id] = peer;
             await peer.SendAsync(new JsonObject { ["ready"] = true }, stop.Token);
             while (await peer.ReadAsync(stop.Token) is { } message)
             {
-                var task = HandleAsync(id, peer, message);
+                var task = HandleAsync(id, peer, message, disconnected.Token);
                 requests.Add(task);
                 requests.RemoveAll(item => item.IsCompleted);
                 if (requests.Count >= 128) await Task.WhenAny(requests);
@@ -140,28 +147,40 @@ public sealed class RouterHost : IAccountRouterControl
         catch (Exception error) when (error is IOException or OperationCanceledException or InvalidOperationException or JsonException or ArgumentException) { }
         finally
         {
-            peers.TryRemove(id, out _);
-            await initialization.WaitAsync();
-            try { if (router is not null) await router.DetachAsync(id); }
-            finally { initialization.Release(); }
+            disconnected.Cancel();
             try { await Task.WhenAll(requests); }
             catch (Exception error) when (error is IOException or OperationCanceledException or ObjectDisposedException) { }
+            await initialization.WaitAsync();
+            try
+            {
+                peers.TryRemove(id, out _);
+                if (router is not null) await router.DetachAsync(id);
+                // No desktop owns these writers after the last CLI connection closes.
+                if (peers.IsEmpty && router is not null)
+                {
+                    await router.DisposeAsync();
+                    router = null;
+                    launchArguments = null;
+                    configurationLocked = false;
+                }
+            }
+            finally { initialization.Release(); }
         }
     }
 
-    private async Task HandleAsync(string id, Peer peer, JsonObject message)
+    private async Task HandleAsync(string id, Peer peer, JsonObject message, CancellationToken cancellation)
     {
         var gateHeld = false;
         try
         {
-            await initialization.WaitAsync(stop.Token);
+            await initialization.WaitAsync(cancellation);
             gateHeld = true;
             configurationLocked |= message["method"]?.GetValue<string>() is not
                 ("initialize" or "initialized" or "config/read" or "configRequirements/read" or
                  "experimentalFeature/list" or "account/read" or "getAuthStatus" or "model/list");
             if (configurationLocked) { initialization.Release(); gateHeld = false; }
-            var reply = await router!.HandleAsync(id, message, stop.Token);
-            if (reply is not null) await peer.SendAsync(reply, stop.Token);
+            var reply = await router!.HandleAsync(id, message, cancellation);
+            if (reply is not null) await peer.SendAsync(reply, cancellation);
         }
         catch (Exception error) when (error is IOException or OperationCanceledException or InvalidOperationException) { peer.Disconnect(); }
         finally { if (gateHeld) initialization.Release(); }
@@ -178,7 +197,10 @@ public sealed class RouterHost : IAccountRouterControl
         var index = 0;
         while (index + 1 < arguments.Count && arguments[index] is "-c" or "--config") index += 2;
         if (index >= arguments.Count || arguments[index] != "app-server") return false;
-        return !arguments.Skip(index + 1).Any(value => value is "generate-json-schema" or "generate-ts" or "--help" or "-h");
+        // 26.1021 added a one-shot startup probe before the interactive app-server.
+        // It must reach the official CLI unchanged or the desktop stalls on
+        // "organization settings could not be loaded".
+        return !arguments.Skip(index + 1).Any(value => value is "generate-json-schema" or "generate-ts" or "--help" or "-h" or "--print-startup-config");
     }
 
     public async ValueTask DisposeAsync()

@@ -755,7 +755,9 @@ function installSettingsHost(version) {
         : state.errorCode
           ? (zh ? "账号模块未运行；请退出安全模式，或关闭后重新开启。" : "The module is unavailable. Leave safe mode or turn it off and on.")
           : !state.enabled
-            ? (zh ? "已关闭。不会启动账号后台，也不会显示账号设置页。" : "Off. The account backend and settings page are not started.")
+            ? state.needsRestart
+              ? (zh ? "已关闭，重启 Codex 后完全生效。当前聊天连接保留，不会中断生成。" : "Off. Restart Codex to fully detach routing. Existing chats can finish uninterrupted.")
+              : (zh ? "已关闭。不会启动账号后台，也不会显示账号设置页。" : "Off. The account backend and settings page are not started.")
             : state.needsRestart
               ? (zh ? "账号后台已启动，账号设置页已显示。聊天路由将在下次启动 Codex 时接入。" : "Account settings are available. Routing will attach the next time Codex starts.")
               : (zh ? "已启动，可在“账号管理”页面配置账号。" : "Running. Configure accounts on the Accounts page.");

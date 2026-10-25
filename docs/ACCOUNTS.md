@@ -17,7 +17,11 @@ managed Codex launch with the module enabled: Loader temporarily supplies its CL
 entry point through Windows package activation, restores the activation lease,
 and delegates official CLI work to the installed Codex CLI. Enabling or disabling
 the module may require restarting Codex to reconnect the desktop backend.
-Disabling is refused while the router, login, probe, or switch operation is busy.
+Disabling saves the off preference immediately, hides management UI and reports
+`pending_restart` while an existing backend is attached. It does not interrupt
+active chats or wait for activity caches to become empty. A disabled CLI launch
+delegates directly to the official executable. Host handoff still requires an
+idle backend; normal shutdown disposes the owned processes.
 
 Desktop startup can use a bootstrap connection followed by a main connection
 with additional CLI configuration overrides. The router serializes bootstrap
@@ -29,6 +33,37 @@ The existing renderer plugin contract remains unchanged. The account operations
 are internal host commands with a fixed allowlist. `src/accounts-ui.js` is a
 bundled Loader resource, not an installed third-party plugin.
 
+## Accounts page
+
+The settings page has **Accounts** and **Chats** tabs. Account rows expose edit,
+set-as-default and a small menu for test, re-authorize, enable/disable and remove.
+The editor is a full-page view with basic fields, model catalog, usage query and
+configuration versions. The sidebar picker only selects the new-chat default and
+shows quotas.
+
+A contiguous **Batch edit** mode lets the user select accounts and enable,
+disable, refresh, remove or apply one model/usage configuration. Results are
+reported per account; one failure does not abort the rest. Batch provider updates
+reuse each account's saved key and create a new revision.
+
+## Shared history
+
+One thread has one authoritative rollout, stored under the primary Codex home.
+Account homes keep only authentication, configuration, credentials and model
+profiles; their `sessions`, `archived_sessions`, `attachments`,
+`codex-remote-attachments` and `thread-writer-locks` directories are local
+junctions to the primary home. Every account backend uses the primary
+`CODEX_SQLITE_HOME`. Switching accounts changes ownership and resumes the same
+thread on the target backend; it never copies rollouts or attachments.
+
+The first start after this layout is introduced merges each account's existing
+history into the primary store. A thread found in several homes keeps the copy
+with the newest real user turn (then the larger file); the other copy is kept
+under `<accountHome>/.history-conflicts`. Original directories are renamed to
+`.history-backup-<timestamp>`, never deleted. `history-layout.json` records the
+canonical and backup paths. If migration fails, the router keeps the previous
+isolated layout and reports the failure instead of leaving a partial layout.
+
 ## Accounts and data
 
 The desktop primary account remains available. Additional subscription accounts
@@ -37,30 +72,97 @@ stay in the current user's private filesystem and are excluded from renderer
 settings and browser storage. Removing an account from selection retains its
 credentials and history.
 
-The router maintains ownership by thread ID and converges local threads on the
-saved global account. Existing running turns and their subtasks stay on their
-original account until idle; background reconciliation then migrates them while
-preserving history. Historical threads not yet known to the router migrate when
-resumed or used for a new turn. The UI reports pending and failed migrations,
-with an explicit retry action; failures preserve the original owner. Its
+The router maintains ownership by thread ID and changes the default account for
+new chats only. It no longer migrates every existing chat in the background:
+opening or resuming a chat does nothing, and a non-pinned chat moves to the new
+default lazily before its next turn. Pinned chats, chats assigned by the quota
+policy and chats using a relay model keep their account. A failed lazy switch
+leaves the chat on its original account and is reported in the UI.
+Historical threads not yet known to the router follow the same lazy rule. Its
 secondary account routing does not extend to remote or cloud execution.
 Zero-turn persistent threads are checkpointed through the official
-archive/unarchive requests before moving their rollout; this preserves the ID
-without inserting a model turn. Handoff notifications stay internal until the
-owner changes. Windows extended paths are normalized before checking that the
-history remains inside the source account's sessions directory.
+archive/unarchive requests before handing ownership to another backend; this
+preserves the ID without inserting a model turn. Handoff notifications stay
+internal until the owner changes. Shared SQLite uses WAL; the router serializes
+ownership changes per thread. If concurrent writes prove unsafe, turn starts are
+serialized as a fallback rather than risking the history.
 Connection probes and quota refreshes report provider support or errors rather
 than inventing a balance. Official Credits snapshots preserve unknown, zero and
-unlimited values. DeepSeek reads `/user/balance`, OpenRouter reads `/credits`,
-and relays exposing `/user/balance` show their remaining balance. Unsupported
-relays show an unavailable label. The account menu and compact settings rows use
-the same data.
+unlimited values. Relays are queried through their configured usage URL, or the
+common `/user/balance`, `/v1/usage`, `/credits` and `/v1/credits` endpoints;
+same-origin URLs only. A custom usage configuration stores the URL and JSON
+field paths and never executes provider scripts. Unsupported relays show an
+unavailable label.
 
 An older standalone candidate is quarantined during managed startup. On first
 enable, its saved account files, default choice, and thread ownership are copied
 to a staged private store, which is published after the copy completes. The
 legacy store stays intact. An existing built-in store is reused, never
 overwritten by migration.
+
+## Model-level routing with a Codex default
+
+The desktop account can stay the global default while individual chats use a
+different model backend. The editor fetches each provider's model catalog;
+only models checked for inclusion are exposed in the Codex model picker. Each
+model exposes only its supported reasoning levels, with a default chosen from
+those levels. Relay entries use a stable synthetic ID
+(`loader/<accountId>/<base64url(model)>`) and a display name with the account
+name, so two providers that offer the same upstream model remain distinct;
+selecting one starts or moves the chat to that relay and restores the upstream
+model before the request reaches the provider. Only this namespaced ID selects a
+relay; an unprefixed native model always stays on the Codex account. Codex models keep the official
+catalog's default marker, and a relay default marks its own entry instead.
+Selecting a relay model does not change the saved global account or migrate
+other chats. Selecting a Codex model for a chat that is pinned to a relay moves
+that chat back to the Codex account and clears the pin. A chat created with a
+relay model keeps that backend for later turns, resumes and forks until a
+different model is requested.
+
+The selected collaboration mode's model takes precedence over the legacy
+top-level model, matching the app-server contract. A malformed or unavailable
+`loader/` model fails explicitly and never falls back to another provider. An
+effort-only change retains the selected relay model. Account data refreshes on
+user actions and operation completion; there is no periodic account-page refresh.
+Unchanged shared configuration is not rewritten on thread resume.
+
+The last desktop CLI disconnection closes its backend processes, releasing their
+thread writers even if the Loader tray host remains alive. The next connection
+starts a fresh backend with its own launch arguments.
+
+Pinned chats are reported separately in the global status line and are excluded
+from lazy default migration. Choosing a new global account unpins the chats that
+account now owns; chats pinned to a different account stay where they are. A
+per-thread switch requested explicitly from the account UI pins the target when
+it differs from the global default.
+
+A chat running a relay model is model-bound: switching the global account to a
+Codex account pins it to its relay instead of migrating it, so its model and
+provider stay unchanged and the chat does not reappear rewritten as a Codex
+chat. Switching the global account between relay accounts affects new chats and
+lazily moves non-pinned chats before their next turn. Selecting a Codex model on
+such a chat moves it back to the Codex account and clears the pin. DeepSeek
+Flash/Pro advertise the `low`, `high` and `max` reasoning levels, and the effort
+explicitly chosen in the picker always wins over the provider profile default.
+
+New chats can follow the selected default account or be assigned by the quota
+policy. The quota policy compares the remaining weekly and five-hour windows of
+the primary and ready ChatGPT accounts and falls back to the default when no
+quota data is available. A chat assigned to an account other than the default is
+pinned so later default changes do not pull it away.
+
+## Migrated threads in the catalog
+
+A target account's session index does not contain a row for a chat moved from
+another account, so the router merges every account's `thread/list` and then
+recovers missing owned chats through `thread/read`, with a short cache. Archived
+chats are filtered by their `archived_sessions` path, and a recovered chat can be
+opened and continued on its new backend. Recovered chats also honor the client's
+section, project, path, search and provider filters, so they never leak into a
+Pinned or project-filtered listing. The one-time repair that moves a relay-model
+chat back to its relay skips any chat whose Codex-side rollout contains newer
+user turns, so post-migration messages are never hidden by the move. Attachments
+already live in the shared primary store; no file is copied during a handoff.
 
 ## Model providers and configuration versions
 
@@ -127,10 +229,11 @@ switching, not a promise of automatic Loader downgrade or schema migration.
 
 ## Independent account updates
 
-Global selection migrates persistent conversations. Ephemeral background threads,
-such as title generation, stay with the backend that created them and do not count
-as pending or failed migrations. A missing history path reports a migration error
-without terminating the reconciliation loop.
+The default account affects new chats; existing non-pinned chats move lazily
+before their next turn. Ephemeral background threads, such as title generation,
+stay with the backend that created them and do not count as pending or failed
+migrations. A missing history path reports a migration error without
+terminating the router.
 
 DeepSeek profiles disable the inherited desktop code-mode wrapper, whose custom
 `exec` tool is unsupported by the provider. Ordinary function tools and the
@@ -172,8 +275,9 @@ constitute a guarantee that older code can read newer account data.
   changes without disconnecting an attached chat.
 - Provider checks cover isolated revisions, same-origin key reuse, rejection
   of cross-origin key reuse, rollback, model routing, busy-turn handoff, and
-  loading a generated model catalog in the installed official CLI. Provider
-  tests use fake keys and an invalid test endpoint; they do not prove live
+  loading a generated model catalog in the installed official CLI. The
+  synthesized relay model entries are compared with the official CLI catalog
+  fields for a DeepSeek profile. Provider tests use fake keys and an invalid test endpoint; they do not prove live
   DeepSeek/OpenRouter generation or tool compatibility. The separate
   [provider compatibility notes](PROVIDER_COMPATIBILITY.md) distinguish live
   service validation from these deterministic checks.

@@ -27,7 +27,7 @@ public sealed class AccountModule(LoaderPaths paths, string hostExecutable) : IA
     {
         "status", "list_accounts", "list_imports", "import_account", "rename_account", "set_enabled",
         "remove_account", "set_default", "begin_login", "begin_probe", "operation_status", "cancel_operation",
-        "thread_status", "switch_thread", "refresh_accounts",
+        "thread_status", "switch_thread", "refresh_accounts", "list_threads", "set_new_chat_policy", "test_usage", "batch_accounts",
         "create_provider", "save_provider_configuration", "get_provider_configuration", "activate_provider_version",
         "begin_provider_models",
     };
@@ -50,6 +50,14 @@ public sealed class AccountModule(LoaderPaths paths, string hostExecutable) : IA
         if (process is not null) await process.DisposeAsync();
         process = null;
         AccountDataMigration.EnsureStore(DataDirectory, Path.Combine(paths.DataRoot, "plugin-data", LegacyPluginId));
+        // Consolidate history before the backend starts so its initialize call is not blocked by file copies.
+        try
+        {
+            var primary = Environment.GetEnvironmentVariable("CODEX_HOME");
+            if (string.IsNullOrEmpty(primary)) primary = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
+            HistoryLayout.Migrate(new AccountStore(DataDirectory), DataDirectory, primary, Environment.GetEnvironmentVariable("CODEX_SQLITE_HOME"));
+        }
+        catch (Exception) { /* The router retries and falls back to the isolated layout. */ }
         var start = new ProcessStartInfo(hostExecutable)
         {
             UseShellExecute = false, CreateNoWindow = true,
@@ -79,17 +87,17 @@ public sealed class AccountModule(LoaderPaths paths, string hostExecutable) : IA
             if (value)
             {
                 if (safeMode) throw new AccountModuleException("ACCOUNT_MODULE_SAFE_MODE");
+                var wasRunning = process?.IsRunning == true;
                 await StartCoreAsync(cancellation);
                 try { await AtomicJsonFile.WriteAsync(PreferencesPath(paths), new AccountModulePreferences(true), cancellation); }
-                catch { if (!enabled) { await process!.DisposeAsync(); process = null; } throw; }
+                catch { if (!wasRunning) { await process!.DisposeAsync(); process = null; } throw; }
                 enabled = true;
             }
             else
             {
-                await EnsureIdleAsync(cancellation);
                 await AtomicJsonFile.WriteAsync(PreferencesPath(paths), new AccountModulePreferences(false), cancellation);
                 enabled = false;
-                if (process is not null) { await process.DisposeAsync(); process = null; }
+                // The desktop's existing app-server connection lives in this process until restart.
             }
         }
         finally { gate.Release(); }
@@ -100,7 +108,9 @@ public sealed class AccountModule(LoaderPaths paths, string hostExecutable) : IA
         await gate.WaitAsync(cancellation);
         try
         {
-            if (!enabled) return new(false, "stopped", false, false);
+            if (!enabled) return process?.IsRunning == true
+                ? new(false, "pending_restart", false, true)
+                : new(false, "stopped", false, false);
             if (safeMode) return new(true, "stopped", false, false, "ACCOUNT_MODULE_SAFE_MODE");
             if (process?.IsRunning != true) return new(true, "unavailable", false, false, "ACCOUNT_MODULE_UNAVAILABLE");
             try

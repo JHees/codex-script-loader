@@ -47,10 +47,20 @@ internal static class StartupChecks
                 var retained = await main.RequestAsync("thread/read", new JsonObject { ["threadId"] = threadId });
                 if (retained?["thread"]?["id"]?.GetValue<string>() != threadId)
                     throw new InvalidOperationException("Rejected launch change interrupted the existing chat");
+                await bootstrap.DisposeAsync();
+                await main.DisposeAsync();
+                var deadline = DateTimeOffset.UtcNow.AddSeconds(10);
+                while (host.Connected && DateTimeOffset.UtcNow < deadline) await Task.Delay(20);
+                if (host.Connected) throw new InvalidOperationException("Disconnected desktop left its backend running");
+                await using var reopened = Connect([.. mainArgs, "-c", "model_reasoning_effort=\"low\""]);
+                await reopened.InitializeAsync();
+                var reopenedConfig = await reopened.RequestAsync("config/read", new JsonObject { ["includeLayers"] = false });
+                if (reopenedConfig?["config"]?["model_reasoning_effort"]?.GetValue<string>() != "low")
+                    throw new InvalidOperationException("A fresh desktop connection retained the retired backend");
             }
         }
         catch (Exception error) { Console.Error.WriteLine("Startup check: " + error.GetType().Name + ": " + error.Message); throw; }
         finally { Environment.SetEnvironmentVariable("CODEX_HOME", previousHome); }
-        Console.WriteLine("PASS: bootstrap/main launch arguments, overlapping startup clients and attached-chat protection");
+        Console.WriteLine("PASS: bootstrap/main arguments, attached-chat protection and last-client backend shutdown");
     }
 }

@@ -29,7 +29,7 @@ Windows uses the native .NET 10 background host with no console or tray icon and
 | User scripts | Loads `manifest.json + index.js` packages from the Loader data directory. |
 | Bundled skills (new source capability) | Native schema-v2 packages can install renderer and skill together, with shared enable, update, rollback, and removal. Requires a host built with this capability. |
 | Automatic lifecycle | Validates, injects, reloads, replaces, and cleans up scripts across renderer documents. |
-| Native Windows host | Runs quietly with Codex, recovers a managed session after an in-app Codex update restart, and exits after an ordinary Codex close. |
+| Native Windows host | Runs quietly with Codex, recovers the managed session after an in-app Codex update or self-restart, and exits only after a short grace period once every Codex package-family process is gone. |
 | macOS runtime | Discovers `Codex.app` and provides the same managed CDP/script flow through Node.js; currently untested. |
 | Diagnostics and reload | Starting a second Windows instance opens diagnostics; `--reload` replaces scripts in place. |
 | Online host updates | Checks the stable GitHub Release after startup and switches verified Loader hosts without restarting Codex. |
@@ -48,9 +48,9 @@ identifiers, such as `0.6.0-alpha.1` and `1.2.3-beta.2`. To install a prerelease
 plugin from GitHub, paste its exact Release or ZIP link. Repository/latest links
 and automatic updates continue to select stable releases.
 
-In candidate builds that include this feature, open **Codex Settings → Script-Loader → Settings → Built-in features → Start account module**. Enabling it starts the account backend and adds **Account management** to the settings navigation. The choice persists across launches. Disabling it stops the backend and removes the account page and sidebar selector while retaining saved data; active chats, login, and account-switch operations must finish first.
+In candidate builds that include this feature, open **Codex Settings → Script-Loader → Settings → Built-in features → Start account module**. Enabling it starts the account backend and adds **Account management** to the settings navigation. The choice persists across launches. Disabling saves the off preference immediately and hides account management. Existing backend connections remain alive until Codex exits; the settings page reports when a restart is required. Account and history data are retained.
 
-The page supports subscription login, importing saved API relay connections, connection checks, quota display when available, renaming, enabling/disabling accounts, and choosing one global account for local chats. The sidebar account menu shows login status and available quota or credit balances. Selecting an account applies it to new and existing local chats; running turns and their subtasks finish before their chats migrate, retaining IDs and history. Remote/cloud chats remain outside this module.
+The page supports subscription login, importing saved API relay connections, connection checks, quota display when available, renaming, enabling/disabling accounts, per-account model catalogs and batch edits. The sidebar account menu selects the account for new chats and shows available quota or credit balances. One thread has one authoritative history under the primary Codex home; accounts keep only authentication, configuration and credentials. Selecting another account for a chat changes the next turn's owner without copying history. Remote/cloud chats remain outside this module.
 
 **Add model connection** supports DeepSeek, OpenRouter, and custom Responses providers with an explicit model and capability configuration. **Edit configuration** is available for existing imported API relays as well as new connections. It saves independent revisions and restores previous configurations and keys. DeepSeek presets and model discovery fill supported capabilities; advanced settings remain available when a service omits metadata. Active chats finish their current turn before moving to the selected revision. Provider rollback leaves the desktop's primary configuration intact; real provider generation still requires acceptance with your own API key.
 
@@ -129,8 +129,9 @@ The macOS runtime discovers `Codex.app`, starts it with a random loopback CDP po
 3. It activates Codex with a random loopback CDP port.
 4. It verifies the listener PID, package family, and exact renderer URL before injection.
 5. Enabled renderer plugins start through the same manifest and lifecycle contract.
-6. If Codex installs a newer package and restarts from its in-app update flow, the Loader detects the version change, relaunches that package with a fresh random CDP endpoint, and reinjects enabled plugins.
-7. After an ordinary managed Codex close, the Loader releases its connections and exits automatically.
+6. A renderer target that briefly disappears, or a hidden Codex window, never ends the managed session: the Loader keeps waiting and reconnects when the target returns.
+7. If Codex installs a newer package and restarts from its in-app update flow, the Loader detects the version change even while the registered package is in flux, stops any residual or self-started Codex processes of the same package family, and relaunches the updated package with a fresh random CDP endpoint before reinjecting enabled plugins. Recovery is retried a few times; a failed attempt leaves the Loader alive in `Degraded` instead of exiting.
+8. After an ordinary managed Codex close, the Loader fast-polls left-over processes and the registered package version for an 8 second grace period and only then releases its connections and exits automatically. A same-version Codex process started outside the Loader keeps the Loader waiting instead of being killed. While a Store update has temporarily unregistered the Codex package, the Loader waits up to three minutes for the new version or a returning process instead of exiting early.
 
 Start the Loader executable a second time to open diagnostics. To reload installed scripts without focusing or refreshing Codex, run the same compatible executable as a second instance:
 
@@ -326,7 +327,7 @@ See [`windows/README.md`](windows/README.md) for NSIS, portable ZIP, optional si
 - **“Codex is already running”** — close all Codex windows, wait for its process to exit, and start the Loader again.
 - **Loader starts but no window appears** — this is expected. Start it a second time to open diagnostics.
 - **A script is degraded** — inspect diagnostics and `%LOCALAPPDATA%\CodexScriptLoader\logs`, then correct the manifest, permission, or lifecycle error.
-- **Setup cannot replace a running Loader** — exit the managed Codex session and Loader, then run setup again. The installer never force-terminates either process.
+- **Setup cannot replace a running Loader** — exit the managed Codex session and Loader, then run setup again. The installer checks the Loader instance lock and the Codex process before copying files and asks you to close them first; it never force-terminates either process.
 - **A Codex update breaks activation** — close Codex and run Activation Probe to capture the package and CDP diagnostics.
 
 ## Platform support

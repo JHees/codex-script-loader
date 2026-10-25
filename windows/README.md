@@ -1,10 +1,21 @@
 # Codex Script Loader for Windows
 
-The Windows Loader uses a small stable NativeAOT launcher plus a versioned .NET 10 WinForms background host. The host launches the current user's Microsoft Store Codex package through `IApplicationActivationManager`, verifies the loopback CDP listener by package family, injects only into the exact `app://-/index.html` renderer target, and exits automatically after the managed Codex process disappears.
+The Windows Loader uses a small stable NativeAOT launcher plus a versioned .NET 10 WinForms background host. The host launches the current user's Microsoft Store Codex package through `IApplicationActivationManager`, verifies the loopback CDP listener by package family, injects only into the exact `app://-/index.html` renderer target, and keeps the managed session alive across Codex package updates and self-restarts. It exits only after an 8 second grace period has shown that every Codex package-family process is gone.
 
 Starting the same executable again opens the diagnostic window through the current-user single-instance pipe. Starting it with `--reload` asks the running Loader to rebuild and inject its script plan without focusing or reloading the Codex window.
 
 The production path does not enumerate `C:\Program Files\WindowsApps` and does not start PowerShell, cmd, Node, tasklist, netstat, a service, a scheduled task, or an updater process. PowerShell files under `windows/scripts` are build-time tooling and are not included in the application package.
+
+## Managed Codex lifecycle
+
+The host decides the managed lifecycle from two observable inputs: the exact CDP renderer targets, and the package-family processes together with the registered Codex package version. The activation PID and main-window visibility are diagnostics only, because a Store app update replaces its processes and a hidden window can still own a renderer.
+
+- Renderer target missing while a package-family process is alive: stay running, report `Degraded`, keep polling for the renderer, and never terminate that process. A user-started same-version Codex instance is left untouched.
+- Registered package version newer than the managed version: report the update once, close or terminate every process of the package family, then relaunch the updated package with a fresh random loopback CDP port and reinject enabled plugins. The recovery is retried up to three times, two seconds apart; a failed attempt leaves the Loader alive in `Degraded` for manual inspection.
+- No renderer target and no package-family process: start an 8 second close grace period and sample every 500 ms. A reappearing process or a package version change switches back to waiting or to update recovery; otherwise the host exits. If the Codex package is temporarily unregistered, which is normal during a Store update, the grace period extends to three minutes so the updated package can reappear instead of the host exiting early; every registration change restarts the grace window.
+- Every managed (re)start clears the previous update/close reporting state, so a later ordinary close is still reported and detected.
+
+The JSONL log records these transitions as `managed-codex-detached`, `managed-codex-awaiting-package-registration`, `codex-package-update-detected`, `managed-codex-close-grace`, `managed-codex-exited`, and `codex-restart-retry`.
 
 ## Build and test
 

@@ -45,6 +45,8 @@ internal static partial class Program
             await TestQuarantineRoundTripAsync(testRoot);
             await TestPluginManagementAsync(testRoot);
             await TestPluginUpdateReplacementAsync(testRoot);
+            await PluginUpdatePinnedDirectoryChecks.RunAsync(testRoot);
+            await PluginUpdatePinnedDirectoryChecks.RunRecoveryAsync(testRoot);
             await TestPluginUpdateJournalRecoveryAsync(testRoot);
             await TestPluginUpdateManagerAsync(testRoot);
             await TestPluginUpdateConfirmationPolicyAsync(testRoot);
@@ -52,7 +54,7 @@ internal static partial class Program
             TestPathBoundary(testRoot);
             TestPackageProcessTerminationBoundary();
             TestCodexPackageUpgradeClassification();
-            TestCodexPackageUpdateDetectionGracePeriod();
+            TestManagedCodexLifecyclePolicy();
             TestCodexPrimaryApplicationSelection();
             TestLogRedaction(testRoot);
             await TestAtomicUpdateStateAsync(testRoot);
@@ -177,14 +179,6 @@ internal static partial class Program
         True(!LiveSupervisor.IsPackageUpgrade(current, current), "Same Codex package is not classified as an update restart");
         True(!LiveSupervisor.IsPackageUpgrade(upgraded, current), "Older Codex package is not classified as an update restart");
         True(!LiveSupervisor.IsPackageUpgrade(current, upgraded with { PackageFamilyName = "Example.Other_family" }), "Different package family is not classified as a Codex update restart");
-    }
-
-    private static void TestCodexPackageUpdateDetectionGracePeriod()
-    {
-        True(!LiveSupervisor.IsPackageUpdateDetectionGraceExpired(TimeSpan.FromSeconds(89.999)),
-            "Loader keeps watching after the old renderer disappears so a delayed Store package registration can be recovered");
-        True(LiveSupervisor.IsPackageUpdateDetectionGraceExpired(TimeSpan.FromSeconds(90)),
-            "Loader eventually exits after an ordinary Codex close when no package update appears");
     }
 
     private static void TestCodexPrimaryApplicationSelection()

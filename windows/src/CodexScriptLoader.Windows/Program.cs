@@ -39,9 +39,10 @@ internal static class Program
                 var enabled = AtomicJsonFile.ReadAsync<AccountModulePreferences>(AccountModule.PreferencesPath(modulePaths)).GetAwaiter().GetResult()?.Enabled == true;
                 Environment.SetEnvironmentVariable(AccountModule.EnvironmentVariable, null);
                 Environment.SetEnvironmentVariable("CODEX_WINDOWS_SANDBOX_PACKAGE_FAMILY", launch.PackageFamilyName);
-                Environment.ExitCode = DesktopCli.RunAsync(Path.Combine(modulePaths.DataRoot, "accounts"), args, enabled).GetAwaiter().GetResult();
+                var exitCode = DesktopCli.RunAsync(Path.Combine(modulePaths.DataRoot, "accounts"), args, enabled).GetAwaiter().GetResult();
+                Environment.Exit(exitCode);
             }
-            catch { Environment.ExitCode = 1; }
+            catch { Environment.Exit(1); }
             return;
         }
         ApplicationConfiguration.Initialize();
@@ -50,6 +51,17 @@ internal static class Program
         var readyPipeName = ReadOption(args, "--launcher-ready-pipe");
         var candidate = HandoffCandidateOptions.Parse(args, paths);
         var instance = SingleInstanceCoordinator.Create(paths);
+        if (args.Contains("--exit", StringComparer.OrdinalIgnoreCase))
+        {
+            if (!instance.IsPrimary)
+            {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                try { instance.SendCommandAsync("ExitLoader", timeout.Token).GetAwaiter().GetResult(); }
+                catch (Exception exception) when (exception is IOException or TimeoutException or OperationCanceledException) { }
+            }
+            instance.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            return;
+        }
         if (!instance.IsPrimary && candidate is null)
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));

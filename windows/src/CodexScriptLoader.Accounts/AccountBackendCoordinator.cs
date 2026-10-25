@@ -27,6 +27,7 @@ public sealed partial class AccountBackendCoordinator : IAsyncDisposable
         this.hostExecutable = Path.GetFullPath(hostExecutable);
         this.uiPath = Path.GetFullPath(uiPath);
         var store = new AccountStore(this.dataDirectory);
+        AccountOwnershipRepair.Run(store, this.dataDirectory);
         packages = new(this.dataDirectory);
         router = new RouterHost(store, this.dataDirectory);
     }
@@ -167,13 +168,18 @@ public sealed partial class AccountBackendCoordinator : IAsyncDisposable
         {
             case "router/can_stop": result = router.CanStop; break;
             case "router/connected": result = router.Connected; break;
+            case "router/history_shared": result = router.HistoryShared; break;
+            case "router/history_error": result = router.HistoryError ?? ""; break;
             case "router/account_busy": result = router.AccountBusy(Id()); break;
             case "router/bound_count": result = router.BoundCount(Id()); break;
             case "router/global_status": result = router.GlobalStatus; break;
             case "router/thread_status": result = router.ThreadStatus(Id()); break;
+            case "router/list_threads": result = await router.ListThreadsAsync(parameters["query"]?.GetValue<string>(),
+                parameters["limit"]?.GetValue<int>() ?? 100, cancellation); break;
             case "router/retry_global": router.RetryGlobalSwitch(); result = true; break;
             case "router/read_account": result = await router.ReadAccountAsync(Id(), cancellation); break;
-            case "router/switch": await router.SwitchAsync(Id(), parameters["accountId"]!.GetValue<string>(), cancellation); result = true; break;
+            case "router/switch": await router.SwitchAsync(Id(), parameters["accountId"]!.GetValue<string>(), cancellation,
+                parameters["pinned"]?.GetValue<bool>() ?? false); result = true; break;
             case "router/login":
                 await router.LoginAsync(Id(), prompt => sender.NotifyAsync("login_prompt", new()
                 {

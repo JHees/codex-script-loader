@@ -12,7 +12,7 @@ if (args.FirstOrDefault() == "--accounts-backend") { Environment.ExitCode = awai
 if (args.FirstOrDefault() == "--accounts-test-host") { Environment.ExitCode = await AccountBackendHost.RunAsync(args[1]); return; }
 if (args.FirstOrDefault() == "--desktop-cli") { Environment.ExitCode = await DesktopCli.RunAsync(args[1], args[3..], args[2] == "enabled"); return; }
 if (args.FirstOrDefault() == "--fixture") { await Fixture(args[1], args[2]); return; }
-if (args.FirstOrDefault() == "--router-fixture") { await RouterChecks.FixtureAsync(args[1]); return; }
+if (args.FirstOrDefault() == "--router-fixture") { await RouterChecks.FixtureAsync(args[1], args.Length > 2 ? args[2] : args[1]); return; }
 if (args.FirstOrDefault() == "--verify-official-cli")
 {
     var cli = OfficialCliLocator.Find();
@@ -39,6 +39,20 @@ try
         File.AppendAllText(Path.Combine(source, AccountRuntimePackage.UiFile), "tampered");
         await Throws<InvalidOperationException>(() => Task.FromResult(AccountRuntimePackage.Validate(source)));
         Assert(AccountRuntimePackage.Validate(packages.DirectoryFor(manifest.Revision)) == manifest);
+        var ensure = new AccountRuntimePackage(Path.Combine(root, "ensure-store"));
+        var first = ensure.EnsureCurrent(typeof(BackendService).Assembly.Location, ui);
+        if (ensure.EnsureCurrent(typeof(BackendService).Assembly.Location, ui).Revision != first.Revision)
+            throw new InvalidOperationException("Unchanged assembly and UI must reuse the active worker package");
+        var changedUi = Path.Combine(root, "changed-ui.js"); File.WriteAllText(changedUi, "/* changed */");
+        var changed = ensure.EnsureCurrent(typeof(BackendService).Assembly.Location, changedUi);
+        if (changed.Revision == first.Revision || ensure.ReadPointer()!.Revision != changed.Revision)
+            throw new InvalidOperationException("Changed assembly or UI must activate a new worker package on startup");
+    });
+    await Check("Codex 26.1021 startup probe bypasses the interactive router", () =>
+    {
+        Assert(!RouterHost.IsInteractiveServer(new[] { "-c", "features.code_mode_host=true", "app-server", "--analytics-default-enabled", "--print-startup-config" }));
+        Assert(RouterHost.IsInteractiveServer(new[] { "-c", "features.code_mode_host=true", "app-server", "--analytics-default-enabled" }));
+        return Task.CompletedTask;
     });
     await Check("credit balances preserve zero, unknown and unlimited values", () =>
     {
@@ -57,6 +71,9 @@ try
         Assert(openrouter is { Balance: "7.5 USD", HasCredits: true });
         var relay = ConnectionProbe.ParseRelayBalance("custom", JsonNode.Parse("""{"isValid":true,"is_active":true,"remaining":17.3789386,"unit":"USD"}"""));
         Assert(relay is { Balance: "17.38 USD", HasCredits: true });
+        var quota = ConnectionProbe.ParseRelayBalance("custom", JsonNode.Parse("""{"isValid":true,"quota":{"limit":111.73,"remaining":14.4234442,"used":97.3065558,"unit":"USD"},"remaining":14.4234442,"unit":"USD"}"""),
+            new ProviderUsageSettings("custom", "/v1/usage", "quota.remaining", "quota.unit", "quota.limit"));
+        Assert(quota is { Balance: "14.42 USD", Limit: "111.73 USD" });
         Assert(ConnectionProbe.ParseRelayBalance("custom", JsonNode.Parse("""{"error":"no balance"}""")) is null);
         return Task.CompletedTask;
     });
@@ -75,6 +92,84 @@ try
         File.WriteAllText(Path.Combine(home.FullName, "auth.json"), "preserved");
         store.Disable(account.Id);
         Assert(store.Get(account.Id).Status == "disabled" && File.ReadAllText(Path.Combine(home.FullName, "auth.json")) == "preserved");
+    });
+    await Check("ownership repair restores relay chats moved by a Codex account switch", async () =>
+    {
+        var directory = Path.Combine(root, "ownership-repair");
+        Directory.CreateDirectory(directory);
+        var store = new AccountStore(directory);
+        var relay = store.SaveProviderConfiguration("DeepSeek",
+            new("deepseek", "https://api.deepseek.com", "deepseek-flash", 1048576, "high"), "fixture-repair-key");
+        var ownership = new ThreadOwnership(directory);
+        var thread = Guid.NewGuid().ToString();
+        var sessions = Path.Combine(store.Home(relay.Id), "sessions", "2026", "01", "01");
+        Directory.CreateDirectory(sessions);
+        var settings = new JsonObject
+        {
+            ["payload"] = new JsonObject
+            {
+                ["type"] = "thread_settings_applied",
+                ["thread_settings"] = new JsonObject
+                {
+                    ["model"] = "deepseek-flash",
+                    ["model_provider_id"] = ProviderRuntime.ProviderId(relay),
+                },
+            },
+        };
+        File.WriteAllText(Path.Combine(sessions, $"rollout-2026-01-01-{thread}.jsonl"), settings.ToJsonString());
+        ownership.Set(thread, new("primary"));
+        AccountOwnershipRepair.Run(store, directory);
+        var repairedOwner = new ThreadOwnership(directory).Get(thread);
+        Assert(repairedOwner.AccountId == relay.Id && repairedOwner.Pinned);
+        // The one-time marker keeps a later explicit Codex-side switch from being reverted.
+        new ThreadOwnership(directory).Set(thread, new("primary"));
+        AccountOwnershipRepair.Run(store, directory);
+        var keptOwner = new ThreadOwnership(directory).Get(thread);
+        Assert(keptOwner.AccountId == "primary" && !keptOwner.Pinned);
+
+        // A relay chat that received turns after the migration must stay on the Codex
+        // account: moving it back would hide those turns from the restored conversation.
+        var newerDirectory = Path.Combine(root, "ownership-repair-newer");
+        var primaryHome = Path.Combine(root, "ownership-repair-primary");
+        Directory.CreateDirectory(newerDirectory);
+        Directory.CreateDirectory(Path.Combine(primaryHome, "sessions", "2026", "01", "01"));
+        var newerStore = new AccountStore(newerDirectory);
+        var newerRelay = newerStore.SaveProviderConfiguration("DeepSeek",
+            new("deepseek", "https://api.deepseek.com", "deepseek-flash", 1048576, "high"), "fixture-repair-key");
+        var newerOwnership = new ThreadOwnership(newerDirectory);
+        var newerThread = Guid.NewGuid().ToString();
+        JsonObject UserMessage(string timestamp, string text) => new()
+        {
+            ["timestamp"] = timestamp,
+            ["type"] = "response_item",
+            ["payload"] = new JsonObject
+            {
+                ["type"] = "message",
+                ["role"] = "user",
+                ["content"] = new JsonArray(new JsonObject { ["type"] = "input_text", ["text"] = text }),
+            },
+        };
+        var relaySessions = Path.Combine(newerStore.Home(newerRelay.Id), "sessions", "2026", "01", "01");
+        Directory.CreateDirectory(relaySessions);
+        var newerSettings = settings.DeepClone();
+        newerSettings["payload"]!["thread_settings"]!["model_provider_id"] = ProviderRuntime.ProviderId(newerRelay);
+        File.WriteAllLines(Path.Combine(relaySessions, $"rollout-2026-01-01-{newerThread}.jsonl"), new[]
+        {
+            newerSettings.ToJsonString(),
+            UserMessage("2026-01-01T05:00:00Z", "old turn").ToJsonString(),
+        });
+        File.WriteAllLines(Path.Combine(primaryHome, "sessions", "2026", "01", "01", $"rollout-2026-01-01-{newerThread}.jsonl"),
+            new[] { UserMessage("2026-01-01T06:00:00Z", "turn sent after migration").ToJsonString() });
+        newerOwnership.Set(newerThread, new("primary"));
+        var previousHome = Environment.GetEnvironmentVariable("CODEX_HOME");
+        Environment.SetEnvironmentVariable("CODEX_HOME", primaryHome);
+        try { AccountOwnershipRepair.Run(newerStore, newerDirectory); }
+        finally { Environment.SetEnvironmentVariable("CODEX_HOME", previousHome); }
+        var newerOwner = new ThreadOwnership(newerDirectory).Get(newerThread);
+        Assert(newerOwner.AccountId == "primary" && !newerOwner.Pinned);
+        var newerMarker = JsonNode.Parse(File.ReadAllText(Path.Combine(newerDirectory, "ownership-repair-v1.json")))!;
+        Assert(newerMarker["skipped"]!.AsArray().Any(item => item!.GetValue<string>() == newerThread));
+        await Task.CompletedTask;
     });
     await Check("official executable baseline and isolated launch", async () =>
     {
@@ -237,19 +332,46 @@ try
         RouterBackendFactory.ShareConfiguration(primary, secondary);
         Assert(File.ReadAllText(Path.Combine(secondary, "AGENTS.md")) == "Shared instructions");
         Assert(!File.Exists(Path.Combine(secondary, "auth.json")) && !File.Exists(Path.Combine(secondary, ".credentials.json")));
+        var unchangedAt = new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        foreach (var name in new[] { "config.toml", "AGENTS.md" }) File.SetLastWriteTimeUtc(Path.Combine(secondary, name), unchangedAt);
+        RouterBackendFactory.ShareConfiguration(primary, secondary);
+        Assert(new[] { "config.toml", "AGENTS.md" }.All(name => File.GetLastWriteTimeUtc(Path.Combine(secondary, name)) == unchangedAt));
+        File.WriteAllText(Path.Combine(primary, "config.toml"), "sandbox_mode=\"workspace-write\"\n");
+        RouterBackendFactory.ShareConfiguration(primary, secondary);
+        Assert(File.ReadAllText(Path.Combine(secondary, "config.toml")) == "sandbox_mode=\"workspace-write\"\n");
         File.Delete(Path.Combine(primary, "AGENTS.md"));
         RouterBackendFactory.ShareConfiguration(primary, secondary);
         Assert(!File.Exists(Path.Combine(secondary, "AGENTS.md")));
         return Task.CompletedTask;
     });
     await RouterChecks.RunAsync(root).WaitAsync(TimeSpan.FromSeconds(20));
+    await HistoryLayoutChecks.RunAsync(root).WaitAsync(TimeSpan.FromSeconds(20));
     await ProviderChecks.RunAsync(root).WaitAsync(TimeSpan.FromSeconds(30));
     await CatalogChecks.RunAsync(root).WaitAsync(TimeSpan.FromSeconds(10));
     await StartupChecks.RunAsync(root).WaitAsync(TimeSpan.FromSeconds(30));
     Console.WriteLine("PASS: account backend and router checks");
 }
 
-finally { Directory.Delete(root, true); }
+finally { Cleanup(root); }
+
+// Temporary clones can retain read-only Git pack files; clear attributes so cleanup cannot fail the run.
+static void Cleanup(string path)
+{
+    try
+    {
+        foreach (var entry in Directory.EnumerateFileSystemEntries(path, "*", SearchOption.AllDirectories))
+        {
+            try
+            {
+                var attributes = File.GetAttributes(entry);
+                if (attributes.HasFlag(FileAttributes.ReadOnly)) File.SetAttributes(entry, attributes & ~FileAttributes.ReadOnly);
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+        }
+        Directory.Delete(path, true);
+    }
+    catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+}
 
 static OfficialBackend Backend(string scenario, string home)
 {

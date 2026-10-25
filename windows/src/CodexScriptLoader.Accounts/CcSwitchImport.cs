@@ -5,7 +5,9 @@ using System.Text.RegularExpressions;
 
 namespace CodexScriptLoader.Accounts;
 
-public sealed record RelayAccountSource(string Id, string Name, string BaseUrl, string Model, [property: JsonIgnore] string ApiKey)
+public sealed record RelayAccountSource(string Id, string Name, string BaseUrl, string Model, [property: JsonIgnore] string ApiKey,
+    IReadOnlyList<ProviderModelSettings>? Models = null, string? ReasoningEffort = null, int? ContextWindow = null,
+    ProviderUsageSettings? Usage = null)
 {
     public static string ValidateEndpoint(string value)
     {
@@ -66,7 +68,51 @@ public static partial class CcSwitchImport
             secret = key.GetString();
         if (string.IsNullOrWhiteSpace(endpoint) || string.IsNullOrWhiteSpace(model) || string.IsNullOrWhiteSpace(secret)) return null;
         if (id.Length is < 1 or > 128 || name.Length is < 1 or > 80 || model.Length > 128 || secret.Length > 8192) return null;
-        return new RelayAccountSource(id, name, RelayAccountSource.ValidateEndpoint(endpoint), model, secret);
+        var validated = RelayAccountSource.ValidateEndpoint(endpoint);
+        var reasoning = ReadString(config, "", "model_reasoning_effort");
+        if (reasoning is not (null or "minimal" or "low" or "medium" or "high" or "xhigh" or "max" or "ultra")) reasoning = null;
+        var context = int.TryParse(ReadString(config, "", "model_context_window"), out var parsedContext) && parsedContext >= 1024 ? parsedContext : (int?)null;
+        var models = ReadModels(root, model, context);
+        var usage = ReadUsage(root, validated);
+        return new RelayAccountSource(id, name, validated, model, secret, models, reasoning, context, usage);
+    }
+
+    private static IReadOnlyList<ProviderModelSettings> ReadModels(JsonElement root, string model, int? context)
+    {
+        var result = new List<ProviderModelSettings>();
+        if (root.TryGetProperty("modelCatalog", out var catalog) && catalog.ValueKind == JsonValueKind.Object &&
+            catalog.TryGetProperty("models", out var items) && items.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in items.EnumerateArray().Take(100))
+            {
+                if (item.ValueKind != JsonValueKind.Object) continue;
+                var id = item.TryGetProperty("model", out var modelValue) ? modelValue.GetString()
+                    : item.TryGetProperty("id", out var idValue) ? idValue.GetString() : null;
+                if (string.IsNullOrWhiteSpace(id) || id.Length > 160 || id.Any(char.IsWhiteSpace) || id.Any(char.IsControl)) continue;
+                var name = item.TryGetProperty("displayName", out var display) ? display.GetString()
+                    : item.TryGetProperty("display_name", out var displaySnake) ? displaySnake.GetString() : id;
+                var window = item.TryGetProperty("contextWindow", out var contextValue) && contextValue.TryGetInt32(out var parsed) && parsed >= 1024
+                    ? parsed : item.TryGetProperty("context_window", out var contextSnake) && contextSnake.TryGetInt32(out var parsedSnake) && parsedSnake >= 1024
+                        ? parsedSnake : (int?)null;
+                result.Add(new ProviderModelSettings(id, name, window));
+            }
+        }
+        if (result.All(item => item.Id != model)) result.Insert(0, new ProviderModelSettings(model, model, context));
+        return result;
+    }
+
+    private static ProviderUsageSettings? ReadUsage(JsonElement root, string baseUrl)
+    {
+        if (!root.TryGetProperty("meta", out var meta) || meta.ValueKind != JsonValueKind.Object ||
+            !meta.TryGetProperty("usage_script", out var script) || script.ValueKind != JsonValueKind.Object ||
+            !script.TryGetProperty("code", out var codeValue) || codeValue.ValueKind != JsonValueKind.String) return null;
+        var code = codeValue.GetString() ?? "";
+        if (code.Length is < 1 or > 20000) return null;
+        var match = UsageUrl().Match(code);
+        if (!match.Success || match.Groups[1].Value.Contains("{{apiKey}}", StringComparison.OrdinalIgnoreCase)) return null;
+        var url = match.Groups[1].Value.Replace("{{baseUrl}}", baseUrl, StringComparison.OrdinalIgnoreCase).Trim();
+        try { return new ProviderUsageSettings("custom", url).Validate(baseUrl); }
+        catch (InvalidOperationException) { return null; }
     }
 
     // Import only quoted scalar fields needed for a Responses account; do not copy unrelated configuration.
@@ -93,6 +139,8 @@ public static partial class CcSwitchImport
 
     [GeneratedRegex("^[a-zA-Z0-9_-]{1,128}$", RegexOptions.CultureInvariant)]
     private static partial Regex ProviderName();
+    [GeneratedRegex("""url\s*:\s*["']([^"']+)["']""", RegexOptions.CultureInvariant)]
+    private static partial Regex UsageUrl();
     [GeneratedRegex("""^([a-zA-Z0-9_]+)\s*=\s*("(?:[^"\\]|\\.)*"|'[^']*')\s*(?:#.*)?$""", RegexOptions.CultureInvariant)]
     private static partial Regex Scalar();
 

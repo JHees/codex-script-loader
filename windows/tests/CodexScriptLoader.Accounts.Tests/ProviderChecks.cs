@@ -52,6 +52,8 @@ internal static class ProviderChecks
             var effective = await deepseekBackend.RequestAsync("config/read", new JsonObject { ["includeLayers"] = false });
             Assert(effective?["config"]?["features"]?["code_mode"]?["enabled"]?.GetValue<bool>() == false,
                 "DeepSeek must not inherit the desktop custom exec tool");
+            var presetCatalog = await deepseekBackend.RequestAsync("model/list", new JsonObject());
+            AssertRelayModelMatchesCatalog(presetCatalog, store.Get(first.Id), store.ReadProviderSettings(first.Id)!);
         }
         var legacy = store.ImportRelay(new("legacy-source", "Legacy relay", "https://relay.example.invalid/v1", "legacy-model", "fixture-legacy-key"), null);
         File.WriteAllText(Path.Combine(store.Home(legacy.Id), "config.toml"), "legacy-config");
@@ -70,7 +72,36 @@ internal static class ProviderChecks
             .Any(option => option.StartsWith("model_catalog_json=", StringComparison.Ordinal) || option.StartsWith("model_context_window=", StringComparison.Ordinal)), "Key-only edits preserve native model metadata without requiring an invented context window");
         try { store.SaveProviderConfiguration("Changed model", new("custom", legacy.BaseUrl!, "different-model", 0, UseDefaultModelMetadata: true), null, retainedDefaults.Id); throw new Exception("A changed model reused unverified defaults"); }
         catch (InvalidOperationException error) when (error.Message == "MODEL_SETTINGS_INVALID") { }
+        var multiStore = new AccountStore(Path.Combine(root, "provider-multi"));
+        var multiSettings = new ProviderSettings("custom", "https://multi.invalid/v1", "m-one", 64000, "high",
+            Models: new[] { new ProviderModelSettings("m-one", "Model One", 64000, new[] { "low", "high" }, "high"),
+                new ProviderModelSettings("m-two", "Model Two", 32000, new[] { "low", "high" }, "low", SupportsImages: true) },
+            Usage: new ProviderUsageSettings("auto"));
+        var multi = multiStore.SaveProviderConfiguration("Multi", multiSettings, "fixture-multi-key");
+        var documents = JsonNode.Parse(File.ReadAllText(Path.Combine(multiStore.Home(multi.Id), "models.json")))!["models"]!.AsArray();
+        Assert(documents.Count == 2 && documents.Any(item => item!["slug"]!.GetValue<string>() == "m-two"), "Every enabled model is written to the provider catalog");
+        var multiStatus = JsonNode.Parse(JsonSerializer.Serialize(multiStore.ProviderConfigurationStatus(multi.Id), AccountStore.JsonOptions))!;
+        Assert(multiStatus["settings"]!["models"]!.AsArray().Count == 2 && multiStatus["settings"]!["usage"]!["mode"]!.GetValue<string>() == "auto",
+            "Multi-model settings and usage configuration round-trip");
         Console.WriteLine("PASS: legacy relay editing, retained provider identity, original configuration rollback and import protection");
         Console.WriteLine("PASS: provider configuration versions, key isolation, rollback and official CLI model catalog");
+        Console.WriteLine("PASS: synthesized relay model entries match the official CLI model catalog");
+    }
+
+    private static void AssertRelayModelMatchesCatalog(JsonNode? catalog, AccountEntry account, ProviderSettings settings)
+    {
+        var synthesized = AccountRouter.RelayModelEntry(account, settings);
+        var actual = catalog?["data"]?.AsArray().FirstOrDefault(model => model?["id"]?.GetValue<string>() == settings.Model)
+            ?? throw new InvalidOperationException("The official CLI catalog is missing the relay model.");
+        foreach (var field in new[] { "id", "model", "displayName", "description", "defaultReasoningEffort", "inputModalities" })
+            if (!JsonNode.DeepEquals(synthesized[field], actual[field]))
+                throw new InvalidOperationException($"Synthesized model field '{field}' does not match the official catalog.");
+        var actualEfforts = actual["supportedReasoningEfforts"]?.AsArray() ?? [];
+        foreach (var effort in synthesized["supportedReasoningEfforts"]!.AsArray())
+            if (!actualEfforts.Any(candidate => JsonNode.DeepEquals(candidate, effort)))
+                throw new InvalidOperationException("A synthesized reasoning effort is missing from the official catalog.");
+        foreach (var field in new[] { "hidden", "supportsPersonality", "multiAgentVersion", "additionalSpeedTiers", "serviceTiers", "defaultServiceTier", "availableAccessPrograms" })
+            if (actual[field] is { } expected && !JsonNode.DeepEquals(synthesized[field], expected))
+                throw new InvalidOperationException($"Synthesized model field '{field}' does not match the official catalog.");
     }
 }

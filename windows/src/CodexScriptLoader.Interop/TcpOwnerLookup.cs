@@ -13,11 +13,17 @@ public static class TcpOwnerLookup
     private const int OwnerPidAll = 5;
     private const int RowSize = 24;
 
+    public static IReadOnlyList<TcpOwner> GetIPv4LoopbackListeners() => GetIPv4LoopbackListeners(null);
+
     public static IReadOnlyList<TcpOwner> GetIPv4LoopbackListeners(int port)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(port, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(port, ushort.MaxValue);
+        return GetIPv4LoopbackListeners((int?)port);
+    }
 
+    private static IReadOnlyList<TcpOwner> GetIPv4LoopbackListeners(int? port)
+    {
         var length = 0;
         var result = GetExtendedTcpTable(IntPtr.Zero, ref length, false, AfInet, OwnerPidAll, 0);
         if (result != ErrorInsufficientBuffer)
@@ -45,7 +51,7 @@ public static class TcpOwnerLookup
                 var localPort = unchecked((ushort)IPAddress.NetworkToHostOrder(unchecked((short)(rawPort & 0xffff))));
                 var processId = Marshal.ReadInt32(row, 20);
                 var address = new IPAddress(addressValue);
-                if (state == MibTcpStateListen && localPort == port && IPAddress.IsLoopback(address))
+                if (state == MibTcpStateListen && (port is null || localPort == port) && IPAddress.IsLoopback(address))
                 {
                     listeners.Add(new TcpOwner(address.ToString(), localPort, processId));
                 }

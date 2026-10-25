@@ -182,7 +182,8 @@ function createSubmissionReceipts() {
       const inputs = request.params.input.filter(part => part?.type === "text" && typeof part.text === "string");
       for (const record of records.values()) {
         const previous = record.receipt;
-        if (!inputs.some(part => part.text.includes(previous.bindingId))) continue;
+        const marker = new RegExp("\\[Loader context: [^\\]\\r\\n]+ / " + previous.bindingId + "\\]");
+        if (!inputs.some(part => marker.test(part.text))) continue;
         let count = 0;
         for (const part of inputs) {
           let offset = -1;
@@ -220,7 +221,7 @@ function createSubmissionReceipts() {
 function installComposerHost() {
   const runtime = globalThis.__codexScriptLoader;
   if (!runtime) return;
-  const revision = "composer-native-submission-11";
+  const revision = "composer-native-submission-12";
   if (runtime.composerHost?.revision === revision) return;
   runtime.composerHost?.stop();
   const registrations = new Map();

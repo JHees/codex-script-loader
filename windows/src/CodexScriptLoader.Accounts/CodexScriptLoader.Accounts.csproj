@@ -5,6 +5,7 @@
     <RootNamespace>CodexScriptLoader.Accounts</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
-    <EmbeddedResource Include="CodexBaseInstructions.txt" />
+    <EmbeddedResource Include="CodexModelMessages.json" />
+    <ProjectReference Include="..\CodexScriptLoader.Interop\CodexScriptLoader.Interop.csproj" />
   </ItemGroup>
 </Project>

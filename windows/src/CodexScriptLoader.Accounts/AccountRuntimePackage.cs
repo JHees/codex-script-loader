@@ -81,12 +81,21 @@ public sealed class AccountRuntimePackage
 
     public AccountRuntimeManifest EnsureCurrent(string assemblyPath, string uiPath)
     {
-        if (ReadPointer() is { } pointer) return Validate(DirectoryFor(pointer.Revision));
+        var assemblyHash = Hash(assemblyPath);
+        var uiHash = Hash(uiPath);
+        AccountRuntimePointer? previous = null;
+        if (ReadPointer() is { } pointer)
+        {
+            var active = Validate(DirectoryFor(pointer.Revision));
+            if (active.AssemblySha256 == assemblyHash && active.UiSha256 == uiHash) return active;
+            previous = pointer;
+        }
         var directory = Path.Combine(Root, ".initial-" + Guid.NewGuid().ToString("N"));
         try
         {
             var manifest = Create(directory, assemblyPath, uiPath, BackendService.Version);
-            Stage(directory); Activate(manifest.Revision, null);
+            Stage(directory);
+            Activate(manifest.Revision, previous?.Revision);
             return manifest;
         }
         finally

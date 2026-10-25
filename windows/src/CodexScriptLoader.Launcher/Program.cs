@@ -28,6 +28,23 @@ internal static partial class Program
             try { if (File.Exists(previousPath)) previous = ReadPointer(previousPath); }
             catch (Exception exception) when (exception is IOException or InvalidDataException or JsonException or UnauthorizedAccessException) { previousError = exception.Message; }
 
+            if (args.Any(argument => string.Equals(argument, "--exit", StringComparison.OrdinalIgnoreCase)))
+            {
+                if (active is not null)
+                {
+                    try
+                    {
+                        var hostPath = ResolveHostPath(root, active);
+                        var start = new ProcessStartInfo(hostPath) { UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(hostPath)! };
+                        foreach (var argument in args) start.ArgumentList.Add(argument);
+                        using var process = Process.Start(start);
+                        process?.WaitForExit(5000);
+                    }
+                    catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or InvalidOperationException) { }
+                }
+                return 0;
+            }
+
             var recoverFirst = active is null || HasIncompleteTransaction(active);
             if (recoverFirst && previous is not null && (active is null || !SameTarget(active, previous)) && TryLaunch(root, previous, args, out previousError))
             {

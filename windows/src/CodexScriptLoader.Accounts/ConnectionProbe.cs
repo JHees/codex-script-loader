@@ -8,7 +8,7 @@ using System.Text.Json.Nodes;
 namespace CodexScriptLoader.Accounts;
 
 public sealed record ConnectionResult(bool Passed, string? ErrorCode, int? HttpStatus, long ElapsedMilliseconds, IReadOnlyList<UsageWindow>? Usage = null, AccountCredits? Credits = null);
-public sealed record AccountCredits(bool HasCredits, bool Unlimited, string? Balance);
+public sealed record AccountCredits(bool HasCredits, bool Unlimited, string? Balance, string? Limit = null);
 public sealed record UsageWindow(string Name, int UsedPercent, long? WindowDurationMins, long? ResetsAt);
 
 public static class ConnectionProbe
@@ -83,32 +83,58 @@ public static class ConnectionProbe
         var account = store.Get(id);
         if (account.Kind != "relay" || account.BaseUrl is null) return null;
         var endpoint = RelayAccountSource.ValidateEndpoint(account.BaseUrl);
-        var provider = store.ReadProviderSettings(id)?.Provider ?? new Uri(endpoint).Host switch
+        var settings = store.ReadProviderSettings(id);
+        var provider = settings?.Provider ?? new Uri(endpoint).Host switch
         {
             "api.deepseek.com" => "deepseek", "openrouter.ai" => "openrouter", _ => "custom",
         };
-        using var client = new HttpClient(handler ?? new HttpClientHandler { AllowAutoRedirect = false })
-        { Timeout = TimeSpan.FromSeconds(15), MaxResponseContentBufferSize = 64 * 1024 };
-        // shortcut: custom relays follow the common /user/balance convention; add a provider mapping when one differs.
-        using var request = new HttpRequestMessage(HttpMethod.Get, endpoint + (provider == "openrouter" ? "/credits" : "/user/balance"));
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", store.ReadRelayKey(id));
-        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-        try
-        {
-            using var response = await client.SendAsync(request, cancellation);
-            if (!response.IsSuccessStatusCode) return null;
-            return ParseRelayBalance(provider, JsonNode.Parse(await response.Content.ReadAsStringAsync(cancellation)));
-        }
-        catch (Exception error) when (error is HttpRequestException or JsonException or IOException or InvalidOperationException or OperationCanceledException)
-        {
-            if (cancellation.IsCancellationRequested) throw;
-            return null;
-        }
+        return await RelayBalanceAsync(endpoint, store.ReadRelayKey(id), provider, settings?.Usage, cancellation, handler);
     }
 
-    public static AccountCredits? ParseRelayBalance(string provider, JsonNode? document)
+    public static async Task<AccountCredits?> RelayBalanceAsync(string endpoint, string key, string provider,
+        ProviderUsageSettings? usage, CancellationToken cancellation, HttpMessageHandler? handler = null)
+    {
+        var targets = usage is { Mode: "custom", Url: { Length: > 0 } url }
+            ? new[] { new Uri(new Uri(endpoint), url).AbsoluteUri }
+            : provider == "openrouter"
+                ? new[] { endpoint + "/credits", endpoint + "/v1/credits", endpoint + "/user/balance", endpoint + "/v1/usage" }
+                : new[] { endpoint + "/user/balance", endpoint + "/v1/usage", endpoint + "/credits", endpoint + "/v1/credits" };
+        using var client = new HttpClient(handler ?? new HttpClientHandler { AllowAutoRedirect = false })
+        { Timeout = TimeSpan.FromSeconds(5), MaxResponseContentBufferSize = 64 * 1024 };
+        foreach (var target in targets)
+        {
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, target);
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
+                request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+                using var response = await client.SendAsync(request, cancellation);
+                if (!response.IsSuccessStatusCode) continue;
+                var text = await response.Content.ReadAsStringAsync(cancellation);
+                if (text.Length == 0 || text[0] is not ('{' or '[')) continue;
+                if (ParseRelayBalance(provider, JsonNode.Parse(text), usage) is { } credits) return credits;
+            }
+            catch (Exception error) when (error is HttpRequestException or JsonException or IOException or InvalidOperationException or OperationCanceledException)
+            {
+                if (cancellation.IsCancellationRequested) throw;
+            }
+        }
+        return null;
+    }
+
+    public static AccountCredits? ParseRelayBalance(string provider, JsonNode? document, ProviderUsageSettings? usage = null)
     {
         if (document is not JsonObject root) return null;
+        if (usage is { Mode: "custom" })
+        {
+            var value = ReadPath(root, usage.RemainingPath) ?? ReadPath(root, "balance") ?? ReadPath(root, "remaining");
+            if (Amount(value) is not { } amount) return null;
+            var unit = Text(ReadPath(root, usage.UnitPath)) ?? Text(ReadPath(root, "unit")) ?? Text(ReadPath(root, "currency"));
+            var limit = Amount(ReadPath(root, usage.LimitPath) ?? ReadPath(root, "quota.limit"));
+            var valid = ReadPath(root, usage.ValidPath);
+            if (valid is JsonValue flag && flag.TryGetValue<bool>(out var active) && !active) return null;
+            return new(amount > 0, false, Format(amount, unit), limit is null ? null : Format(limit.Value, unit));
+        }
         if (provider == "openrouter" && root["data"] is JsonObject data)
         {
             var total = Amount(data["total_credits"]);
@@ -129,9 +155,29 @@ public static class ConnectionProbe
             }
             return parts.Count == 0 ? null : new(total > 0, false, string.Join(" + ", parts));
         }
-        var remaining = Amount(root["remaining"]) ?? Amount(root["balance"]);
+        var remaining = FirstAmount(root, "remaining", "balance", "quota.remaining", "quota.balance", "data.remaining", "data.balance");
         if (remaining is null) return null;
-        return new(remaining > 0, false, Format(remaining.Value, Text(root["unit"])));
+        var unitText = Text(ReadPath(root, "unit")) ?? Text(ReadPath(root, "quota.unit")) ?? Text(ReadPath(root, "currency")) ?? Text(ReadPath(root, "data.unit"));
+        var limitAmount = FirstAmount(root, "quota.limit", "limit", "data.limit");
+        return new(remaining > 0, false, Format(remaining.Value, unitText), limitAmount is null ? null : Format(limitAmount.Value, unitText));
+    }
+
+    private static decimal? FirstAmount(JsonObject root, params string[] paths)
+    {
+        foreach (var path in paths)
+            if (Amount(ReadPath(root, path)) is { } value) return value;
+        return null;
+    }
+
+    private static JsonNode? ReadPath(JsonNode? node, string path)
+    {
+        if (node is null || string.IsNullOrWhiteSpace(path)) return null;
+        var current = node;
+        foreach (var part in path.Split('.', StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (current is not JsonObject obj || !obj.TryGetPropertyValue(part, out current)) return null;
+        }
+        return current;
     }
 
     public static IReadOnlyList<UsageWindow> ParseUsage(JsonNode? limits)

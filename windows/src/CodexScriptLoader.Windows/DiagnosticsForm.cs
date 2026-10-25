@@ -33,10 +33,14 @@ internal sealed class DiagnosticsForm : Form
         exportButton.Click += (_, _) => ExportDiagnostics();
         exitButton = new Button
         {
-            Text = "Exit Loader",
+            Text = "Exit Loader and Codex",
             AutoSize = true,
         };
-        exitButton.Click += (_, _) => ExitRequested?.Invoke(this, EventArgs.Empty);
+        exitButton.Click += (_, _) =>
+        {
+            exitButton.Enabled = false;
+            ExitRequested?.Invoke(this, EventArgs.Empty);
+        };
         commands.Controls.Add(exportButton);
         commands.Controls.Add(exitButton);
         content = new TextBox

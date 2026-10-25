@@ -9,7 +9,7 @@ public sealed record OperationSnapshot(string Id, string AccountId, string Kind,
 
 public sealed record AccountManagementState(AccountEntry? PrimaryAccount, IReadOnlyList<OperationSnapshot> Operations);
 
-public sealed class BackendService(AccountStore store, IAccountRouterControl? routerControl = null) : IAsyncDisposable
+public sealed partial class BackendService(AccountStore store, IAccountRouterControl? routerControl = null) : IAsyncDisposable
 {
     public static string Version => System.Reflection.CustomAttributeExtensions
         .GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>(typeof(BackendService).Assembly)!
@@ -41,14 +41,20 @@ public sealed class BackendService(AccountStore store, IAccountRouterControl? ro
                     defaultAccountId = store.DefaultAccountId, activeOperations = operations.Values.Count(IsActive),
                     operations = operations.Values.Where(IsActive).Select(item => item.Snapshot).ToArray() },
                 "list_accounts" => new { accounts = store.List(), defaultAccountId = store.DefaultAccountId,
+                    preferences = new { newChatAccountPolicy = store.NewChatAccountPolicy },
+                    history = new { shared = router?.HistoryShared == true, error = router?.HistoryError },
                     routingAvailable = router?.Connected == true,
                     globalAccount = router?.GlobalStatus ?? new(store.DefaultAccountId, 0, 0, 0),
                     primaryAccount,
                     boundThreads = store.List().ToDictionary(account => account.Id, account => router?.BoundCount(account.Id) ?? 0) },
+                "list_threads" => ListThreads(payload),
+                "set_new_chat_policy" => SetNewChatPolicy(payload),
+                "test_usage" => TestUsage(payload),
+                "batch_accounts" => BatchAccounts(payload),
                 "thread_status" => router?.ThreadStatus(Text(payload, "threadId", 256))
                     ?? new { connected = false, accountId = "primary", busy = false },
                 "switch_thread" => BeginSwitch(payload),
-                "refresh_accounts" => BeginRefresh(),
+                "refresh_accounts" => BeginRefresh(payload),
                 "list_imports" => new { accounts = CcSwitchImport.Read().Cast<object>().Concat(SavedAccountImport.Read()).ToArray() },
                 "import_account" => Import(payload),
                 "create_provider" => SaveProvider(payload, false),
@@ -76,6 +82,196 @@ public sealed class BackendService(AccountStore store, IAccountRouterControl? ro
             ?? throw new InvalidOperationException("INPUT_INVALID");
         return store.SaveProviderConfiguration(Text(payload, "name", 80), settings, payload["apiKey"]?.GetValue<string>(),
             update ? Text(payload, "accountId", 32) : null);
+    }
+
+
+    private object ListThreads(JsonObject payload)
+    {
+        var limit = Math.Clamp(payload["limit"]?.GetValue<int>() ?? 100, 1, 100);
+        var query = payload["query"]?.GetValue<string>()?.Trim().ToLowerInvariant() ?? "";
+        var primary = Environment.GetEnvironmentVariable("CODEX_HOME");
+        if (string.IsNullOrEmpty(primary)) primary = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
+        var sessions = Path.Combine(primary, "sessions");
+        if (!Directory.Exists(sessions)) return new { threads = Array.Empty<object>() };
+        var ownership = new ThreadOwnership(store.Root);
+        var result = new List<object>();
+        foreach (var file in new DirectoryInfo(sessions).EnumerateFiles("*.jsonl", SearchOption.AllDirectories)
+            .OrderByDescending(item => item.LastWriteTimeUtc).Take(Math.Max(limit * 4, 100)))
+        {
+            var match = ThreadIdAtEnd().Match(Path.GetFileNameWithoutExtension(file.Name));
+            if (!match.Success) continue;
+            var id = match.Value;
+            var title = ReadThreadTitle(file.FullName) ?? id;
+            if (query.Length > 0 && !title.ToLowerInvariant().Contains(query, StringComparison.Ordinal)) continue;
+            var owner = ownership.Get(id);
+            string accountName;
+            try { accountName = owner.AccountId == "primary" ? "桌面主账号" : store.Get(owner.AccountId).Name; }
+            catch (Exception error) when (error is IOException or InvalidOperationException or System.Text.Json.JsonException) { accountName = "已移除账号"; }
+            result.Add(new { id, title, accountId = owner.AccountId, accountName, model = owner.Model, modelName = owner.Model,
+                pinned = owner.Pinned, busy = false, updatedAt = new DateTimeOffset(file.LastWriteTimeUtc).ToUnixTimeMilliseconds() });
+            if (result.Count >= limit) break;
+        }
+        return new { threads = result.ToArray() };
+    }
+
+    private static string? ReadThreadTitle(string path)
+    {
+        try
+        {
+            using var reader = new StreamReader(path);
+            for (var index = 0; index < 200 && reader.ReadLine() is { } line; index++)
+            {
+                if (line.Length > 256 * 1024) break;
+                var node = JsonNode.Parse(line) as JsonObject;
+                var body = node?["payload"] as JsonObject;
+                string? text = null;
+                if (body?["type"]?.GetValue<string>() is "user_message")
+                    text = body["message"]?.GetValue<string>() ?? body["text"]?.GetValue<string>();
+                else if (body?["type"]?.GetValue<string>() is "message" && body?["role"]?.GetValue<string>() is "user")
+                    text = (body["content"] as JsonArray)?.OfType<JsonObject>()
+                        .FirstOrDefault(item => item["type"]?.GetValue<string>() is "input_text")?["text"]?.GetValue<string>();
+                if (string.IsNullOrWhiteSpace(text) || text.StartsWith('<') || text.StartsWith("# ")) continue;
+                var clean = text.Replace("\r", " ").Replace("\n", " ").Trim();
+                if (clean.Length == 0 || clean.StartsWith("## ")) continue;
+                return clean.Length > 120 ? clean[..120] : clean;
+            }
+        }
+        catch (Exception error) when (error is IOException or System.Text.Json.JsonException) { }
+        return null;
+    }
+
+    [System.Text.RegularExpressions.GeneratedRegex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", System.Text.RegularExpressions.RegexOptions.CultureInvariant | System.Text.RegularExpressions.RegexOptions.IgnoreCase)]
+    private static partial System.Text.RegularExpressions.Regex ThreadIdAtEnd();
+
+    private object SetNewChatPolicy(JsonObject payload)
+    {
+        store.SetNewChatAccountPolicy(Text(payload, "policy", 16));
+        return new { saved = true, newChatAccountPolicy = store.NewChatAccountPolicy };
+    }
+
+    private object TestUsage(JsonObject payload)
+    {
+        var accountId = payload["accountId"]?.GetValue<string>();
+        var account = accountId is { Length: > 0 } ? store.Get(accountId) : null;
+        var baseUrl = payload["baseUrl"]?.GetValue<string>();
+        if (string.IsNullOrWhiteSpace(baseUrl)) baseUrl = account?.BaseUrl;
+        if (string.IsNullOrWhiteSpace(baseUrl)) throw new InvalidOperationException("INPUT_INVALID");
+        var endpoint = ProviderSettings.ValidateEndpoint(account?.Provider ?? ProviderFor(baseUrl), baseUrl);
+        var apiKey = payload["apiKey"]?.GetValue<string>();
+        if (string.IsNullOrWhiteSpace(apiKey) && account is not null && account.Kind == "relay") apiKey = store.ReadRelayKey(account.Id);
+        if (string.IsNullOrWhiteSpace(apiKey)) throw new InvalidOperationException("PROVIDER_KEY_REQUIRED");
+        var usage = payload["usage"]?.Deserialize<ProviderUsageSettings>(AccountStore.JsonOptions);
+        usage = usage?.Validate(endpoint);
+        var credits = ConnectionProbe.RelayBalanceAsync(endpoint, apiKey, account?.Provider ?? ProviderFor(baseUrl), usage, CancellationToken.None)
+            .GetAwaiter().GetResult();
+        return new { credits, errorCode = credits is null ? "USAGE_UNAVAILABLE" : null };
+    }
+
+    private object BatchAccounts(JsonObject payload)
+    {
+        if (payload["accountIds"] is not JsonArray ids) throw new InvalidOperationException("INPUT_INVALID");
+        var accountIds = ids.OfType<JsonValue>().Select(value => value.GetValue<string>()).Distinct(StringComparer.Ordinal).Take(50).ToArray();
+        var operation = Text(payload, "operation", 32);
+        if (operation is not ("enable" or "disable" or "remove" or "refresh" or "update_provider"))
+            throw new InvalidOperationException("INPUT_INVALID");
+        var fields = payload["fields"] as JsonObject ?? payload["settings"] as JsonObject;
+        var results = new List<object>();
+        foreach (var id in accountIds)
+        {
+            try
+            {
+                var account = store.Get(id);
+                switch (operation)
+                {
+                    case "enable":
+                        EnsureIdle(id);
+                        if (account.Status == "disabled") store.Enable(id);
+                        break;
+                    case "disable":
+                        EnsureIdle(id);
+                        if (account.Status != "disabled") store.Disable(id);
+                        break;
+                    case "remove":
+                        EnsureIdle(id);
+                        if (store.ConfigurationAccounts(id).Any(item => router?.BoundCount(item) > 0))
+                            throw new InvalidOperationException("ACCOUNT_HAS_THREADS");
+                        store.Remove(id);
+                        break;
+                    case "refresh":
+                        _ = RefreshAccountAsync(account, CancellationToken.None).GetAwaiter().GetResult();
+                        break;
+                    case "update_provider":
+                        if (account.Kind != "relay") throw new InvalidOperationException("ACCOUNT_TYPE_MISMATCH");
+                        EnsureIdle(id);
+                        var settings = MergeProviderSettings(store.ReadProviderSettingsOrLegacy(id), fields ?? new());
+                        var saved = store.SaveProviderConfiguration(account.Name, settings, null, id);
+                        results.Add(new { accountId = id, ok = true, newAccountId = saved.Id });
+                        continue;
+                }
+                results.Add(new { accountId = id, ok = true });
+            }
+            catch (Exception error)
+            {
+                results.Add(new { accountId = id, ok = false, errorCode = ErrorCode(error) });
+            }
+        }
+        return new { results };
+    }
+
+    private static ProviderSettings MergeProviderSettings(ProviderSettings source, JsonObject fields)
+    {
+        var models = source.EffectiveModels.ToList();
+        if (fields["models"] is JsonArray replaced)
+        {
+            models = replaced.Deserialize<ProviderModelSettings[]>(AccountStore.JsonOptions)?.ToList() ?? [];
+        }
+        if (fields["removeModels"] is JsonArray removed)
+            foreach (var id in removed.OfType<JsonValue>().Select(value => value.GetValue<string>()))
+                models.RemoveAll(item => item.Id == id);
+        if (fields["appendModels"] is JsonArray appended)
+            foreach (var item in appended.Deserialize<ProviderModelSettings[]>(AccountStore.JsonOptions) ?? [])
+            {
+                models.RemoveAll(existing => existing.Id == item.Id);
+                models.Add(item);
+            }
+        var context = fields["contextWindow"] is { } contextNode ? contextNode.GetValue<int>() : source.ContextWindow;
+        var model = fields["model"] is { } modelNode ? modelNode.GetValue<string>() : source.Model;
+        if (models.All(item => item.Id != model))
+            models.Add(new ProviderModelSettings(model, model, context >= 1024 ? context : null));
+        if (models.All(item => item.Id != model)) model = models.FirstOrDefault()?.Id ?? model;
+        var effort = fields.TryGetPropertyValue("reasoningEffort", out var effortNode) ? effortNode?.GetValue<string>() : source.ReasoningEffort;
+        var images = fields["supportsImages"] is { } imageNode ? imageNode.GetValue<bool>() : source.SupportsImages;
+        var parallel = fields["parallelToolCalls"] is { } parallelNode ? parallelNode.GetValue<bool>() : source.ParallelToolCalls;
+        var toolFormat = fields["toolFormat"] is { } toolNode ? toolNode.GetValue<string>() : source.ToolFormat;
+        var useDefault = fields["useDefaultModelMetadata"] is { } defaultNode ? defaultNode.GetValue<bool>() : source.UseDefaultModelMetadata;
+        if (context >= 1024) useDefault = false;
+        if (context <= 0 && useDefault is false) context = source.ContextWindow;
+        var usage = fields.TryGetPropertyValue("usage", out var usageNode)
+            ? usageNode?.Deserialize<ProviderUsageSettings>(AccountStore.JsonOptions)
+            : source.Usage;
+        return new ProviderSettings(source.Provider, source.BaseUrl, model, useDefault ? 0 : context,
+            effort, images, toolFormat, parallel, useDefault, models, usage);
+    }
+
+    private static string ProviderFor(string baseUrl) => new Uri(baseUrl).Host switch
+    {
+        "api.deepseek.com" => "deepseek", "openrouter.ai" => "openrouter", _ => "custom",
+    };
+
+    private async Task<AccountEntry> RefreshAccountAsync(AccountEntry account, CancellationToken cancellation)
+    {
+        if (account.Kind == "relay")
+        {
+            var credits = await ConnectionProbe.RelayBalanceAsync(store, account.Id, cancellation);
+            if (credits is null) return account;
+            var updated = store.Get(account.Id) with { Credits = credits, LastCheckedAt = DateTimeOffset.UtcNow, LastError = null };
+            store.Save(updated);
+            return updated;
+        }
+        if (router?.Connected != true) throw new InvalidOperationException("ROUTER_NOT_CONNECTED");
+        var checkedAccount = await router.ReadAccountAsync(account.Id, cancellation);
+        store.Save(checkedAccount);
+        return checkedAccount;
     }
 
     internal AccountManagementState? CaptureManagementState()
@@ -154,7 +350,16 @@ public sealed class BackendService(AccountStore store, IAccountRouterControl? ro
             EnsureIdle(existing.Id);
             if (router?.BoundCount(existing.Id) > 0) throw new InvalidOperationException("ACCOUNT_HAS_THREADS");
         }
-        return store.ImportRelay(source, payload["baseUrl"]?.GetValue<string>());
+        var baseUrl = payload["baseUrl"]?.GetValue<string>() ?? source.BaseUrl;
+        var selected = payload["models"] is JsonArray chosen
+            ? chosen.OfType<JsonValue>().Select(value => value.GetValue<string>()).ToHashSet(StringComparer.Ordinal)
+            : null;
+        var models = (source.Models ?? []).Where(model => selected is null || selected.Count == 0 || selected.Contains(model.Id)).ToArray();
+        var provider = ProviderFor(baseUrl);
+        var context = source.ContextWindow ?? 0;
+        var settings = new ProviderSettings(provider, baseUrl, source.Model, context, source.ReasoningEffort,
+            false, "function", false, context == 0, models, source.Usage);
+        return store.ImportRelay(source, baseUrl, settings);
     }
 
     private object Mutate(JsonObject payload, Action<string> action, bool requireUnbound = false)
@@ -183,16 +388,19 @@ public sealed class BackendService(AccountStore store, IAccountRouterControl? ro
         var operation = Start(accountId, "switch", allowRunningThreads: true);
         operation.Task = Task.Run(async () =>
         {
-            try { await router.SwitchAsync(threadId, accountId, operation.Cancellation.Token); Finish(operation, "completed"); }
+            try { await router.SwitchAsync(threadId, accountId, operation.Cancellation.Token, pinned: accountId != store.DefaultAccountId); Finish(operation, "completed"); }
             catch (OperationCanceledException) { Finish(operation, "cancelled"); }
             catch (Exception error) { Finish(operation, "failed", error.Message is "THREAD_BUSY" or "THREAD_SWITCHING" or "ACCOUNT_NOT_READY" ? error.Message : "SWITCH_FAILED"); }
         });
         return operation.Snapshot;
     }
 
-    private OperationSnapshot BeginRefresh()
+    private OperationSnapshot BeginRefresh(JsonObject payload)
     {
         if (router?.Connected != true) throw new InvalidOperationException("ROUTER_NOT_CONNECTED");
+        var wanted = payload["accountIds"] is JsonArray ids
+            ? ids.OfType<JsonValue>().Select(value => value.GetValue<string>()).ToHashSet(StringComparer.Ordinal)
+            : null;
         var operation = Start("primary", "usage", allowRunningThreads: true);
         operation.Task = Task.Run(async () =>
         {
@@ -200,7 +408,7 @@ public sealed class BackendService(AccountStore store, IAccountRouterControl? ro
             {
                 var primary = await router.ReadAccountAsync("primary", operation.Cancellation.Token);
                 lock (sync) primaryAccount = primary;
-                foreach (var account in store.List().Where(account => account.Status == "ready"))
+                foreach (var account in store.List().Where(account => account.Status == "ready" && (wanted is null || wanted.Contains(account.Id))))
                 {
                     if (account.Kind == "relay")
                     {

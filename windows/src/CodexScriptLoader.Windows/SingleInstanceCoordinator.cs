@@ -93,7 +93,7 @@ internal sealed class SingleInstanceCoordinator : IAsyncDisposable
 
     public async Task SendCommandAsync(string command, CancellationToken cancellationToken)
     {
-        if (command is not ("ShowStatus" or "ReloadScripts")) throw new ArgumentException("Unsupported single-instance command.", nameof(command));
+        if (command is not ("ShowStatus" or "ReloadScripts" or "ExitLoader")) throw new ArgumentException("Unsupported single-instance command.", nameof(command));
         await using var client = new NamedPipeClientStream(".", pipeName, PipeDirection.Out, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
         await client.ConnectAsync(2000, cancellationToken).ConfigureAwait(false);
         await using var writer = new StreamWriter(client, new UTF8Encoding(false), leaveOpen: false) { AutoFlush = true };

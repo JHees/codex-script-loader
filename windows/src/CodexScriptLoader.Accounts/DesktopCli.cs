@@ -11,8 +11,9 @@ public static class DesktopCli
     public static async Task<int> RunAsync(string directory, string[] arguments, bool enabled = true)
     {
         Console.InputEncoding = Console.OutputEncoding = new UTF8Encoding(false);
+        if (arguments.Contains("--print-startup-config", StringComparer.Ordinal)) return await StartupProbeAsync(arguments);
         if (!RouterHost.IsInteractiveServer(arguments)) return await PassthroughAsync(arguments);
-        if (!enabled) return await PrimaryOnlyAsync(directory, arguments);
+        if (!enabled) return await PassthroughAsync(arguments);
         var connection = JsonSerializer.Deserialize<RouterConnection>(
             await File.ReadAllBytesAsync(Path.Combine(directory, "router-connection.json")), AccountStore.JsonOptions)
             ?? throw new InvalidDataException("ROUTER_UNAVAILABLE");
@@ -51,30 +52,48 @@ public static class DesktopCli
         return 0;
     }
 
-    private static async Task<int> PrimaryOnlyAsync(string directory, string[] arguments)
+    private static async Task<int> StartupProbeAsync(string[] arguments)
     {
-        var store = new AccountStore(directory);
-        var home = Environment.GetEnvironmentVariable("CODEX_HOME") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
-        var factory = new RouterBackendFactory(store, OfficialCliLocator.Find(), home,
-            Environment.GetEnvironmentVariable("CODEX_SQLITE_HOME"), arguments, Environment.GetEnvironmentVariable("CODEX_WINDOWS_SANDBOX_PACKAGE_FAMILY"));
-        await using var router = new AccountRouter(store, new ThreadOwnership(directory), factory.Start, factory.Home, primaryOnly: true);
-        var output = TextWriter.Synchronized(Console.Out);
-        router.Outgoing += (_, message) => output.WriteLine(message.ToJsonString());
-        var pending = new List<Task>();
-        async Task Handle(JsonObject message)
+        var cli = OfficialCliLocator.Find();
+        var start = new ProcessStartInfo(cli.Executable)
         {
-            var response = await router.HandleAsync("primary", message);
-            if (response is not null) await output.WriteLineAsync(response.ToJsonString());
-        }
-        while (await Console.In.ReadLineAsync() is { } line)
-        {
-            if (line.Length > 16 * 1024 * 1024) return 1;
-            pending.Add(Handle(JsonNode.Parse(line)!.AsObject()));
-            pending.RemoveAll(task => task.IsCompletedSuccessfully);
-        }
-        await Task.WhenAll(pending);
-        return 0;
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        foreach (var argument in arguments) start.ArgumentList.Add(argument);
+        start.Environment.Remove("CODEX_SCRIPT_LOADER_CLI_DESCRIPTOR");
+        start.Environment.Remove("CODEX_SCRIPT_LOADER_ACCOUNTS");
+        start.Environment["CODEX_CLI_PATH"] = cli.Executable;
+        using var process = Process.Start(start) ?? throw new IOException("OFFICIAL_CLI_UNAVAILABLE");
+        process.StandardInput.Close();
+        var output = await process.StandardOutput.ReadToEndAsync();
+        var errors = await process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        WriteStandard(11, output);
+        WriteStandard(12, errors);
+        return process.ExitCode;
     }
+
+    private static void WriteStandard(int handleId, string text)
+    {
+        if (text.Length == 0) return;
+        var bytes = Encoding.UTF8.GetBytes(text);
+        var handle = GetStdHandle(handleId);
+        if (handle == IntPtr.Zero || handle == new IntPtr(-1) || !WriteFile(handle, bytes, bytes.Length, out _, IntPtr.Zero))
+        {
+            var stream = handleId == 11 ? Console.OpenStandardOutput() : Console.OpenStandardError();
+            stream.Write(bytes);
+            stream.Flush();
+        }
+    }
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr GetStdHandle(int handle);
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool WriteFile(IntPtr handle, byte[] buffer, int length, out int written, IntPtr overlapped);
 
     private static async Task<int> PassthroughAsync(string[] arguments)
     {
@@ -82,6 +101,7 @@ public static class DesktopCli
         var start = new ProcessStartInfo(cli.Executable) { UseShellExecute = false, CreateNoWindow = true };
         foreach (var argument in arguments) start.ArgumentList.Add(argument);
         start.Environment.Remove("CODEX_SCRIPT_LOADER_CLI_DESCRIPTOR");
+        start.Environment.Remove("CODEX_SCRIPT_LOADER_ACCOUNTS");
         start.Environment["CODEX_CLI_PATH"] = cli.Executable;
         using var process = Process.Start(start) ?? throw new IOException("OFFICIAL_CLI_UNAVAILABLE");
         await process.WaitForExitAsync();

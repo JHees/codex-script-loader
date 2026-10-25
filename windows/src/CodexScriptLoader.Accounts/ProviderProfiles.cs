@@ -1,14 +1,90 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 
 namespace CodexScriptLoader.Accounts;
 
+public sealed record ProviderModelSettings(
+    string Id,
+    string? Name = null,
+    int? ContextWindow = null,
+    IReadOnlyList<string>? ReasoningLevels = null,
+    string? DefaultReasoningEffort = null,
+    bool SupportsImages = false,
+    bool? SupportsTools = null,
+    string ToolFormat = "function",
+    bool ParallelToolCalls = false,
+    bool Enabled = true,
+    IReadOnlyList<string>? SupportedReasoningLevels = null)
+{
+    public ProviderModelSettings Validate(string provider)
+    {
+        var id = Id?.Trim() ?? "";
+        if (id.Length is < 1 or > 160 || id.Any(char.IsWhiteSpace) || id.Any(char.IsControl))
+            throw new InvalidOperationException("MODEL_INVALID");
+        var name = string.IsNullOrWhiteSpace(Name) ? id : Name!.Trim();
+        if (name.Length > 240 || name.Any(char.IsControl)) throw new InvalidOperationException("MODEL_INVALID");
+        var contextWindow = ContextWindow is > 0 ? ContextWindow : null;
+        if (contextWindow is { } context && (context < 1024 || context > 2_147_483_647))
+            throw new InvalidOperationException("MODEL_SETTINGS_INVALID");
+        var levels = (ReasoningLevels ?? []).Select(level => level?.Trim() ?? "").Where(level => level.Length > 0)
+            .Distinct(StringComparer.Ordinal).ToArray();
+        var supported = (SupportedReasoningLevels ?? []).Select(level => level?.Trim() ?? "").Where(level => level.Length > 0)
+            .Distinct(StringComparer.Ordinal).ToArray();
+        if (levels.Any(level => !ProviderSettings.Efforts.Contains(level)) ||
+            supported.Any(level => !ProviderSettings.Efforts.Contains(level)) ||
+            supported.Length > 0 && levels.Any(level => !supported.Contains(level, StringComparer.Ordinal)) ||
+            DefaultReasoningEffort is { } effort && !ProviderSettings.Efforts.Contains(effort) ||
+            levels.Length > 0 && DefaultReasoningEffort is { } defaultEffort && !levels.Contains(defaultEffort) ||
+            ToolFormat is not ("function" or "freeform"))
+            throw new InvalidOperationException("MODEL_SETTINGS_INVALID");
+        if (provider == "deepseek" && id is "deepseek-flash" or "deepseek-v4-pro" &&
+            (levels.Any(level => level is not ("low" or "high" or "max")) || supported.Any(level => level is not ("low" or "high" or "max")) ||
+             DefaultReasoningEffort is not (null or "low" or "high" or "max")))
+            throw new InvalidOperationException("MODEL_SETTINGS_INVALID");
+        return this with
+        {
+            Id = id, Name = name, ContextWindow = contextWindow, ReasoningLevels = levels,
+            SupportedReasoningLevels = supported.Length > 0 ? supported : levels,
+        };
+    }
+}
+
+public sealed record ProviderUsageSettings(
+    string Mode = "auto",
+    string? Url = null,
+    string RemainingPath = "remaining",
+    string UnitPath = "unit",
+    string LimitPath = "limit",
+    string UsedPath = "used",
+    string ValidPath = "isValid")
+{
+    public ProviderUsageSettings Validate(string baseUrl)
+    {
+        if (Mode is not ("auto" or "custom")) throw new InvalidOperationException("INPUT_INVALID");
+        foreach (var path in new[] { RemainingPath, UnitPath, LimitPath, UsedPath, ValidPath })
+            if (path.Length is < 1 or > 200 || path.Any(char.IsControl) || path.Any(value => !(char.IsLetterOrDigit(value) || value is '.' or '_' or '-')))
+                throw new InvalidOperationException("INPUT_INVALID");
+        if (Mode == "auto") return this with { Url = null };
+        if (string.IsNullOrWhiteSpace(Url) || Url.Length > 2048) throw new InvalidOperationException("ENDPOINT_INVALID");
+        var endpoint = new Uri(baseUrl);
+        var uri = Uri.TryCreate(Url, UriKind.Absolute, out var absolute) ? absolute : new Uri(endpoint, Url);
+        if (uri.Scheme != "https" || uri.UserInfo.Length != 0 || uri.Fragment.Length != 0 ||
+            uri.Host != endpoint.Host || uri.Port != endpoint.Port)
+            throw new InvalidOperationException("ENDPOINT_INVALID");
+        return this with { Url = Url };
+    }
+}
+
 public sealed record ProviderSettings(
     string Provider, string BaseUrl, string Model, int ContextWindow,
     string? ReasoningEffort = null, bool SupportsImages = false,
-    string ToolFormat = "function", bool ParallelToolCalls = false, bool UseDefaultModelMetadata = false)
+    string ToolFormat = "function", bool ParallelToolCalls = false, bool UseDefaultModelMetadata = false,
+    IReadOnlyList<ProviderModelSettings>? Models = null, ProviderUsageSettings? Usage = null)
 {
+    public static readonly string[] Efforts = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+
     public ProviderSettings Validate()
     {
         var endpoint = ValidateEndpoint(Provider, BaseUrl);
@@ -20,8 +96,27 @@ public sealed record ProviderSettings(
         if (UseDefaultModelMetadata && ContextWindow != 0) throw new InvalidOperationException("MODEL_SETTINGS_INVALID");
         if (Provider == "deepseek" && model is "deepseek-flash" or "deepseek-v4-pro" &&
             ReasoningEffort is not (null or "low" or "high" or "max")) throw new InvalidOperationException("MODEL_SETTINGS_INVALID");
-        return this with { BaseUrl = endpoint, Model = model };
+        var models = (Models ?? []).Where(item => item is not null).Select(item => item.Validate(Provider)).ToArray();
+        if (models.Length > 100 || models.Select(item => item.Id).Distinct(StringComparer.Ordinal).Count() != models.Length)
+            throw new InvalidOperationException("MODEL_SETTINGS_INVALID");
+        if (models.Length == 0)
+            models = [new(model, model, ContextWindow > 0 ? ContextWindow : null,
+                ReasoningEffort is null ? [] : Provider == "deepseek" && model is "deepseek-flash" or "deepseek-v4-pro"
+                    ? ["low", "high", "max"] : [ReasoningEffort],
+                ReasoningEffort, SupportsImages, null, ToolFormat, ParallelToolCalls)];
+        if (models.All(item => item.Id != model))
+            models = [new(model, model, ContextWindow > 0 ? ContextWindow : null, ReasoningEffort is null ? [] : [ReasoningEffort],
+                ReasoningEffort, SupportsImages, null, ToolFormat, ParallelToolCalls), .. models];
+        models = models.Select(item => item.Id == model && !item.Enabled ? item with { Enabled = true } : item).ToArray();
+        return this with { BaseUrl = endpoint, Model = model, Models = models, Usage = Usage?.Validate(endpoint) };
     }
+
+    [JsonIgnore]
+    public IReadOnlyList<ProviderModelSettings> EffectiveModels => Models is { Count: > 0 }
+        ? Models
+        : [new(Model, Model, ContextWindow > 0 ? ContextWindow : null,
+            ReasoningEffort is null ? [] : Provider == "deepseek" && Model is "deepseek-flash" or "deepseek-v4-pro"
+                ? ["low", "high", "max"] : [ReasoningEffort], ReasoningEffort, SupportsImages, null, ToolFormat, ParallelToolCalls)];
 
     public static string ValidateEndpoint(string provider, string baseUrl)
     {
@@ -74,6 +169,14 @@ public sealed partial class AccountStore
         return document.Settings.Validate();
     }
 
+    public ProviderSettings ReadProviderSettingsOrLegacy(string id)
+    {
+        var account = Get(id);
+        if (account.Kind != "relay" || account.BaseUrl is null || account.Model is null)
+            throw new InvalidOperationException("PROVIDER_PROFILE_REQUIRED");
+        return ReadProviderSettings(id) ?? LegacyProviderSettings(account);
+    }
+
     public object ProviderConfigurationStatus(string id)
     {
         var account = Get(id);
@@ -96,7 +199,8 @@ public sealed partial class AccountStore
 
     private static ProviderSettings LegacyProviderSettings(AccountEntry account) => new(
         new Uri(account.BaseUrl!).Host switch { "api.deepseek.com" => "deepseek", "openrouter.ai" => "openrouter", _ => "custom" },
-        account.BaseUrl!, account.Model!, 0, UseDefaultModelMetadata: true);
+        account.BaseUrl!, account.Model!, 0, UseDefaultModelMetadata: true,
+        Models: [new ProviderModelSettings(account.Model!, account.Model)]);
 
     internal string? ResolveProviderKey(string baseUrl, string? apiKey, string? id)
     {
@@ -207,63 +311,73 @@ public static class ProviderRuntime
         return options.ToArray();
     }
 
-    private static readonly Lazy<string> CodexPrompt = new(LoadCodexPrompt);
+    private static readonly Lazy<JsonObject> CodexModelMessages = new(LoadCodexModelMessages);
 
-    private static string LoadCodexPrompt()
+    private static JsonObject LoadCodexModelMessages()
     {
-        using var stream = typeof(ProviderRuntime).Assembly.GetManifestResourceStream("CodexScriptLoader.Accounts.CodexBaseInstructions.txt")
-            ?? throw new InvalidOperationException("CODEX_BASE_INSTRUCTIONS_MISSING");
+        using var stream = typeof(ProviderRuntime).Assembly.GetManifestResourceStream("CodexScriptLoader.Accounts.CodexModelMessages.json")
+            ?? throw new InvalidOperationException("CODEX_MODEL_MESSAGES_MISSING");
         using var reader = new StreamReader(stream, Encoding.UTF8);
-        return reader.ReadToEnd();
+        return JsonNode.Parse(reader.ReadToEnd())!.AsObject();
     }
 
-    private static string BaseInstructions(ProviderSettings settings)
+    private static JsonObject NativeModelMessages(ProviderSettings settings)
     {
+        var messages = CodexModelMessages.Value.DeepClone().AsObject();
         var identity = settings.Provider switch
         {
             "deepseek" => "DeepSeek",
             "openrouter" => "OpenRouter",
             _ => "a compatible coding model",
         };
-        var prompt = CodexPrompt.Value.Replace(
-            "You are Codex, an agent based on GPT-6.",
-            $"You are Codex, an agent based on {identity}.",
-            StringComparison.Ordinal);
-        // The native prompt is retained; only the provider identity is replaced,
-        // plus one explicit sentence in its existing commentary section because
-        // DeepSeek does not reliably emit intermediate updates on its own.
-        return prompt;
+        if (messages["instructions_template"] is JsonValue value && value.TryGetValue<string>(out var template))
+            messages["instructions_template"] = template.Replace(
+                "You are Codex, an agent based on GPT-6.",
+                $"You are Codex, an agent based on {identity}.",
+                StringComparison.Ordinal);
+        return messages;
     }
 
     public static void WriteFiles(AccountEntry account, ProviderSettings settings, string home)
     {
         File.WriteAllLines(Path.Combine(home, "provider.toml"), Overrides(account, settings, home));
         if (settings.UseDefaultModelMetadata) return;
-        var reasoning = settings.ReasoningEffort is not null;
-        var efforts = !reasoning ? Array.Empty<string>() : settings.Provider == "deepseek" && settings.Model is "deepseek-flash" or "deepseek-v4-pro"
-            ? ["low", "high", "max"] : new[] { settings.ReasoningEffort! };
-        var model = new
+        var models = settings.EffectiveModels.Where(item => item.Enabled).Select(item => ModelDocument(settings, item)).ToArray();
+        if (models.Length == 0) throw new InvalidOperationException("MODEL_SETTINGS_INVALID");
+        File.WriteAllText(Path.Combine(home, "models.json"), JsonSerializer.Serialize(new { models }, AccountStore.JsonOptions));
+    }
+
+    private static object ModelDocument(ProviderSettings settings, ProviderModelSettings item)
+    {
+        var context = item.ContextWindow ?? (settings.ContextWindow >= 1024 ? settings.ContextWindow : 0);
+        if (context < 1024) throw new InvalidOperationException("MODEL_SETTINGS_INVALID");
+        var levels = (item.ReasoningLevels ?? []).Where(level => level is not null).ToArray();
+        if (levels.Length == 0 && item.DefaultReasoningEffort is { } fallback) levels = [fallback];
+        var reasoning = levels.Length > 0;
+        var effort = item.DefaultReasoningEffort ?? levels.FirstOrDefault();
+        var images = item.SupportsImages || settings.SupportsImages;
+        var toolFormat = item.ToolFormat == "freeform" || settings.ToolFormat == "freeform" ? "freeform" : "function";
+        return new
         {
-            slug = settings.Model, display_name = settings.Model, description = settings.DisplayName,
+            slug = item.Id, display_name = item.Name ?? item.Id, description = settings.DisplayName,
             visibility = "list", supported_in_api = true, priority = 0, minimal_client_version = "0.144.0",
-            default_reasoning_level = settings.ReasoningEffort ?? "low",
-            supported_reasoning_levels = efforts.Select(effort => new { effort, description = effort }).ToArray(),
+            default_reasoning_level = effort ?? "low",
+            supported_reasoning_levels = levels.Select(level => new { effort = level, description = level }).ToArray(),
             supports_reasoning_summaries = reasoning, reasoning_summary_format = "experimental", default_reasoning_summary = "none",
-            shell_type = "shell_command", apply_patch_tool_type = settings.ToolFormat,
-            supports_parallel_tool_calls = settings.ParallelToolCalls, support_verbosity = false,
+            shell_type = "shell_command", apply_patch_tool_type = toolFormat,
+            supports_parallel_tool_calls = item.ParallelToolCalls || settings.ParallelToolCalls, support_verbosity = false,
             default_verbosity = (string?)null, prefer_websockets = false,
-            context_window = settings.ContextWindow, max_context_window = settings.ContextWindow,
-            effective_context_window_percent = 95, auto_compact_token_limit = settings.ContextWindow * 9L / 10,
+            context_window = context, max_context_window = context,
+            effective_context_window_percent = 95, auto_compact_token_limit = context * 9L / 10,
             truncation_policy = new { mode = "tokens", limit = 10000 },
-            input_modalities = settings.SupportsImages ? new[] { "text", "image" } : ["text"],
-            supports_image_detail_original = settings.Provider == "deepseek" && settings.SupportsImages, supports_search_tool = false,
-            experimental_supported_tools = Array.Empty<string>(), model_messages = (object?)null,
+            input_modalities = images ? new[] { "text", "image" } : ["text"],
+            supports_image_detail_original = images && settings.Provider == "deepseek", supports_search_tool = false,
+            experimental_supported_tools = Array.Empty<string>(), model_messages = NativeModelMessages(settings),
             tool_mode = (string?)null, multi_agent_version = "v2", use_responses_lite = false,
             include_skills_usage_instructions = false, auto_review_model_override = (string?)null,
             comp_hash = "loader-profile-v1", default_service_tier = (string?)null,
             availability_nux = (object?)null, upgrade = (object?)null, web_search_tool_type = "text",
-            base_instructions = BaseInstructions(settings),
+            base_instructions = string.Empty,
         };
-        File.WriteAllText(Path.Combine(home, "models.json"), JsonSerializer.Serialize(new { models = new[] { model } }, AccountStore.JsonOptions));
     }
 }

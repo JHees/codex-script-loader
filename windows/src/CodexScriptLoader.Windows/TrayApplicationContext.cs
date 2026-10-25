@@ -4,6 +4,8 @@ namespace CodexScriptLoader.Windows;
 
 internal sealed class LoaderApplicationContext : ApplicationContext
 {
+    private const int CodexRestartAttempts = 3;
+    private static readonly TimeSpan CodexRestartRetryDelay = TimeSpan.FromSeconds(2);
     private readonly SingleInstanceCoordinator instance;
     private readonly LiveSupervisor supervisor;
     private readonly JsonlLogger logger;
@@ -12,6 +14,7 @@ internal sealed class LoaderApplicationContext : ApplicationContext
     private readonly OnlineUpdateManager updateManager;
     private readonly Control dispatcher = new();
     private DiagnosticsForm? diagnostics;
+    private int shutdownStarted;
 
     public LoaderApplicationContext(SingleInstanceCoordinator instance, LiveSupervisor supervisor, JsonlLogger logger, string? launcherReadyPipeName, HandoffCandidateOptions? candidate)
     {
@@ -40,6 +43,9 @@ internal sealed class LoaderApplicationContext : ApplicationContext
     {
         try
         {
+            // The launcher only needs to know the host process started. Startup
+            // may legitimately wait for an already-running Codex window to close.
+            await LauncherHealthSignal.SendAsync(launcherReadyPipeName, CancellationToken.None);
             if (candidate is null)
             {
                 await supervisor.StartAsync(CancellationToken.None);
@@ -52,7 +58,6 @@ internal sealed class LoaderApplicationContext : ApplicationContext
                 try { await updateManager.RefreshTransactionStateAsync(CancellationToken.None, preserveTerminalState: true); }
                 catch (Exception exception) when (exception is IOException or System.Text.Json.JsonException) { logger.Warn("update-status-restore-failed", new { message = JsonlLogger.Redact(exception.Message) }); }
             }
-            await LauncherHealthSignal.SendAsync(launcherReadyPipeName, CancellationToken.None);
             _ = updateManager.StartAfterHealthyAsync(CancellationToken.None);
         }
         catch (Exception exception)
@@ -95,7 +100,7 @@ internal sealed class LoaderApplicationContext : ApplicationContext
         if (diagnostics is null || diagnostics.IsDisposed)
         {
             diagnostics = new DiagnosticsForm();
-            diagnostics.ExitRequested += (_, _) => ExitThread();
+            diagnostics.ExitRequested += (_, _) => _ = ShutdownManagedStackAsync();
         }
         diagnostics.UpdateSnapshot(supervisor.Snapshot, logger.CurrentPath);
         if (!diagnostics.Visible)
@@ -113,6 +118,10 @@ internal sealed class LoaderApplicationContext : ApplicationContext
         {
             _ = ReloadAsync();
         }
+        else if (command == "ExitLoader")
+        {
+            _ = ShutdownManagedStackAsync();
+        }
         else
         {
             ShowDiagnostics();
@@ -121,6 +130,9 @@ internal sealed class LoaderApplicationContext : ApplicationContext
 
     private void HandleManagedCodexExit(ManagedCodexExitReason reason)
     {
+        // A diagnostic exit is already closing Codex; let it finish the ordered shutdown
+        // instead of disposing the supervisor from under the pending close request.
+        if (Volatile.Read(ref shutdownStarted) != 0) return;
         if (reason == ManagedCodexExitReason.PackageUpdated)
         {
             _ = RecoverAfterCodexUpdateAsync();
@@ -130,27 +142,66 @@ internal sealed class LoaderApplicationContext : ApplicationContext
         ExitThread();
     }
 
-    private async Task RecoverAfterCodexUpdateAsync()
+    private async Task ShutdownManagedStackAsync()
     {
+        if (Interlocked.Exchange(ref shutdownStarted, 1) != 0) return;
+        logger.Info("loader-exit-requested");
+        var closed = false;
         try
         {
-            logger.Info("codex-update-recovery-started");
-            await supervisor.RestartAsync(CancellationToken.None);
-            logger.Info("codex-update-recovery-succeeded", new
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            closed = await supervisor.CloseManagedCodexAsync(timeout.Token).ConfigureAwait(false);
+            if (!closed)
             {
-                package = supervisor.Snapshot.PackageFullName,
-                activationProcessId = supervisor.Snapshot.ActivationProcessId,
-            });
+                logger.Warn("loader-exit-codex-cleanup-incomplete");
+            }
         }
         catch (Exception exception)
         {
-            logger.Error("codex-update-recovery-failed", exception);
-            MessageBox.Show(
-                $"Codex was updated, but Script Loader could not restart the updated app.{Environment.NewLine}{Environment.NewLine}{JsonlLogger.Redact(exception.Message)}",
-                "Codex Script Loader",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Warning);
-            ExitThread();
+            logger.Warn("loader-exit-codex-cleanup-failed", new { message = JsonlLogger.Redact(exception.Message) });
+        }
+        finally
+        {
+            if (!closed)
+            {
+                try { supervisor.TerminateManagedCodex(); }
+                catch (Exception exception) { logger.Warn("loader-exit-codex-force-cleanup-failed", new { message = JsonlLogger.Redact(exception.Message) }); }
+            }
+            Post(ExitThread);
+        }
+    }
+
+    private async Task RecoverAfterCodexUpdateAsync()
+    {
+        // A Store update can briefly leave the package unregistered or its
+        // processes half-closed, so the managed restart is retried instead of
+        // exiting the Loader after one failed attempt.
+        for (var attempt = 1; attempt <= CodexRestartAttempts; attempt++)
+        {
+            try
+            {
+                logger.Info("codex-update-recovery-started", new { attempt, attempts = CodexRestartAttempts });
+                await supervisor.RestartAsync(CancellationToken.None);
+                logger.Info("codex-update-recovery-succeeded", new
+                {
+                    package = supervisor.Snapshot.PackageFullName,
+                    activationProcessId = supervisor.Snapshot.ActivationProcessId,
+                });
+                return;
+            }
+            catch (Exception exception)
+            {
+                var message = JsonlLogger.Redact(exception.Message);
+                if (attempt == CodexRestartAttempts)
+                {
+                    logger.Error("codex-update-recovery-failed", exception);
+                    supervisor.ReportRecoveryFailure($"Codex update recovery failed after {CodexRestartAttempts} attempts: {message}");
+                    return;
+                }
+
+                logger.Warn("codex-restart-retry", new { attempt, attempts = CodexRestartAttempts, message });
+                await Task.Delay(CodexRestartRetryDelay);
+            }
         }
     }
 

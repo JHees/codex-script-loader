@@ -5,24 +5,27 @@
       "CodexScriptLoader": {
         "type": "Project",
         "dependencies": {
-          "CodexScriptLoader.Core": "[0.5.16, )",
-          "CodexScriptLoader.Interop": "[0.5.16, )"
+          "CodexScriptLoader.Core": "[0.6.0-alpha, )",
+          "CodexScriptLoader.Interop": "[0.6.0-alpha, )"
         }
       },
       "codexscriptloader.accounts": {
-        "type": "Project"
+        "type": "Project",
+        "dependencies": {
+          "CodexScriptLoader.Interop": "[0.6.0-alpha, )"
+        }
       },
       "codexscriptloader.core": {
         "type": "Project",
         "dependencies": {
-          "CodexScriptLoader.Accounts": "[0.5.16, )"
+          "CodexScriptLoader.Accounts": "[0.6.0-alpha, )"
         }
       },
       "CodexScriptLoader.HostTransportProbe": {
         "type": "Project",
         "dependencies": {
-          "CodexScriptLoader.Core": "[0.5.16, )",
-          "CodexScriptLoader.Interop": "[0.5.16, )"
+          "CodexScriptLoader.Core": "[0.6.0-alpha, )",
+          "CodexScriptLoader.Interop": "[0.6.0-alpha, )"
         }
       },
       "codexscriptloader.interop": {

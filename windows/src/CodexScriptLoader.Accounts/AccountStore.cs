@@ -9,10 +9,13 @@ public sealed record AccountEntry(string Id, string Name, string Status, string?
     string? SourceId = null, DateTimeOffset? LastCheckedAt = null, string? LastError = null, IReadOnlyList<UsageWindow>? Usage = null,
     AccountCredits? Credits = null, string? ConfigurationGroup = null, int ConfigurationVersion = 0, string? Provider = null);
 
+public sealed record AccountPreferences(string DefaultAccountId = "primary", string NewChatAccountPolicy = "default");
+
 public sealed partial class AccountStore
 {
     private const string Marker = ".codex-account-switcher-store";
     private readonly string root;
+    public string Root => root;
     public static readonly JsonSerializerOptions JsonOptions = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, WriteIndented = true };
 
     public AccountStore(string directory)
@@ -97,14 +100,28 @@ public sealed partial class AccountStore
         if (wasDefault) SetDefault("primary");
     }
 
+    private AccountPreferences ReadPreferences()
+    {
+        var path = Path.Combine(root, "preferences.json");
+        if (!File.Exists(path)) return new();
+        try { return JsonSerializer.Deserialize<AccountPreferences>(File.ReadAllText(path), JsonOptions) ?? new(); }
+        catch (JsonException) { return new(); }
+    }
+
+    private void WritePreferences(AccountPreferences preferences)
+    {
+        preferences = preferences with
+        {
+            NewChatAccountPolicy = preferences.NewChatAccountPolicy is "quota" ? "quota" : "default",
+        };
+        WritePrivateJson(Path.Combine(root, "preferences.json"), preferences);
+    }
+
     public string DefaultAccountId
     {
         get
         {
-            var path = Path.Combine(root, "preferences.json");
-            if (!File.Exists(path)) return "primary";
-            using var document = JsonDocument.Parse(File.ReadAllText(path));
-            var id = document.RootElement.GetProperty("defaultAccountId").GetString() ?? "primary";
+            var id = ReadPreferences().DefaultAccountId ?? "primary";
             if (id == "primary") return id;
             if (!Guid.TryParseExact(id, "N", out _) || !File.Exists(Metadata(id))) return "primary";
             var account = Get(id);
@@ -117,13 +134,21 @@ public sealed partial class AccountStore
         }
     }
 
+    public string NewChatAccountPolicy => ReadPreferences().NewChatAccountPolicy is "quota" ? "quota" : "default";
+
     public void SetDefault(string id)
     {
         if (id != "primary" && Get(id).Status != "ready") throw new InvalidOperationException("ACCOUNT_NOT_READY");
-        WritePrivateJson(Path.Combine(root, "preferences.json"), new { defaultAccountId = id });
+        WritePreferences(ReadPreferences() with { DefaultAccountId = id });
     }
 
-    public AccountEntry ImportRelay(RelayAccountSource source, string? baseUrl)
+    public void SetNewChatAccountPolicy(string policy)
+    {
+        if (policy is not ("default" or "quota")) throw new InvalidOperationException("INPUT_INVALID");
+        WritePreferences(ReadPreferences() with { NewChatAccountPolicy = policy });
+    }
+
+    public AccountEntry ImportRelay(RelayAccountSource source, string? baseUrl, ProviderSettings? settings = null)
     {
         var endpoint = RelayAccountSource.ValidateEndpoint(baseUrl ?? source.BaseUrl);
         if (new Uri(endpoint).GetLeftPart(UriPartial.Authority) != new Uri(source.BaseUrl).GetLeftPart(UriPartial.Authority))
@@ -132,6 +157,23 @@ public sealed partial class AccountStore
         if (previous?.ConfigurationGroup is not null) throw new InvalidOperationException("PROVIDER_CONFIGURATION_MANAGED");
         var account = previous ?? Create(source.Name);
         WritePrivateJson(Path.Combine(Home(account.Id), "credential.json"), new { apiKey = source.ApiKey });
+        if (settings is not null)
+        {
+            settings = settings.Validate();
+            var group = new ProviderGroup(1, account.Id, 1, [new(1, account.Id, DateTimeOffset.UtcNow, BackendService.Version)]);
+            Directory.CreateDirectory(Path.Combine(root, "provider-configs"));
+            WritePrivateJson(ProviderGroupPath(group.Id), group);
+            WritePrivateJson(Path.Combine(Home(account.Id), "provider-profile.json"), new ProviderConfiguration(1, settings));
+            account = account with
+            {
+                Kind = "relay", Status = "ready", BaseUrl = settings.BaseUrl, Model = settings.Model,
+                SourceId = source.Id, LastCheckedAt = null, LastError = null,
+                ConfigurationGroup = group.Id, ConfigurationVersion = 1, Provider = settings.Provider,
+            };
+            Save(account);
+            ProviderRuntime.WriteFiles(account, settings, Home(account.Id));
+            return account;
+        }
         account = account with { Kind = "relay", Status = "ready", BaseUrl = endpoint, Model = source.Model,
             SourceId = source.Id, LastCheckedAt = null, LastError = null };
         Save(account);
