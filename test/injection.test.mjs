@@ -144,7 +144,7 @@ test("settings API is permission-gated and owned by the loader host", () => {
   assert.equal(typeof context.__settingsApi.registerPage, "function");
   assert.equal(typeof context.__settingsApi.register, "function");
   assert.equal(context.__processKind, "renderer");
-  assert.equal(context.__codexScriptLoader.settingsHost.snapshot().version, "0.5.17");
+  assert.equal(context.__codexScriptLoader.settingsHost.snapshot().version, "0.6.0");
 
   const withoutPermission = { ...descriptor({ id: "test.no-settings", source: "globalThis.__settingsWithoutPermission = api.settings;" }), permissions: [] };
   vm.runInContext(buildInjectionSource([withoutPermission]), context);
@@ -212,7 +212,7 @@ test("loopback socket opened asynchronously is still cleaned up when the plugin 
 test("settings host groups management and plugin pages under Script-Loader without refreshing Codex", () => {
   const source = buildInjectionSource([]);
   assert.match(source, /loaderGroup: "Script-Loader"/);
-  assert.match(source, /const implementationRevision = "settings-plugin-updates-7"/);
+  assert.match(source, /const implementationRevision = "settings-update-12"/);
   assert.match(source, /current\?\.version === version && current\?\.implementationRevision === implementationRevision/);
   assert.match(source, /implementationRevision,/);
   assert.doesNotMatch(source, /tweaksGroup:/);
@@ -268,7 +268,7 @@ test("settings host groups management and plugin pages under Script-Loader witho
   assert.match(source, /enablePluginAutoUpdate: "开启自动更新"/);
   assert.match(source, /disablePluginAutoUpdate: "关闭自动更新"/);
   assert.match(source, /pluginAutoUpdateInline\(value\) \{ return `自动更新：\$\{value\}`; \}/);
-  assert.match(source, /automatic\.textContent = labels\.pluginAutoUpdateInline\(pluginAutoUpdateStatus\(plugin\)\)/);
+  assert.match(source, /labels\.pluginAutoUpdateInline\(pluginAutoUpdateStatus\(plugin\)\)/);
   assert.match(source, /plugin\.update\?\.automatic === true \? labels\.disablePluginAutoUpdate : labels\.enablePluginAutoUpdate/);
   assert.match(source, /pluginUpdates: "插件更新"/);
   assert.match(source, /pluginUpdates: "Plugin updates"/);
@@ -289,7 +289,7 @@ test("settings host groups management and plugin pages under Script-Loader witho
   assert.match(source, /github\.com\/\$\{repository\}/);
   assert.doesNotMatch(source, /meta\.textContent = `\$\{plugin\.id\} · \$\{labels\.version\}/);
   assert.match(source, /item\.style\.color = "var\(--color-text-danger\)"/);
-  assert.match(source, /actions\.append\(switchControl\(plugin\), pluginActionsMenu\(plugin\)\)/);
+  assert.match(source, /actions\.append\(switchControl\(plugin\), pluginActionsMenu\(plugin, updateView\.openDetails, updateView\.releaseNotes\)\)/);
   assert.match(source, /document\.addEventListener\("click", dismissPluginMenu\)/);
   assert.match(source, /target\?\.closest\("\[data-codex-loader-plugin-menu\]"\)/);
   assert.match(source, /document\.removeEventListener\("click", dismissPluginMenu\)/);

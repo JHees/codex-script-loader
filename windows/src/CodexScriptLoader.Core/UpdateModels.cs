@@ -32,6 +32,8 @@ public sealed record UpdateSnapshot(
     string Channel)
 {
     public string? ErrorCode { get; init; }
+    public bool InstallerUpdateSupported { get; init; }
+    public bool InstallerReady { get; init; }
 }
 
 public sealed record InstallPointer(

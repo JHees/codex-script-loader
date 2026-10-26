@@ -3,6 +3,7 @@ ManifestDPIAware true
 
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
+!include "FileFunc.nsh"
 
 !ifndef VERSION
   !error "VERSION is required."
@@ -57,6 +58,25 @@ VIAddVersionKey /LANG=1033 "LegalCopyright" "Copyright (c) Codex Script Loader c
 
 Var StartMenuFolder
 
+Function WaitForLoaderExit
+  ${GetParameters} $0
+  ${GetOptions} $0 "/WAITPID=" $1
+  StrCmp $1 "" done
+  System::Call 'kernel32::OpenProcess(i 0x00100000, i 0, i r1) p .r2'
+  StrCmp $2 0 open_failed
+  System::Call 'kernel32::WaitForSingleObject(p r2, i 60000) i .r3'
+  System::Call 'kernel32::CloseHandle(p r2)'
+  StrCmp $3 0 done
+  Goto still_running
+open_failed:
+  System::Call 'kernel32::GetLastError() i .r3'
+  IntCmp $3 87 done
+still_running:
+  MessageBox MB_OK|MB_ICONEXCLAMATION "Codex Script Loader is still running. Close Codex and Loader, then run this installer again."
+  Abort
+done:
+FunctionEnd
+
 !insertmacro MUI_PAGE_WELCOME
 !define MUI_PAGE_CUSTOMFUNCTION_LEAVE ValidateInstallDirectory
 !insertmacro MUI_PAGE_DIRECTORY
@@ -72,6 +92,7 @@ Var StartMenuFolder
 Function .onInit
   SetShellVarContext current
   SetRegView 64
+  Call WaitForLoaderExit
 FunctionEnd
 
 Function un.onInit

@@ -30,6 +30,8 @@ const COMMANDS = new Set([
   "set_auto_update",
   "check_for_updates",
   "start_update",
+  "prepare_installer_update",
+  "install_prepared_update",
   "cancel_update",
 ]);
 
@@ -72,6 +74,8 @@ export class UiController {
       case "get_update_status":
       case "set_auto_update":
       case "check_for_updates": return this.getUpdateStatus();
+      case "prepare_installer_update":
+      case "install_prepared_update":
       case "start_update": throw new Error("online host updates require the standard Windows NSIS installation");
       case "cancel_update": throw new Error("no update download is active");
       default: throw new Error(`unreachable command: ${command}`);
@@ -101,7 +105,7 @@ export class UiController {
 
   getUpdateStatus() {
     return {
-      currentVersion: "0.5.17",
+      currentVersion: "0.6.0",
       availableVersion: null,
       state: "idle",
       lastCheckedAt: null,

@@ -8,6 +8,7 @@ const ALLOWED_COMMANDS = new Set([
   "preview_plugin_github",
   "remove_plugin", "list_quarantined", "restore_plugin", "restart_codex",
   "get_update_status", "set_auto_update", "check_for_updates", "start_update", "cancel_update",
+  "prepare_installer_update", "install_prepared_update",
   "check_plugin_updates", "set_plugin_auto_update", "start_plugin_update", "confirm_plugin_update", "cancel_plugin_update",
   "page_companion_probe", "page_companion_bind", "page_companion_invoke", "page_companion_unbind"
 ]);

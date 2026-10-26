@@ -23,7 +23,8 @@ internal sealed class LoaderApplicationContext : ApplicationContext
         updateManager = new OnlineUpdateManager(
             paths: LoaderPaths.ForProduction(),
             logger,
-            SwitchHostAsync);
+            SwitchHostAsync,
+            launchInstaller: InstallWithShutdownAsync);
         supervisor.UpdateManager = updateManager;
         dispatcher.CreateControl();
 
@@ -72,6 +73,20 @@ internal sealed class LoaderApplicationContext : ApplicationContext
 
     private Task SwitchHostAsync(StagedUpdate staged, CancellationToken cancellationToken) =>
         HostHandoffCoordinator.SwitchAsync(staged, LoaderPaths.ForProduction(), supervisor, instance, logger, () => Post(ExitThread), cancellationToken);
+
+    private async Task InstallWithShutdownAsync(string installer, CancellationToken cancellationToken)
+    {
+        var start = new System.Diagnostics.ProcessStartInfo(installer)
+        {
+            UseShellExecute = true,
+            WindowStyle = System.Diagnostics.ProcessWindowStyle.Normal,
+            Arguments = $"/WAITPID={Environment.ProcessId}",
+        };
+        using var process = System.Diagnostics.Process.Start(start)
+            ?? throw new InvalidOperationException("The installer could not be started.");
+        await supervisor.CloseForInstallerAsync(cancellationToken);
+        Post(ExitThread);
+    }
 
     private void ApplySnapshot(DiagnosticSnapshot snapshot)
     {
@@ -138,7 +153,7 @@ internal sealed class LoaderApplicationContext : ApplicationContext
         try
         {
             logger.Info("codex-update-recovery-started");
-            await supervisor.RestartAsync(CancellationToken.None);
+            await supervisor.RecoverAfterUpdateAsync(CancellationToken.None);
             logger.Info("codex-update-recovery-succeeded", new
             {
                 package = supervisor.Snapshot.PackageFullName,
@@ -148,12 +163,7 @@ internal sealed class LoaderApplicationContext : ApplicationContext
         catch (Exception exception)
         {
             logger.Error("codex-update-recovery-failed", exception);
-            MessageBox.Show(
-                $"Codex was updated, but Script Loader could not restart the updated app.{Environment.NewLine}{Environment.NewLine}{JsonlLogger.Redact(exception.Message)}",
-                "Codex Script Loader",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Warning);
-            ExitThread();
+            supervisor.ReportRecoveryFailure($"Codex update recovery failed: {JsonlLogger.Redact(exception.Message)}");
         }
     }
 

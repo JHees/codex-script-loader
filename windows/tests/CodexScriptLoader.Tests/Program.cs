@@ -50,12 +50,13 @@ internal static partial class Program
             TestPathBoundary(testRoot);
             TestPackageProcessTerminationBoundary();
             TestCodexPackageUpgradeClassification();
-            TestCodexPackageUpdateDetectionGracePeriod();
+            TestManagedCodexLifecyclePolicy();
             TestCodexPrimaryApplicationSelection();
             TestLogRedaction(testRoot);
             await TestAtomicUpdateStateAsync(testRoot);
             await TestUpdatePackageVerificationAsync(testRoot);
             await TestOnlineUpdatePipelineAsync(testRoot);
+            await TestInstallerUpdateAsync(testRoot);
             TestUpdateTrustBoundaries();
             await TestSingleInstanceLockTransferAsync(testRoot);
             Console.WriteLine($"PASS {passed} tests");
@@ -177,14 +178,6 @@ internal static partial class Program
         True(!LiveSupervisor.IsPackageUpgrade(current, upgraded with { PackageFamilyName = "Example.Other_family" }), "Different package family is not classified as a Codex update restart");
     }
 
-    private static void TestCodexPackageUpdateDetectionGracePeriod()
-    {
-        True(!LiveSupervisor.IsPackageUpdateDetectionGraceExpired(TimeSpan.FromSeconds(89.999)),
-            "Loader keeps watching after the old renderer disappears so a delayed Store package registration can be recovered");
-        True(LiveSupervisor.IsPackageUpdateDetectionGraceExpired(TimeSpan.FromSeconds(90)),
-            "Loader eventually exits after an ordinary Codex close when no package update appears");
-    }
-
     private static void TestCodexPrimaryApplicationSelection()
     {
         var family = PackageDiscovery.CodexPackageFamilyName;
@@ -210,7 +203,7 @@ internal static partial class Program
         var plan = await registry.BuildPlanAsync(force: true);
         Equal(1, plan.Scripts.Count, "Bundled script count");
         Equal("dev.codex-script-loader.example-ui", plan.Scripts[0].Id, "Bundled script id");
-        True(plan.Source.Contains("runtime.runtimeVersion = \"0.5.17\"", StringComparison.Ordinal), "Runtime version source");
+        True(plan.Source.Contains("runtime.runtimeVersion = \"0.6.0\"", StringComparison.Ordinal), "Runtime version source");
         True(plan.Source.Contains("__codexScriptLoaderExampleUi", StringComparison.Ordinal), "Lifecycle source");
         True(plan.Source.Contains("installSettingsHost", StringComparison.Ordinal), "Settings host source");
         True(plan.Source.Contains("sha256-" + plan.Scripts[0].Fingerprint, StringComparison.Ordinal), "Integrity source");

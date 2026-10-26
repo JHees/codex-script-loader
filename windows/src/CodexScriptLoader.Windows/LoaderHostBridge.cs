@@ -110,7 +110,7 @@ internal sealed class LoaderHostBridge : IAsyncDisposable
             await session.SendAsync("Runtime.enable", cancellationToken: cancellationToken).ConfigureAwait(false);
             await session.SendAsync("Page.enable", cancellationToken: cancellationToken).ConfigureAwait(false);
             await session.SendAsync("Runtime.addBinding", new { name = bindingName }, cancellationToken).ConfigureAwait(false);
-            var source = BuildClientSource();
+            var source = BuildClientSource() + ManagedCodexLifecycleObserver.Source;
             var registration = await session.SendAsync("Page.addScriptToEvaluateOnNewDocument", new { source }, cancellationToken).ConfigureAwait(false);
             registrationId = registration.TryGetProperty("identifier", out var identifier) ? identifier.GetString() : null;
             session.EventReceived += message => HandleEvent(target.Id, message);
@@ -187,6 +187,7 @@ internal sealed class LoaderHostBridge : IAsyncDisposable
 
             var command = root.GetProperty("command").GetString();
             if (command is not (
+                "codex_lifecycle_intent" or
                 "get_app_status" or
                 "list_plugins" or
                 "set_plugin_enabled" or
@@ -205,6 +206,8 @@ internal sealed class LoaderHostBridge : IAsyncDisposable
                 "set_auto_update" or
                 "check_for_updates" or
                 "start_update" or
+                "prepare_installer_update" or
+                "install_prepared_update" or
                 "cancel_update" or
                 "check_plugin_updates" or
                 "page_companion_probe" or
@@ -350,6 +353,7 @@ internal sealed class LoaderHostBridge : IAsyncDisposable
         },
         dispose(reason = "Loader sidecar disconnected") {
           if (disposed) return;
+          this.stopLifecycleObserver?.();
           disposed = true;
           this.connected = false;
           for (const item of pending.values()) { clearTimeout(item.timer); item.reject(new Error(reason)); }

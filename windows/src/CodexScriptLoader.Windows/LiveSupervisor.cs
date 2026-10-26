@@ -17,15 +17,18 @@ internal enum ManagedCodexExitReason
 
 internal sealed class LiveSupervisor : IAsyncDisposable
 {
-    public const string Version = "0.5.17";
+    public const string Version = "0.6.0";
     private const string TrustedInputPermission = "trusted-input";
     private static readonly TimeSpan GracefulRestartShutdownTimeout = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan ForcedRestartShutdownTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan PackageExitPollInterval = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan StablePackageExitWindow = TimeSpan.FromMilliseconds(500);
-    // Store updates can close the old renderer before the replacement package is
-    // registered. Keep the managed host alive long enough to notice that handoff.
-    private static readonly TimeSpan PackageUpdateDetectionGracePeriod = TimeSpan.FromSeconds(90);
+    private static readonly TimeSpan MonitorInterval = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan CloseGracePollInterval = TimeSpan.FromMilliseconds(500);
+    private readonly ManagedCodexLifecycleTracker lifecycle = new();
+    private bool packageDiscoveryWarningReported;
+    private bool monitorSamplingFailureReported;
+    private string ManagedPackageFamilyName => package?.PackageFamilyName ?? PackageDiscovery.CodexPackageFamilyName;
     private readonly LoaderPaths paths;
     private readonly JsonlLogger logger;
     private readonly SemaphoreSlim operation = new(1, 1);
@@ -269,7 +272,9 @@ internal sealed class LiveSupervisor : IAsyncDisposable
         startedAt,
         lastInjectionAt);
 
-    public async Task StartAsync(CancellationToken cancellationToken)
+    public Task StartAsync(CancellationToken cancellationToken) => StartManagedAsync(null, cancellationToken);
+
+    private async Task StartManagedAsync(CdpEndpointIdentity? adopted, CancellationToken cancellationToken)
     {
         await operation.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -277,7 +282,7 @@ internal sealed class LiveSupervisor : IAsyncDisposable
             SetState(LoaderState.Starting, null);
             package = PackageDiscovery.DiscoverCodexForCurrentUser();
             var existing = ProcessIdentity.FindProcessesByPackageFamily(package.PackageFamilyName);
-            if (existing.Count > 0)
+            if (existing.Count > 0 && adopted is null)
             {
                 throw new InvalidOperationException("Codex is already running. Close it completely before managed launch.");
             }
@@ -289,9 +294,9 @@ internal sealed class LiveSupervisor : IAsyncDisposable
             await registry.EnsureBundledScriptAsync(bundledExample, cancellationToken).ConfigureAwait(false);
             await InitializePluginUpdateManagerAsync(cancellationToken).ConfigureAwait(false);
 
-            var port = AllocateLoopbackPort();
+            var port = adopted?.Port ?? AllocateLoopbackPort();
             client = new CdpClient(port);
-            activationProcessId = ApplicationActivator.Activate(package,
+            activationProcessId = adopted?.OwnerPid ?? ApplicationActivator.Activate(package,
             [
                 "--remote-debugging-address=127.0.0.1",
                 $"--remote-debugging-port={port}",
@@ -307,6 +312,8 @@ internal sealed class LiveSupervisor : IAsyncDisposable
             }
 
             var owner = listeners[0];
+            if (adopted is not null && owner.ProcessId != adopted.OwnerPid)
+                throw new InvalidOperationException("Relaunched Codex listener identity changed before injection.");
             var ownerFamily = ProcessIdentity.TryGetPackageFamilyName(owner.ProcessId);
             if (!string.Equals(ownerFamily, package.PackageFamilyName, StringComparison.OrdinalIgnoreCase))
             {
@@ -521,6 +528,67 @@ internal sealed class LiveSupervisor : IAsyncDisposable
             throw new InvalidOperationException("Codex could not be closed for restart.");
         }
 
+        await ResetManagedRuntimeAsync(cancellationToken).ConfigureAwait(false);
+        await StartAsync(cancellationToken).ConfigureAwait(false);
+        logger.Info("codex-restarted", new { activationProcessId, targetCount = lastTargetCount });
+    }
+
+    public async Task RecoverAfterUpdateAsync(CancellationToken cancellationToken)
+    {
+        await StopMonitorAsync().ConfigureAwait(false);
+        var managedEndpoint = endpoint;
+        var managedVersion = package?.Version;
+        var deadline = DateTimeOffset.UtcNow + ManagedCodexLifecyclePolicy.PackageUnregisteredGracePeriod;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            CodexPackageIdentity installed;
+            try { installed = PackageDiscovery.DiscoverCodexForCurrentUser(); }
+            catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
+            {
+                await Task.Delay(MonitorInterval, cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+            var processes = ProcessIdentity.FindProcessesByPackageFamily(installed.PackageFamilyName);
+            if (processes.Count == 0 && ManagedCodexLifecyclePolicy.IsVersionUpgrade(managedVersion, installed.Version))
+            {
+                await ResetManagedRuntimeAsync(cancellationToken).ConfigureAwait(false);
+                await StartAsync(cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            // Only adopt the loopback port inherited from this managed launch.
+            if (managedEndpoint is not null)
+            {
+                var owners = TcpOwnerLookup.GetIPv4LoopbackListeners(managedEndpoint.Port);
+                if (owners.Count == 1 && owners[0].ProcessId != managedEndpoint.OwnerPid &&
+                    processes.Contains(owners[0].ProcessId) &&
+                    string.Equals(ProcessIdentity.TryGetPackageFamilyName(owners[0].ProcessId), installed.PackageFamilyName, StringComparison.OrdinalIgnoreCase))
+                {
+                    using var probe = new CdpClient(managedEndpoint.Port);
+                    IReadOnlyList<CdpTarget> targets;
+                    try { targets = await probe.GetCodexTargetsAsync(cancellationToken).ConfigureAwait(false); }
+                    catch (Exception exception) when (IsTransientConnectionFailure(exception) && !cancellationToken.IsCancellationRequested)
+                    {
+                        await Task.Delay(MonitorInterval, cancellationToken).ConfigureAwait(false);
+                        continue;
+                    }
+                    if (targets.Count > 0)
+                    {
+                        var adopted = new CdpEndpointIdentity(owners[0].Address, managedEndpoint.Port, owners[0].ProcessId, installed.PackageFamilyName, targets[0].Url);
+                        await ResetManagedRuntimeAsync(cancellationToken).ConfigureAwait(false);
+                        await StartManagedAsync(adopted, cancellationToken).ConfigureAwait(false);
+                        logger.Info("codex-update-reconnected", new { adopted.Port, adopted.OwnerPid });
+                        return;
+                    }
+                }
+            }
+            await Task.Delay(MonitorInterval, cancellationToken).ConfigureAwait(false);
+        }
+        throw new TimeoutException("Updated Codex did not expose the managed connection; close Codex and launch it with Script Loader.");
+    }
+
+    private async Task ResetManagedRuntimeAsync(CancellationToken cancellationToken)
+    {
         await operation.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -548,8 +616,6 @@ internal sealed class LiveSupervisor : IAsyncDisposable
             operation.Release();
         }
 
-        await StartAsync(cancellationToken).ConfigureAwait(false);
-        logger.Info("codex-restarted", new { activationProcessId, targetCount = lastTargetCount });
     }
 
     public void FocusCodex()
@@ -562,7 +628,26 @@ internal sealed class LiveSupervisor : IAsyncDisposable
         _ = ApplicationActivator.Activate(package, []);
     }
 
-    public async Task<bool> CloseManagedCodexAsync(CancellationToken cancellationToken)
+    public async Task CloseForInstallerAsync(CancellationToken cancellationToken)
+    {
+        await StopMonitorAsync().ConfigureAwait(false);
+        var closed = false;
+        try
+        {
+            closed = await CloseManagedCodexAsync(cancellationToken, force: false).ConfigureAwait(false);
+            if (!closed) throw new InvalidOperationException("Codex is still running. Close it before installing the update.");
+        }
+        finally
+        {
+            if (!closed)
+            {
+                try { await ReloadAsync(CancellationToken.None).ConfigureAwait(false); }
+                finally { StartMonitor(); }
+            }
+        }
+    }
+
+    public async Task<bool> CloseManagedCodexAsync(CancellationToken cancellationToken, bool force = true)
     {
         await operation.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -603,10 +688,12 @@ internal sealed class LiveSupervisor : IAsyncDisposable
             }
 
             var packageFamilyName = package.PackageFamilyName;
-            if (await WaitForPackageExitAsync(packageFamilyName, GracefulRestartShutdownTimeout, cancellationToken).ConfigureAwait(false))
+            if (await WaitForPackageExitAsync(packageFamilyName, force ? GracefulRestartShutdownTimeout : TimeSpan.FromSeconds(20), cancellationToken).ConfigureAwait(false))
             {
                 return true;
             }
+
+            if (!force) return false;
 
             var gracefulRemaining = ProcessIdentity.FindProcessesByPackageFamily(packageFamilyName);
             logger.Warn("codex-graceful-close-incomplete", new { remainingProcessCount = gracefulRemaining.Count });
@@ -697,6 +784,13 @@ internal sealed class LiveSupervisor : IAsyncDisposable
 
     private async Task<object> DispatchBridgeAsync(string command, JsonElement payload, CancellationToken cancellationToken)
     {
+        if (command == "codex_lifecycle_intent")
+        {
+            var intent = RequiredPayloadText(payload, "intent", 32);
+            lifecycle.ReportIntent(intent, DateTimeOffset.UtcNow);
+            logger.Info("codex-lifecycle-intent", new { intent });
+            return new { accepted = true };
+        }
         if (registry is null)
         {
             throw new InvalidOperationException("Managed runtime is not ready.");
@@ -842,6 +936,28 @@ internal sealed class LiveSupervisor : IAsyncDisposable
             {
                 try { await manager.StartUpdateAsync(CancellationToken.None).ConfigureAwait(false); }
                 catch (Exception exception) { logger.Error("background-update-failed", exception); }
+            });
+            return new { accepted = true };
+        }
+
+        if (command is "prepare_installer_update" or "install_prepared_update")
+        {
+            var manager = UpdateManager ?? throw new InvalidOperationException("Update manager is unavailable.");
+            var version = RequiredPayloadText(payload, "version", 32);
+            if (command == "install_prepared_update" && !RequiredPayloadBoolean(payload, "confirmed"))
+                throw new InvalidDataException("Closing Codex requires explicit confirmation.");
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    if (command == "prepare_installer_update") await manager.PrepareInstallerAsync(version, CancellationToken.None).ConfigureAwait(false);
+                    else
+                    {
+                        await Task.Delay(250).ConfigureAwait(false);
+                        await manager.InstallPreparedAsync(version, true, CancellationToken.None).ConfigureAwait(false);
+                    }
+                }
+                catch (Exception exception) { logger.Error("installer-update-failed", exception); }
             });
             return new { accepted = true };
         }
@@ -1004,6 +1120,7 @@ internal sealed class LiveSupervisor : IAsyncDisposable
 
     private void StartMonitor()
     {
+        lifecycle.Reset();
         monitorLifetime?.Cancel();
         monitorLifetime?.Dispose();
         monitorLifetime = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
@@ -1028,142 +1145,233 @@ internal sealed class LiveSupervisor : IAsyncDisposable
 
     private async Task MonitorAsync(CancellationToken cancellationToken)
     {
-        var missingTicks = 0;
-        DateTimeOffset? unreachableSince = null;
         var connectionDegraded = false;
+        var detachedReported = false;
         while (!cancellationToken.IsCancellationRequested)
         {
             try
             {
-                await Task.Delay(1000, cancellationToken).ConfigureAwait(false);
-                var targets = client is null ? [] : await client.GetCodexTargetsAsync(cancellationToken).ConfigureAwait(false);
-                if (targets.Count == 0)
+                await Task.Delay(MonitorInterval, cancellationToken).ConfigureAwait(false);
+                var sample = await SampleLifecycleAsync(cancellationToken).ConfigureAwait(false);
+                if (ManagedCodexLifecyclePolicy.IsGrace(sample.Decision))
                 {
-                    unreachableSince ??= DateTimeOffset.UtcNow;
-                    missingTicks++;
-                    if (missingTicks == 1)
+                    string? loggedGraceReason = null;
+                    while (!cancellationToken.IsCancellationRequested && ManagedCodexLifecyclePolicy.IsGrace(sample.Decision))
                     {
-                        logger.Info("managed-codex-unreachable-awaiting-update", new { updateGraceSeconds = PackageUpdateDetectionGracePeriod.TotalSeconds });
+                        if (!string.Equals(loggedGraceReason, sample.Decision.Reason, StringComparison.Ordinal))
+                        {
+                            loggedGraceReason = sample.Decision.Reason;
+                            LogManagedCodexGrace(sample);
+                        }
+
+                        await Task.Delay(CloseGracePollInterval, cancellationToken).ConfigureAwait(false);
+                        sample = await SampleLifecycleAsync(cancellationToken).ConfigureAwait(false);
                     }
-                    if (TryNotifyManagedCodexExit(missingTicks, unreachableSince.Value))
-                    {
+                }
+                monitorSamplingFailureReported = false;
+
+                switch (sample.Decision.Action)
+                {
+                    case ManagedCodexLifecycleAction.ReportUpdate:
+                        logger.Info("codex-package-update-detected", new
+                        {
+                            previousPackage = package?.PackageFullName,
+                            previousVersion = package?.Version.ToString(),
+                            installedVersion = sample.InstalledVersion?.ToString(),
+                        });
+                        ManagedCodexExited?.Invoke(ManagedCodexExitReason.PackageUpdated);
                         return;
-                    }
+                    case ManagedCodexLifecycleAction.Exit:
+                        logger.Info("managed-codex-exited", new
+                        {
+                            reason = sample.Decision.Reason,
+                            packageProcessCount = sample.PackageProcessCount,
+                        });
+                        ManagedCodexExited?.Invoke(ManagedCodexExitReason.Closed);
+                        return;
                 }
-                else
+
+                if (sample.Targets.Count == 0)
                 {
-                    missingTicks = 0;
-                    unreachableSince = null;
-                    // A bridge failure is not evidence that the Codex process
-                    // exited: target discovery above has just succeeded.
-                    await operation.WaitAsync(cancellationToken).ConfigureAwait(false);
-                    try
+                    if (!detachedReported)
                     {
-                        if (bridge is not null)
+                        detachedReported = true;
+                        logger.Warn("managed-codex-detached", new
                         {
-                            var recovered = await bridge.SyncAsync(targets, cancellationToken).ConfigureAwait(false);
-                            if (recovered > 0) logger.Info("managed-bridge-reconnected", new { targetCount = recovered });
-                        }
-                        if (pageCompanions is not null) await pageCompanions.SyncAsync(cancellationToken).ConfigureAwait(false);
-                        if (connectionDegraded)
-                        {
-                            var failed = scripts.Count(script => script.LifecycleResult != "running");
-                            SetState(failed == 0 ? LoaderState.Healthy : LoaderState.Degraded, failed == 0 ? null : $"{failed} renderer scripts failed to start.");
-                            logger.Info("managed-connection-recovered", new { targetCount = targets.Count });
-                            connectionDegraded = false;
-                        }
+                            reason = sample.Decision.Reason,
+                            packageProcessCount = sample.PackageProcessCount,
+                            graceSeconds = ManagedCodexLifecyclePolicy.GracePeriodFor(sample.PackageRegistered).TotalSeconds,
+                            activationProcessId,
+                            message = sample.ConnectionError is null ? null : JsonlLogger.Redact(sample.ConnectionError.Message),
+                        });
+                        SetState(LoaderState.Degraded, "Codex renderer is not reachable; waiting for the managed package process.");
                     }
-                    catch (Exception exception) when (IsTransientConnectionFailure(exception) && !cancellationToken.IsCancellationRequested)
-                    {
-                        if (!connectionDegraded) logger.Warn("managed-bridge-retry", new { message = JsonlLogger.Redact(exception.Message) });
-                        connectionDegraded = true;
-                        SetState(LoaderState.Degraded, exception.Message);
-                    }
-                    finally { operation.Release(); }
+
+                    continue;
                 }
+
+                var wasDetached = detachedReported;
+                detachedReported = false;
+                // A bridge failure is not evidence that the Codex process
+                // exited: target discovery above has just succeeded.
+                await operation.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    if (bridge is not null)
+                    {
+                        var recovered = await bridge.SyncAsync(sample.Targets, cancellationToken).ConfigureAwait(false);
+                        if (recovered > 0) logger.Info("managed-bridge-reconnected", new { targetCount = recovered });
+                    }
+                    if (pageCompanions is not null) await pageCompanions.SyncAsync(cancellationToken).ConfigureAwait(false);
+                    if (connectionDegraded || wasDetached)
+                    {
+                        var failed = scripts.Count(script => script.LifecycleResult != "running");
+                        SetState(failed == 0 ? LoaderState.Healthy : LoaderState.Degraded, failed == 0 ? null : $"{failed} renderer scripts failed to start.");
+                        logger.Info("managed-connection-recovered", new { targetCount = sample.Targets.Count, wasDetached });
+                        connectionDegraded = false;
+                    }
+                }
+                catch (Exception exception) when (IsTransientConnectionFailure(exception) && !cancellationToken.IsCancellationRequested)
+                {
+                    if (!connectionDegraded) logger.Warn("managed-bridge-retry", new { message = JsonlLogger.Redact(exception.Message) });
+                    connectionDegraded = true;
+                    SetState(LoaderState.Degraded, exception.Message);
+                }
+                finally { operation.Release(); }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 return;
             }
-            catch (Exception exception) when (IsTransientConnectionFailure(exception) && !cancellationToken.IsCancellationRequested)
+            catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
             {
+                if (!monitorSamplingFailureReported)
+                {
+                    monitorSamplingFailureReported = true;
+                    logger.Warn("managed-codex-monitor-failed", new { message = JsonlLogger.Redact(exception.Message) });
+                }
+
                 connectionDegraded = true;
                 SetState(LoaderState.Degraded, exception.Message);
-                unreachableSince ??= DateTimeOffset.UtcNow;
-                missingTicks++;
-                if (missingTicks == 1)
+            }
+        }
+    }
+
+    private void LogManagedCodexGrace(ManagedCodexLifecycleSample sample)
+    {
+        if (sample.Decision.Reason == "awaiting-package-registration")
+        {
+            logger.Info("managed-codex-awaiting-package-registration", new
+            {
+                graceSeconds = ManagedCodexLifecyclePolicy.PackageUnregisteredGracePeriod.TotalSeconds,
+                packageProcessCount = sample.PackageProcessCount,
+                installedVersion = sample.InstalledVersion?.ToString(),
+            });
+            return;
+        }
+
+        logger.Info("managed-codex-close-grace", new
+        {
+            graceSeconds = ManagedCodexLifecyclePolicy.CloseExitGracePeriod.TotalSeconds,
+            packageProcessCount = sample.PackageProcessCount,
+        });
+    }
+
+    private async Task<ManagedCodexLifecycleSample> SampleLifecycleAsync(CancellationToken cancellationToken)
+    {
+        IReadOnlyList<CdpTarget> targets = [];
+        Exception? connectionError = null;
+        try
+        {
+            targets = client is null ? [] : await client.GetCodexTargetsAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (IsTransientConnectionFailure(exception) && !cancellationToken.IsCancellationRequested)
+        {
+            connectionError = exception;
+        }
+
+        var packageFamilyName = ManagedPackageFamilyName;
+        if (targets.Count > 0 && endpoint is not null)
+        {
+            var owners = TcpOwnerLookup.GetIPv4LoopbackListeners(endpoint.Port);
+            if (owners.Count != 1 || !string.Equals(ProcessIdentity.TryGetPackageFamilyName(owners[0].ProcessId), packageFamilyName, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("Managed CDP listener no longer belongs to Codex.");
+            if (owners[0].ProcessId != endpoint.OwnerPid)
+                return new ManagedCodexLifecycleSample(
+                    new(ManagedCodexLifecycleAction.ReportUpdate, null, "managed-process-replaced"), targets, null, null, 1, true);
+        }
+        Version? installedVersion = null;
+        var packageProcessCount = 0;
+        // A live renderer implies a registered package; while detached the
+        // registration is sampled directly so an update window is distinguishable
+        // from an ordinary close.
+        var packageRegistered = targets.Count > 0;
+        if (targets.Count == 0)
+        {
+            try
+            {
+                var installed = PackageDiscovery.DiscoverCodexForCurrentUser();
+                packageDiscoveryWarningReported = false;
+                if (string.Equals(installed.PackageFamilyName, packageFamilyName, StringComparison.OrdinalIgnoreCase))
                 {
-                    logger.Info("managed-codex-unreachable-awaiting-update", new
-                    {
-                        updateGraceSeconds = PackageUpdateDetectionGracePeriod.TotalSeconds,
-                        message = JsonlLogger.Redact(exception.Message),
-                    });
-                }
-                if (TryNotifyManagedCodexExit(missingTicks, unreachableSince.Value, exception))
-                {
-                    return;
+                    packageRegistered = true;
+                    installedVersion = installed.Version;
                 }
             }
+            catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
+            {
+                // The package is unregistered for a moment while Store updates it.
+                // An unknown version means "keep waiting", never "exit".
+                if (!packageDiscoveryWarningReported)
+                {
+                    packageDiscoveryWarningReported = true;
+                    logger.Warn("codex-package-discovery-failed", new { message = JsonlLogger.Redact(exception.Message) });
+                }
+            }
+
+            packageProcessCount = CountPackageProcesses(packageFamilyName);
+        }
+
+        var decision = lifecycle.Observe(
+            DateTimeOffset.UtcNow,
+            targetPresent: targets.Count > 0,
+            packageProcessCount,
+            package?.Version,
+            installedVersion,
+            packageRegistered);
+        return new ManagedCodexLifecycleSample(decision, targets, connectionError, installedVersion, packageProcessCount, packageRegistered);
+    }
+
+    private int CountPackageProcesses(string packageFamilyName)
+    {
+        try
+        {
+            return ProcessIdentity.FindProcessesByPackageFamily(packageFamilyName).Count;
+        }
+        catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            logger.Warn("codex-package-process-scan-failed", new { message = JsonlLogger.Redact(exception.Message) });
+            // An unknown process count must never be treated as "all processes exited".
+            return 1;
         }
     }
 
     private static bool IsTransientConnectionFailure(Exception exception) =>
         exception is HttpRequestException or WebSocketException or InvalidOperationException or IOException or OperationCanceledException;
 
-    private bool TryNotifyManagedCodexExit(int missingTicks, DateTimeOffset unreachableSince, Exception? connectionError = null)
-    {
-        if (package is not null)
-        {
-            try
-            {
-                var installed = PackageDiscovery.DiscoverCodexForCurrentUser();
-                if (IsPackageUpgrade(package, installed))
-                {
-                    logger.Info("codex-package-update-detected", new
-                    {
-                        previousPackage = package.PackageFullName,
-                        previousVersion = package.Version.ToString(),
-                        installedPackage = installed.PackageFullName,
-                        installedVersion = installed.Version.ToString(),
-                    });
-                    ManagedCodexExited?.Invoke(ManagedCodexExitReason.PackageUpdated);
-                    return true;
-                }
-            }
-            catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
-            {
-                if (missingTicks >= 5)
-                {
-                    logger.Warn("codex-package-update-detection-failed", new { message = JsonlLogger.Redact(exception.Message) });
-                }
-            }
-        }
-
-        if (!IsPackageUpdateDetectionGraceExpired(DateTimeOffset.UtcNow - unreachableSince))
-        {
-            return false;
-        }
-
-        if (connectionError is null)
-        {
-            logger.Info("managed-codex-exited");
-        }
-        else
-        {
-            logger.Warn("managed-codex-unreachable", new { message = JsonlLogger.Redact(connectionError.Message) });
-        }
-
-        ManagedCodexExited?.Invoke(ManagedCodexExitReason.Closed);
-        return true;
-    }
+    private sealed record ManagedCodexLifecycleSample(
+        ManagedCodexLifecycleDecision Decision,
+        IReadOnlyList<CdpTarget> Targets,
+        Exception? ConnectionError,
+        Version? InstalledVersion,
+        int PackageProcessCount,
+        bool PackageRegistered);
 
     internal static bool IsPackageUpgrade(CodexPackageIdentity current, CodexPackageIdentity installed) =>
         string.Equals(current.PackageFamilyName, installed.PackageFamilyName, StringComparison.OrdinalIgnoreCase) &&
-        installed.Version > current.Version;
+        ManagedCodexLifecyclePolicy.IsVersionUpgrade(current.Version, installed.Version);
 
-    internal static bool IsPackageUpdateDetectionGraceExpired(TimeSpan unreachableFor) =>
-        unreachableFor >= PackageUpdateDetectionGracePeriod;
+    internal void ReportRecoveryFailure(string message) => SetState(LoaderState.Degraded, message);
 
     private void SetState(LoaderState state, string? error)
     {

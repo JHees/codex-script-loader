@@ -30,19 +30,24 @@ internal sealed class OnlineUpdateManager : IAsyncDisposable
     private GitHubReleaseInfo? availableRelease;
     private CancellationTokenSource? downloadCancellation;
     private bool checkedThisLaunch;
+    private readonly Func<string, CancellationToken, Task>? launchInstaller;
+    private PreparedInstaller? preparedInstaller;
+    private sealed record PreparedInstaller(string Version, string Path, string Sha256);
 
     public OnlineUpdateManager(
         LoaderPaths paths,
         JsonlLogger logger,
         Func<StagedUpdate, CancellationToken, Task> switchHost,
         string? hostBaseDirectory = null,
-        IUpdateTransport? updateTransport = null)
+        IUpdateTransport? updateTransport = null,
+        Func<string, CancellationToken, Task>? launchInstaller = null)
     {
         this.paths = paths;
         this.logger = logger;
         this.switchHost = switchHost;
         this.hostBaseDirectory = hostBaseDirectory ?? AppContext.BaseDirectory;
         this.updateTransport = updateTransport ?? new CurlUpdateTransport();
+        this.launchInstaller = launchInstaller;
     }
 
     public UpdateSnapshot Snapshot => snapshot;
@@ -133,6 +138,8 @@ internal sealed class OnlineUpdateManager : IAsyncDisposable
         await operation.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            preparedInstaller = null;
+            snapshot = snapshot with { InstallerReady = false };
             SetSnapshot(snapshot with { State = UpdateStage.Checking, Progress = null, Error = null, ErrorCode = null });
             var release = await updateTransport.ResolveLatestReleaseAsync(cancellationToken).ConfigureAwait(false);
             ValidateRelease(release);
@@ -265,6 +272,76 @@ internal sealed class OnlineUpdateManager : IAsyncDisposable
         }
     }
 
+    public async Task<UpdateSnapshot> PrepareInstallerAsync(string version, CancellationToken cancellationToken)
+    {
+        if (launchInstaller is null) throw new InvalidOperationException("Installer updates are unavailable in this host.");
+        await operation.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var release = availableRelease ?? throw new InvalidOperationException("Check for updates first.");
+            if (release.Version != version) throw new InvalidOperationException("The available version changed; check again.");
+            preparedInstaller = null;
+            var architecture = RuntimeInformation.RuntimeIdentifier == "win-arm64" ? "arm64" : "x64";
+            var name = $"CodexScriptLoader-{version}-windows-{architecture}-setup.exe";
+            var root = Path.Combine(paths.StateRoot, "update-cache");
+            Directory.CreateDirectory(root);
+            var path = Path.Combine(root, name);
+            var checksumPath = path + ".sha256";
+            downloadCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            var token = downloadCancellation.Token;
+            SetSnapshot(snapshot with { State = UpdateStage.Downloading, RequiresInstaller = true, InstallerReady = false, Progress = 0, Error = null, ErrorCode = null });
+            await updateTransport.DownloadAsync(ReleaseAssetUri(version, name + ".sha256"), checksumPath, 1024 * 1024, (_, _) => { }, token).ConfigureAwait(false);
+            var expected = UpdatePackageVerifier.ReadUniqueSha256(await File.ReadAllTextAsync(checksumPath, token).ConfigureAwait(false), name);
+            await updateTransport.DownloadAsync(ReleaseAssetUri(version, name), path, 600L * 1024 * 1024,
+                (received, total) => SetSnapshot(snapshot with { Progress = total <= 0 ? 0 : (double)received / total }), token).ConfigureAwait(false);
+            SetSnapshot(snapshot with { State = UpdateStage.Verifying, Progress = 1 });
+            if (!string.Equals(await UpdatePackageVerifier.ComputeSha256Async(path, token).ConfigureAwait(false), expected, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("Installer checksum does not match the release.");
+            preparedInstaller = new(version, path, expected);
+            SetSnapshot(snapshot with { State = UpdateStage.Available, InstallerReady = true, Progress = null });
+            return snapshot;
+        }
+        catch (OperationCanceledException) when (downloadCancellation?.IsCancellationRequested == true)
+        {
+            SetSnapshot(snapshot with { State = UpdateStage.Available, InstallerReady = false, Progress = null });
+            return snapshot;
+        }
+        catch (Exception exception)
+        {
+            SetSnapshot(snapshot with { State = UpdateStage.Failed, InstallerReady = false, Progress = null, Error = DescribeNetworkError(exception), ErrorCode = ClassifyError(exception) });
+            throw;
+        }
+        finally
+        {
+            downloadCancellation?.Dispose();
+            downloadCancellation = null;
+            operation.Release();
+        }
+    }
+
+    public async Task InstallPreparedAsync(string version, bool confirmed, CancellationToken cancellationToken)
+    {
+        if (!confirmed) throw new InvalidOperationException("Closing Codex requires explicit confirmation.");
+        await operation.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var installer = preparedInstaller ?? throw new InvalidOperationException("Download and verify the installer first.");
+            if (launchInstaller is null || installer.Version != version || availableRelease?.Version != version)
+                throw new InvalidOperationException("Installer confirmation no longer matches the available update.");
+            if (!string.Equals(await UpdatePackageVerifier.ComputeSha256Async(installer.Path, cancellationToken).ConfigureAwait(false), installer.Sha256, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("The downloaded installer changed; download it again.");
+            SetSnapshot(snapshot with { State = UpdateStage.Switching, Error = null, ErrorCode = null });
+            await launchInstaller(installer.Path, cancellationToken).ConfigureAwait(false);
+            preparedInstaller = null;
+        }
+        catch (Exception exception)
+        {
+            SetSnapshot(snapshot with { State = UpdateStage.Failed, InstallerReady = false, Error = DescribeNetworkError(exception), ErrorCode = ClassifyError(exception) });
+            throw;
+        }
+        finally { operation.Release(); }
+    }
+
     public UpdateSnapshot CancelDownload()
     {
         if (snapshot.State != UpdateStage.Downloading || downloadCancellation is null)
@@ -306,8 +383,8 @@ internal sealed class OnlineUpdateManager : IAsyncDisposable
 
     private void SetSnapshot(UpdateSnapshot value)
     {
-        snapshot = value;
-        SnapshotChanged?.Invoke(value);
+        snapshot = value with { InstallerUpdateSupported = launchInstaller is not null };
+        SnapshotChanged?.Invoke(snapshot);
     }
 
     private void TryDeleteCandidateDirectory(string? directory)

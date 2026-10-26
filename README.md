@@ -6,7 +6,7 @@
 
 **Open Codex for user scripts, with automatic injection, reload, and cleanup.**
 
-[![Version](https://img.shields.io/badge/version-0.5.17-f97316)](https://github.com/JHees/codex-script-loader)
+[![Version](https://img.shields.io/badge/version-0.6.0-f97316)](https://github.com/JHees/codex-script-loader)
 [![Windows](https://img.shields.io/badge/Windows-11-0078d4?logo=windows11)](#requirements)
 [![macOS](https://img.shields.io/badge/macOS-untested-999999?logo=apple)](#platform-support)
 [![.NET](https://img.shields.io/badge/.NET-10-512bd4?logo=dotnet)](global.json)
@@ -49,13 +49,15 @@ Close any running Codex instance before starting the Loader. For a managed sessi
 
 Download the matching NSIS installer from [GitHub Releases](https://github.com/JHees/codex-script-loader/releases). Its standard setup wizard lets you choose the installation folder and Start menu folder before installation begins. It creates desktop and Start menu shortcuts, installs for the current user, appears in Windows Installed apps, and requires no administrator access. A portable ZIP is published beside each installer.
 
-Version 0.5.0 is the one-time installer migration from the older flat 0.4.x layout. Starting with 0.5.1, standard NSIS installations can update the versioned host from **Codex Settings → Script-Loader → Settings** while Codex and the current task stay open. Portable copies remain manual-update only.
+Version 0.5.0 is the one-time installer migration from the older flat 0.4.x layout. Starting with 0.5.1, standard NSIS installations can update the versioned host from **Codex Settings → Script-Loader → Settings** while Codex and the current task stay open. Portable copies cannot hot-swap; use the installer path instead.
+
+The update card shows checking, up-to-date, progress and failure states, the last check time, and release links. Choose **Download installer** when a full installation is required or preferred. Download and SHA-256 verification leave Codex running. **Exit and install** then asks for confirmation before closing Codex and Loader normally and opening setup; it never force-kills them. Hosts without this capability show a manual download link.
 
 Version 0.5.2 isolates update errors inside the update card and uses the Windows system `curl.exe` to resolve the latest stable GitHub Release and download its assets directly. It does not use the GitHub API or CLI credentials. The transport is restricted to HTTPS and official GitHub download hosts and remains subject to size, SHA-256, archive, manifest, and per-file verification.
 
 Version 0.5.3 adds opt-in, per-plugin GitHub Release updates. Update-aware third-party plugins are scanned independently, downloaded through the same restricted transport, verified against a required `.sha256` asset, replaced transactionally, and reloaded in place. The Loader-owned example plugin remains bundled and is not part of the third-party update flow.
 
-Version 0.5.17 is a Codex 26.1021 compatibility patch. It extends the managed Codex startup wait and reports the Loader host ready before injection finishes, so a slower first start after a Store update no longer produces a false launcher failure. It intentionally contains no 0.6.0 account features. See [release notes](docs/RELEASE-0.5.17.md) for details.
+Version 0.6.0 improves Codex lifecycle recovery, plugin compatibility and the settings page. Update checks now report their result, and verified installer updates ask before closing Codex. This stable release contains no experimental account-routing code. See [release notes](docs/RELEASE-0.6.0.md).
 
 Version 0.5.10 added **Install from GitHub**, verified same-ID package replacement,
 single-package optional agent Skills, and an allowlisted native command client
@@ -81,12 +83,12 @@ build/
 ├── app/active.json
 ├── app/previous.json
 ├── app/update-manifest.json
-├── app/versions/0.5.17/win-x64/               # complete Loader host
-├── CodexScriptLoader-0.5.17-windows-x64-setup.exe
-├── CodexScriptLoader-0.5.17-windows-x64-setup.exe.sha256
-├── CodexScriptLoader-0.5.17-windows-x64.zip
-├── CodexScriptLoader-0.5.17-windows-x64.zip.sha256
-└── CodexScriptLoader-0.5.17-x64.spdx.json
+├── app/versions/0.6.0/win-x64/               # complete Loader host
+├── CodexScriptLoader-0.6.0-windows-x64-setup.exe
+├── CodexScriptLoader-0.6.0-windows-x64-setup.exe.sha256
+├── CodexScriptLoader-0.6.0-windows-x64.zip
+├── CodexScriptLoader-0.6.0-windows-x64.zip.sha256
+└── CodexScriptLoader-0.6.0-x64.spdx.json
 ```
 
 The setup executable at the top of `build` is the normal local installation entry. The `build\app` directory is packaging payload, not the recommended launch path. The installer keeps scripts and settings under `%LOCALAPPDATA%\CodexScriptLoader` when upgrading or uninstalling.
@@ -108,7 +110,7 @@ The macOS runtime discovers `Codex.app`, starts it with a random loopback CDP po
 3. It activates Codex with a random loopback CDP port.
 4. It verifies the listener PID, package family, and exact renderer URL before injection.
 5. Enabled renderer plugins start through the same manifest and lifecycle contract.
-6. If Codex installs a newer package and restarts from its in-app update flow, the Loader detects the version change, relaunches that package with a fresh random CDP endpoint, and reinjects enabled plugins.
+6. The Loader observes Codex's in-app update request and package lifecycle. After an update it reconnects to the replacement process on the inherited managed CDP port, or launches the newer package on a fresh random port once the old processes have exited. Ordinary close exits the Loader after a short process-exit grace period; a temporarily unregistered Store package gets up to three minutes to return. Recovery failures remain visible in diagnostics without closing Codex.
 7. After an ordinary managed Codex close, the Loader releases its connections and exits automatically.
 
 Start the Loader executable a second time to open diagnostics. To reload installed scripts without focusing or refreshing Codex, run the same compatible executable as a second instance:

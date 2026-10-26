@@ -52,3 +52,23 @@ The current-user bridge exposes:
 `UpdatePreferences` has `schemaVersion`, `autoUpdate`, and the fixed `stable` channel. `UpdateSnapshot` exposes versions, state, check time, progress, release URL, a redacted error, installer compatibility, and preferences; it never exposes local filesystem paths.
 
 Update state is one of `idle`, `checking`, `available`, `downloading`, `verifying`, `staging`, `switching`, `succeeded`, `failed`, or `rolledBack`.
+
+
+## Confirmed installer updates
+
+The native host advertises `installerUpdateSupported` in its update snapshot.
+`prepare_installer_update` accepts the checked `version`, downloads only the matching
+architecture-specific setup executable and checksum from the fixed release repository,
+and sets `installerReady` only after SHA-256 verification. Downloading never closes Codex.
+
+`install_prepared_update` requires the same `version` and `confirmed: true`. The host
+rechecks the cached executable before launching it. The setup process receives
+`/WAITPID=<host process>` and waits up to 60 seconds for that Loader to exit. Loader
+requests a normal Codex close, waits for package processes to exit, then exits itself.
+If Codex stays open, Loader restores its renderer and monitoring; setup times out
+without installing. No process is forcibly terminated by this path.
+
+The renderer keeps check results visible and makes installer confirmation separate
+from downloading. Older hosts expose release links instead of unsupported commands.
+Automated tests use a fake installer callback; real shutdown and installation require
+manual acceptance of the native candidate.
