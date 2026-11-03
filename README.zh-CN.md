@@ -32,6 +32,7 @@ Windows 使用无控制台、无托盘图标的原生 .NET 10 后台宿主，是
 | Windows 原生宿主 | 在后台随 Codex 运行，应用内更新重启后自动恢复受管会话，普通关闭 Codex 后自动结束。 |
 | macOS runtime | 发现 `Codex.app`，通过 Node.js 提供相同的 CDP 与脚本流程；当前未测试。 |
 | 诊断与重载 | Windows 再次启动同一 EXE 可打开诊断；`--reload` 原位替换脚本。 |
+| 项目介绍 | 设置页底部介绍 Loader 和作者的插件，提供源码、问题反馈和 GitHub Star 入口。 |
 | Loader 在线升级 | 启动后检查稳定版 GitHub Release，并在不重启 Codex 的情况下切换已校验宿主。 |
 | 插件 Release 更新 | 扫描声明了公开 GitHub 更新源的插件，并对用户单独启用的更新执行校验、原子替换和定向重载。 |
 | 内置示例插件 | 首次运行安装一个由 Loader 自身维护、用于演示插件包契约的小型 UI 插件。 |

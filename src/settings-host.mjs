@@ -11,7 +11,7 @@ function installSettingsHost(version) {
   // Using the approved mark as a mask keeps the sidebar icon aligned with
   // Codex's currentColor-based system settings icons in light and dark themes.
   const loaderBrandMask = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAYAAACNiR0NAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAEYSURBVDhP7dK9K4ZhFMfxj1LkJQMp5CULEjYZFH+ASZn8DwaDyWSRySSLyWgQk1UGYhIZDLIgWQwmyUtXnXJ39eh5PKN8l7vfOdc517nu3+GvUIs21OeJakmNrnCD1jxZLUd4w2ye+C018d3GA2ayfMX04hIDoQ9whjE0ZWfL0oNn7IZewCO6sYFrNGQ1P9KBJ+yEnsI7JkM34xgXaCnUlSS5eYu9Qmwd94WGibRGpzgp/OOSpGe8YLMQm48Ji7HEFu7KNUyM4BUroeuwhg8MRyxd8hkGVcR4FCyFTk9M06xiKHJzWU1ZkhmpcCImSUYt4jAaV8VgOLmPczSiMz/0G7owGnu3jOnYxapJ0/ShHf1hWNrTf775Amv8Ll/zMvAfAAAAAElFTkSuQmCC";
-  const implementationRevision = "settings-update-12";
+  const implementationRevision = "settings-footer-14";
   const current = runtime.settingsHost;
   if (current?.version === version && current?.implementationRevision === implementationRevision) {
     current.start();
@@ -266,6 +266,15 @@ function installSettingsHost(version) {
         runtime: "概览",
         diagnostics: "诊断",
         loaderGroup: "Script-Loader",
+        aboutLoader: "为 Codex 桌面端添加你需要的功能。在这里安装、更新和管理插件，让常用工具融入日常工作。",
+        aboutAuthor: "由 JHees 开发 · MIT 开源",
+        aboutPlugins: "用插件拓展你的工作方式",
+        aboutBetterUi: "给项目分色、随时查看额度，在 Markdown 中直接阅读公式。把常用的界面与会话工具放在手边。",
+        aboutBridge: "让 Chat 帮你审方案，让 Codex 负责实现与验证。在同一段协作中讨论思路、跟进结果。",
+        aboutSupport: "用得顺手的话，欢迎点个 Star，让更多人发现这些工具。你的反馈和贡献，也会让它们变得更好。",
+        aboutSource: "源码与文档",
+        aboutFeedback: "反馈问题",
+        viewRepository: "了解插件 ↗",
         loader: "运行状态",
         loaderDescription: "Loader 已连接到 Codex，可以管理插件脚本。",
         targets: "Codex 页面",
@@ -444,6 +453,15 @@ function installSettingsHost(version) {
       runtime: "Overview",
       diagnostics: "Diagnostics",
       loaderGroup: "Script-Loader",
+      aboutLoader: "Make Codex work your way. Install, update and manage plugins that bring the tools you need into your everyday workflow.",
+      aboutAuthor: "Built by JHees · MIT licensed",
+      aboutPlugins: "More ways to work with Codex",
+      aboutBetterUi: "Color-code projects, keep an eye on usage and read formulas directly in Markdown. Keep everyday interface and conversation tools close at hand.",
+      aboutBridge: "Have Chat review your approach while Codex implements and verifies it. Discuss ideas and follow the results in one ongoing collaboration.",
+      aboutSupport: "Finding these tools useful? A Star helps others discover them. Your feedback and contributions help make them better.",
+      aboutSource: "Source & docs",
+      aboutFeedback: "Report an issue",
+      viewRepository: "Explore plugin ↗",
       loader: "Status",
       loaderDescription: "Loader is connected to Codex and ready to manage plugin scripts.",
       targets: "Codex pages",
@@ -889,7 +907,7 @@ function installSettingsHost(version) {
     diagnosticsCard.append(targets.row, safeMode.row, lastError.row, updateChannel.row);
     diagnosticsSection.append(overviewSection, diagnosticsCard, restartSection);
 
-    root.append(updateSection, pluginsSection, diagnosticsSection);
+    root.append(updateSection, pluginsSection, diagnosticsSection, createProjectFooter());
 
     function setBusy(next, message = "") {
       busy = next;
@@ -1667,6 +1685,77 @@ function installSettingsHost(version) {
     };
   }
 
+  function createProjectFooter() {
+    const labels = loaderLabels();
+    const footer = document.createElement("section");
+    footer.dataset.codexLoaderSettings = "project-footer";
+    footer.setAttribute("aria-label", "Codex Script Loader");
+    footer.className = "flex flex-col gap-5 border-t border-default pt-6";
+    const heading = document.createElement("div");
+    heading.className = "flex items-center gap-3";
+    const icon = document.createElement("span");
+    icon.className = "flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-default text-default";
+    icon.innerHTML = loaderIcon();
+    const title = document.createElement("h2");
+    title.className = "text-base font-medium text-default";
+    title.textContent = "Codex Script Loader";
+    const badge = document.createElement("span");
+    badge.className = "rounded-md border border-default px-2 py-0.5 text-xs text-secondary";
+    badge.textContent = `v${version}`;
+    heading.append(icon, title, badge);
+    const description = document.createElement("p");
+    description.className = "text-sm text-secondary leading-relaxed";
+    description.textContent = labels.aboutLoader;
+    const author = document.createElement("p");
+    author.className = "text-xs text-tertiary";
+    author.textContent = labels.aboutAuthor;
+    const link = (text, href) => {
+      const anchor = document.createElement("a");
+      anchor.href = href;
+      anchor.target = "_blank";
+      anchor.rel = "noopener noreferrer";
+      anchor.className = "text-sm text-default underline underline-offset-4 rounded focus-visible:outline focus-visible:outline-2";
+      anchor.textContent = text;
+      return anchor;
+    };
+    const links = document.createElement("div");
+    links.className = "flex flex-wrap gap-4";
+    links.append(link(labels.aboutSource, "https://github.com/JHees/codex-script-loader"), link(labels.aboutFeedback, "https://github.com/JHees/codex-script-loader/issues"));
+    const pluginHeading = document.createElement("h3");
+    pluginHeading.className = "text-sm font-medium text-default pt-2";
+    pluginHeading.textContent = labels.aboutPlugins;
+    const plugins = document.createElement("div");
+    plugins.className = "flex flex-wrap gap-3";
+    // These are editorial links, independent of installed plugin state or lifecycle.
+    for (const [name, summary, repository] of [
+      ["Better UI Imropvement", labels.aboutBetterUi, "JHees/better-ui-improvements-for-codex"],
+      ["Bridge", labels.aboutBridge, "JHees/chatgpt-codex-bridge"],
+    ]) {
+      const card = document.createElement("div");
+      card.className = "flex min-w-0 flex-1 basis-60 flex-col gap-2 rounded-xl border border-default p-4";
+      const nameLabel = document.createElement("h4");
+      nameLabel.className = "text-sm font-medium text-default";
+      nameLabel.textContent = name;
+      const copy = document.createElement("p");
+      copy.className = "flex-1 text-sm text-secondary leading-relaxed";
+      copy.textContent = summary;
+      const action = link(labels.viewRepository, `https://github.com/${repository}`);
+      action.setAttribute("aria-label", `${name}: ${labels.viewRepository}`);
+      card.append(nameLabel, copy, action);
+      plugins.appendChild(card);
+    }
+    const supportRow = document.createElement("div");
+    supportRow.className = "flex flex-wrap items-center gap-4";
+    const support = document.createElement("p");
+    support.className = "min-w-0 flex-1 text-xs text-secondary leading-relaxed";
+    support.textContent = labels.aboutSupport;
+    const star = link("☆ Star on GitHub", "https://github.com/JHees/codex-script-loader");
+    star.className = "inline-flex shrink-0 items-center rounded-lg border border-default px-3 py-2 text-sm text-default hover:bg-token-list-hover-background focus-visible:outline focus-visible:outline-2";
+    supportRow.append(support, star);
+    footer.append(heading, description, author, links, pluginHeading, plugins, supportRow);
+    return footer;
+  }
+
   const loaderEntry = {
     id: "loader:runtime",
     ownerId: "loader",
@@ -1699,9 +1788,7 @@ function installSettingsHost(version) {
     }
     const outer = sidebar;
     sidebarRoot = outer;
-    const plugins = pluginEntries();
-    loaderEntry.title = loaderLabels().settings;
-    const entries = [loaderEntry, ...plugins];
+    const entries = combinedEntries();
     const activeEntryExists = !activeId || entries.some((entry) => entry.id === activeId);
     const mountedGroups = Array.from(document.querySelectorAll("[data-codex-loader-settings='pages-group']"));
     const existing = mountedGroups.find((node) => node.parentElement === outer) || null;
@@ -1729,8 +1816,8 @@ function installSettingsHost(version) {
     const loaderGroup = document.createElement("div");
     loaderGroup.className = "flex flex-col gap-px";
     const groupLabels = loaderLabels();
-    loaderGroup.append(groupHeader(groupLabels.loaderGroup), sidebarButton(loaderEntry));
-    for (const entry of plugins) loaderGroup.appendChild(sidebarButton(entry));
+    loaderGroup.appendChild(groupHeader(groupLabels.loaderGroup));
+    for (const entry of entries) loaderGroup.appendChild(sidebarButton(entry));
     group.appendChild(loaderGroup);
     outer.appendChild(group);
     pagesGroup = group;

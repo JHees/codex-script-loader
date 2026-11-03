@@ -212,7 +212,7 @@ test("loopback socket opened asynchronously is still cleaned up when the plugin 
 test("settings host groups management and plugin pages under Script-Loader without refreshing Codex", () => {
   const source = buildInjectionSource([]);
   assert.match(source, /loaderGroup: "Script-Loader"/);
-  assert.match(source, /const implementationRevision = "settings-update-12"/);
+  assert.match(source, /const implementationRevision = "settings-footer-14"/);
   assert.match(source, /current\?\.version === version && current\?\.implementationRevision === implementationRevision/);
   assert.match(source, /implementationRevision,/);
   assert.doesNotMatch(source, /tweaksGroup:/);

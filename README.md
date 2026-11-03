@@ -32,6 +32,7 @@ Windows uses the native .NET 10 background host with no console or tray icon and
 | Native Windows host | Runs quietly with Codex, recovers a managed session after an in-app Codex update restart, and exits after an ordinary Codex close. |
 | macOS runtime | Discovers `Codex.app` and provides the same managed CDP/script flow through Node.js; currently untested. |
 | Diagnostics and reload | Starting a second Windows instance opens diagnostics; `--reload` replaces scripts in place. |
+| Project links | The bottom of the settings page introduces Loader and the author's plugins, with links to source, issue reports and GitHub Stars. |
 | Online host updates | Checks the stable GitHub Release after startup and switches verified Loader hosts without restarting Codex. |
 | Plugin release updates | Scans update-aware public GitHub plugins, then verifies and atomically reloads an opted-in update per plugin. |
 | Example plugin included | Installs a small Loader-owned UI plugin that demonstrates the package contract. |

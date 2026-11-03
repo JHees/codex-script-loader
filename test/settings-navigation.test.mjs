@@ -15,7 +15,7 @@ test("leaving settings clears selection, including a detached panel before the n
       stopped: false, sidebarRoot: null, unmountSettingsUi() { restores++; context.activeId = null; },
       activeId: "loader:runtime", pendingActiveId: "loader:runtime", panelHost: { isConnected: false },
       findSidebar: () => sidebar, restoreNative() { restores++; context.activeId = null; },
-      pluginEntries() { throw new Error("selection checked before rendering"); },
+      combinedEntries() { throw new Error("selection checked before rendering"); },
     });
     vm.runInContext(source.slice(source.indexOf("  function sync()"), source.indexOf("  function applyActive()")), context);
     try { context.sync(); } catch (error) { assert.match(error.message, /selection checked/); }
