@@ -1,0 +1,58 @@
+name: Desktop compatibility (static)
+
+on:
+  schedule:
+    - cron: '17 2,8,14,20 * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/desktop-compatibility.yml', 'scripts/check-desktop-compatibility.ps1', 'test/desktop-compatibility.test.mjs']
+  pull_request:
+    paths: ['.github/workflows/desktop-compatibility.yml', 'scripts/check-desktop-compatibility.ps1', 'test/desktop-compatibility.test.mjs']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-compatibility-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  inspect-latest:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+      - name: Check and test Loader contracts, including the offline checker
+        id: checks
+        run: |
+          npm run check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Inspect the latest official desktop package
+        if: ${{ !cancelled() }}
+        run: ./scripts/check-desktop-compatibility.ps1 -ReportPath compatibility-report.json
+      - name: Record incomplete inspection
+        if: ${{ always() }}
+        run: |
+          'Loader contract checks: ${{ steps.checks.outcome }}.' >> $env:GITHUB_STEP_SUMMARY
+          if (-not (Test-Path -LiteralPath compatibility-report.json)) {
+            '## Loader desktop compatibility: check-error' >> $env:GITHUB_STEP_SUMMARY
+            'No package inspection report was produced. Compatibility is unknown; inspect the failed step.' >> $env:GITHUB_STEP_SUMMARY
+          }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: ${{ always() }}
+        with:
+          name: loader-desktop-compatibility-${{ github.run_id }}-${{ github.run_attempt }}
+          path: compatibility-report.json
+          if-no-files-found: warn
+          retention-days: 14

@@ -17,7 +17,7 @@ internal enum ManagedCodexExitReason
 
 internal sealed class LiveSupervisor : IAsyncDisposable
 {
-    public const string Version = "0.6.0";
+    public const string Version = "0.6.1";
     private const string TrustedInputPermission = "trusted-input";
     private static readonly TimeSpan GracefulRestartShutdownTimeout = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan ForcedRestartShutdownTimeout = TimeSpan.FromSeconds(10);
@@ -28,8 +28,11 @@ internal sealed class LiveSupervisor : IAsyncDisposable
     private readonly ManagedCodexLifecycleTracker lifecycle = new();
     private bool packageDiscoveryWarningReported;
     private bool monitorSamplingFailureReported;
+    private string? restartRegistrationError;
+    private string? lifecycleObserverError;
     private string ManagedPackageFamilyName => package?.PackageFamilyName ?? PackageDiscovery.CodexPackageFamilyName;
     private readonly LoaderPaths paths;
+    private readonly Func<CodexPackageIdentity> discoverPackage;
     private readonly JsonlLogger logger;
     private readonly SemaphoreSlim operation = new(1, 1);
     private readonly SemaphoreSlim hostInvocation = new(1, 1);
@@ -54,7 +57,11 @@ internal sealed class LiveSupervisor : IAsyncDisposable
     private DateTimeOffset? lastInjectionAt;
 
     public LiveSupervisor(LoaderPaths paths, JsonlLogger logger)
+        : this(paths, logger, PackageDiscovery.DiscoverCodexForCurrentUser) { }
+
+    internal LiveSupervisor(LoaderPaths paths, JsonlLogger logger, Func<CodexPackageIdentity> discoverPackage)
     {
+        this.discoverPackage = discoverPackage;
         this.paths = paths;
         this.logger = logger;
         State = LoaderState.Starting;
@@ -280,7 +287,7 @@ internal sealed class LiveSupervisor : IAsyncDisposable
         try
         {
             SetState(LoaderState.Starting, null);
-            package = PackageDiscovery.DiscoverCodexForCurrentUser();
+            package = discoverPackage();
             var existing = ProcessIdentity.FindProcessesByPackageFamily(package.PackageFamilyName);
             if (existing.Count > 0 && adopted is null)
             {
@@ -321,6 +328,7 @@ internal sealed class LiveSupervisor : IAsyncDisposable
             }
 
             endpoint = new CdpEndpointIdentity(owner.Address, owner.Port, owner.ProcessId, ownerFamily!, targets[0].Url);
+            await EnsureRestartRegistrationAsync(required: false, cancellationToken).ConfigureAwait(false);
             injector = new CdpInjector(client);
             transport = new LoopbackTransportHost([port]);
             pageCompanions = new PageCompanionHost(client);
@@ -360,7 +368,7 @@ internal sealed class LiveSupervisor : IAsyncDisposable
         try
         {
             SetState(LoaderState.Starting, null);
-            package = PackageDiscovery.DiscoverCodexForCurrentUser();
+            package = discoverPackage();
             if (!string.Equals(package.PackageFamilyName, transaction.Endpoint.OwnerPackageFamilyName, StringComparison.OrdinalIgnoreCase) ||
                 transaction.Endpoint.TargetUrl != "app://-/index.html" || !IPAddress.TryParse(transaction.Endpoint.Address, out var endpointAddress) || !IPAddress.IsLoopback(endpointAddress))
             {
@@ -385,6 +393,7 @@ internal sealed class LiveSupervisor : IAsyncDisposable
 
             endpoint = transaction.Endpoint;
             activationProcessId = transaction.ActivationProcessId;
+            await EnsureRestartRegistrationAsync(required: false, cancellationToken).ConfigureAwait(false);
             injector = new CdpInjector(client);
             transport = new LoopbackTransportHost([transaction.Endpoint.Port]);
             pageCompanions = new PageCompanionHost(client);
@@ -535,27 +544,30 @@ internal sealed class LiveSupervisor : IAsyncDisposable
 
     public async Task RecoverAfterUpdateAsync(CancellationToken cancellationToken)
     {
+        using var recovery = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetime.Token);
+        cancellationToken = recovery.Token;
         await StopMonitorAsync().ConfigureAwait(false);
         var managedEndpoint = endpoint;
-        var managedVersion = package?.Version;
         var deadline = DateTimeOffset.UtcNow + ManagedCodexLifecyclePolicy.PackageUnregisteredGracePeriod;
-        while (DateTimeOffset.UtcNow < deadline)
+        var delayedReported = false;
+        while (!cancellationToken.IsCancellationRequested)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (!delayedReported && DateTimeOffset.UtcNow >= deadline)
+            {
+                delayedReported = true;
+                logger.Warn("codex-update-reconnect-delayed");
+                SetState(LoaderState.Degraded, "Waiting for Codex's own updater to restore the managed connection. Loader will not restart Codex.");
+            }
+
             CodexPackageIdentity installed;
-            try { installed = PackageDiscovery.DiscoverCodexForCurrentUser(); }
+            try { installed = discoverPackage(); }
             catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
             {
                 await Task.Delay(MonitorInterval, cancellationToken).ConfigureAwait(false);
                 continue;
             }
             var processes = ProcessIdentity.FindProcessesByPackageFamily(installed.PackageFamilyName);
-            if (processes.Count == 0 && ManagedCodexLifecyclePolicy.IsVersionUpgrade(managedVersion, installed.Version))
-            {
-                await ResetManagedRuntimeAsync(cancellationToken).ConfigureAwait(false);
-                await StartAsync(cancellationToken).ConfigureAwait(false);
-                return;
-            }
             // Only adopt the loopback port inherited from this managed launch.
             if (managedEndpoint is not null)
             {
@@ -584,7 +596,40 @@ internal sealed class LiveSupervisor : IAsyncDisposable
             }
             await Task.Delay(MonitorInterval, cancellationToken).ConfigureAwait(false);
         }
-        throw new TimeoutException("Updated Codex did not expose the managed connection; close Codex and launch it with Script Loader.");
+    }
+
+    private async Task EnsureRestartRegistrationAsync(bool required, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var managed = endpoint ?? throw new InvalidOperationException("Managed endpoint is unavailable.");
+            void VerifyOwner()
+            {
+                var owners = TcpOwnerLookup.GetIPv4LoopbackListeners(managed.Port);
+                if (managed.TargetUrl != "app://-/index.html" || owners.Count != 1 || owners[0].ProcessId != managed.OwnerPid ||
+                    !string.Equals(ProcessIdentity.TryGetPackageFamilyName(managed.OwnerPid), managed.OwnerPackageFamilyName, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("Managed Codex listener ownership changed.");
+            }
+            VerifyOwner();
+            var settings = await Task.Run(() => RestartRegistration.Ensure(managed.OwnerPid, managed.Port,
+                Path.Combine(AppContext.BaseDirectory, RestartRegistration.LibraryName)), cancellationToken).ConfigureAwait(false);
+            VerifyOwner();
+            var previousError = restartRegistrationError;
+            restartRegistrationError = null;
+            if (required && previousError is not null && lastError == previousError)
+                SetState(scripts.All(script => script.LifecycleResult == "running") ? LoaderState.Healthy : LoaderState.Degraded, null);
+            logger.Info("codex-restart-registration-verified", new { managed.OwnerPid, managed.Port, settings.Flags });
+        }
+        catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            restartRegistrationError = "Codex restart parameters could not be verified: " + JsonlLogger.Redact(exception.Message);
+            logger.Warn("codex-restart-registration-failed", new { message = restartRegistrationError });
+            if (required)
+            {
+                SetState(LoaderState.Degraded, restartRegistrationError);
+                throw new InvalidOperationException(restartRegistrationError, exception);
+            }
+        }
     }
 
     private async Task ResetManagedRuntimeAsync(CancellationToken cancellationToken)
@@ -787,8 +832,27 @@ internal sealed class LiveSupervisor : IAsyncDisposable
         if (command == "codex_lifecycle_intent")
         {
             var intent = RequiredPayloadText(payload, "intent", 32);
+            if (intent == "restart")
+            {
+                if (!await operation.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false))
+                    throw new InvalidOperationException("Loader is busy; retry the Codex update shortly.");
+                try { await EnsureRestartRegistrationAsync(required: true, cancellationToken).ConfigureAwait(false); }
+                finally { operation.Release(); }
+            }
             lifecycle.ReportIntent(intent, DateTimeOffset.UtcNow);
             logger.Info("codex-lifecycle-intent", new { intent });
+            return new { accepted = true, restartRegistrationVerified = intent == "restart" };
+        }
+        if (command == "codex_lifecycle_observer_status")
+        {
+            var status = RequiredPayloadText(payload, "state", 32);
+            if (status is not ("attached" or "unavailable")) throw new InvalidDataException("Unknown lifecycle observer status.");
+            var previousError = lifecycleObserverError;
+            lifecycleObserverError = status == "unavailable" ? "Codex update preflight hook is unavailable; startup restart registration remains in effect." : null;
+            logger.Info("codex-lifecycle-observer", new { status });
+            if (lifecycleObserverError is not null) SetState(LoaderState.Degraded, lifecycleObserverError);
+            else if (previousError is not null && lastError == previousError)
+                SetState(scripts.All(script => script.LifecycleResult == "running") ? LoaderState.Healthy : LoaderState.Degraded, null);
             return new { accepted = true };
         }
         if (registry is null)
@@ -1310,7 +1374,7 @@ internal sealed class LiveSupervisor : IAsyncDisposable
         {
             try
             {
-                var installed = PackageDiscovery.DiscoverCodexForCurrentUser();
+                var installed = discoverPackage();
                 packageDiscoveryWarningReported = false;
                 if (string.Equals(installed.PackageFamilyName, packageFamilyName, StringComparison.OrdinalIgnoreCase))
                 {
@@ -1375,6 +1439,11 @@ internal sealed class LiveSupervisor : IAsyncDisposable
 
     private void SetState(LoaderState state, string? error)
     {
+        if (state == LoaderState.Healthy && (restartRegistrationError ?? lifecycleObserverError) is { } registrationError)
+        {
+            state = LoaderState.Degraded;
+            error = registrationError;
+        }
         State = state;
         lastError = error is null ? null : JsonlLogger.Redact(error);
         StateChanged?.Invoke(Snapshot);

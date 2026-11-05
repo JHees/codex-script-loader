@@ -6,11 +6,20 @@
     <RootNamespace>CodexScriptLoader.Windows</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>..\..\branding\CodexScriptLoader.ico</ApplicationIcon>
-    <ApplicationVersion>0.6.0.0</ApplicationVersion>
+    <ApplicationVersion>0.6.1.0</ApplicationVersion>
     <PublishSingleFile>false</PublishSingleFile>
     <PublishReadyToRun>false</PublishReadyToRun>
     <SelfContained>false</SelfContained>
+    <RestartHookArchitecture Condition="'$(RuntimeIdentifier)' == 'win-arm64' Or ('$(RuntimeIdentifier)' == '' And '$(NETCoreSdkRuntimeIdentifier)' == 'win-arm64')">arm64</RestartHookArchitecture>
+    <RestartHookArchitecture Condition="'$(RestartHookArchitecture)' == ''">x64</RestartHookArchitecture>
+    <RestartHookOutput>$(MSBuildProjectDirectory)\obj\restart-hook\$(RestartHookArchitecture)</RestartHookOutput>
   </PropertyGroup>
+  <Target Name="BuildRestartHook" BeforeTargets="BeforeBuild">
+    <Exec Command="pwsh -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\..\..\scripts\build-restart-hook.ps1&quot; -Architecture $(RestartHookArchitecture) -OutputDirectory &quot;$(RestartHookOutput)&quot;" />
+  </Target>
+  <ItemGroup>
+    <Content Include="$(RestartHookOutput)\CodexScriptLoader.RestartHook.dll" Link="CodexScriptLoader.RestartHook.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\CodexScriptLoader.Core\CodexScriptLoader.Core.csproj" />
     <ProjectReference Include="..\CodexScriptLoader.Interop\CodexScriptLoader.Interop.csproj" />

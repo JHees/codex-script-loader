@@ -1,4 +1,4 @@
-const SETTINGS_HOST_VERSION = "0.6.0";
+const SETTINGS_HOST_VERSION = "0.6.1";
 
 /*
  * Renderer-only settings host inspired by b-nnett/codex-plusplus.

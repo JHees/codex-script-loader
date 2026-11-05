@@ -221,7 +221,7 @@ function createSubmissionReceipts() {
 function installComposerHost() {
   const runtime = globalThis.__codexScriptLoader;
   if (!runtime) return;
-  const revision = "composer-native-submission-12";
+  const revision = "composer-native-submission-13";
   if (runtime.composerHost?.revision === revision) return;
   runtime.composerHost?.stop();
   const registrations = new Map();
@@ -277,7 +277,8 @@ function installComposerHost() {
       identity = { taskId: conversationId, hostId: executionHost };
     }
     const footer = editor.closest("[data-composer-footer-responsive]");
-    let anchor = footer?.querySelector("[data-codex-intelligence-trigger]");
+    let anchor = footer?.querySelector("[data-codex-intelligence-trigger]")
+      ?? footer?.querySelector('[data-composer-navigation-target="reasoning"]');
     if (!controller || !anchor || typeof controller.view.dispatch !== "function" || !controller.view.state?.schema?.nodes?.paragraph) return null;
     // Skip the model control's tooltip wrappers. Insert in its native flex row,
     // immediately before that control (after the context indicator when present).

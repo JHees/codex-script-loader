@@ -108,6 +108,32 @@ test("actual renderer host binds one accessory and edits via a selection-preserv
   assert.equal(f.counts().disconnects, 1);
 });
 
+test("current composer mounts beside the reasoning control without editing the draft", () => {
+  for (const source of [buildComposerHostSource(), windowsComposerSource()]) {
+    const f = fixture(source);
+    const wrapper = { parentElement: f.row };
+    const reasoning = { parentElement: wrapper };
+    f.view.dom.closest = () => ({ querySelector: selector => selector === '[data-composer-navigation-target="reasoning"]' ? reasoning : null });
+    const handle = f.host.register("example.context", { id: "control", render() {} });
+    assert.equal(handle.getStatus().available, true);
+    assert.equal(f.row.before, wrapper);
+    assert.equal(f.row.children.length, 1);
+    assert.equal(f.counts().edits, 0);
+    handle.unregister();
+    assert.equal(f.row.children.length, 0);
+  }
+});
+
+test("missing native model controls leave accessories unmounted", () => {
+  const f = fixture();
+  f.view.dom.closest = () => ({ querySelector: () => null });
+  const handle = f.host.register("example.context", { id: "control", render() {} });
+  assert.equal(handle.getStatus().available, false);
+  assert.equal(f.row.children.length, 0);
+  assert.equal(f.counts().edits, 0);
+  handle.unregister();
+});
+
 test("current native composer binds split conversation and execution-host props", () => {
   const f = fixture(windowsComposerSource());
   delete f.taskProps.hostId;

@@ -3,7 +3,7 @@ param(
   [ValidateSet("win-x64", "win-arm64")]
   [string]$RuntimeIdentifier = "win-x64",
   [ValidatePattern("^\d+\.\d+\.\d+$")]
-  [string]$Version = "0.6.0",
+  [string]$Version = "0.6.1",
   [string]$NsisPath,
   [string]$CertificatePath,
   [string]$CertificatePassword,
@@ -158,7 +158,8 @@ if ($CertificatePath) {
     "versions\$Version\$RuntimeIdentifier\CodexScriptLoader.Command.exe",
     "versions\$Version\$RuntimeIdentifier\CodexScriptLoader.Command.dll",
     "versions\$Version\$RuntimeIdentifier\CodexScriptLoader.Core.dll",
-    "versions\$Version\$RuntimeIdentifier\CodexScriptLoader.Interop.dll")) {
+    "versions\$Version\$RuntimeIdentifier\CodexScriptLoader.Interop.dll",
+    "versions\$Version\$RuntimeIdentifier\CodexScriptLoader.RestartHook.dll")) {
     Invoke-Sign (Join-Path $publishRoot $relativePath) $signTool
   }
 }

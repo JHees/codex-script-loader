@@ -188,6 +188,7 @@ internal sealed class LoaderHostBridge : IAsyncDisposable
             var command = root.GetProperty("command").GetString();
             if (command is not (
                 "codex_lifecycle_intent" or
+                "codex_lifecycle_observer_status" or
                 "get_app_status" or
                 "list_plugins" or
                 "set_plugin_enabled" or

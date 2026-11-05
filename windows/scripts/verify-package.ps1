@@ -113,6 +113,7 @@ foreach ($required in @(
   "$hostRelative/CodexScriptLoader.Command.dll",
   "$hostRelative/CodexScriptLoader.Core.dll",
   "$hostRelative/CodexScriptLoader.Interop.dll",
+  "$hostRelative/CodexScriptLoader.RestartHook.dll",
   "$hostRelative/coreclr.dll",
   "$hostRelative/bundled/example-ui-plugin/index.js",
   "$hostRelative/bundled/example-ui-plugin/manifest.json",
@@ -208,12 +209,20 @@ if ($RequireSignature) {
     (Join-Path $hostRoot "CodexScriptLoader.Command.exe"),
     (Join-Path $hostRoot "CodexScriptLoader.Command.dll"),
     (Join-Path $hostRoot "CodexScriptLoader.Core.dll"),
-    (Join-Path $hostRoot "CodexScriptLoader.Interop.dll")
+    (Join-Path $hostRoot "CodexScriptLoader.Interop.dll"),
+    (Join-Path $hostRoot "CodexScriptLoader.RestartHook.dll")
   )) {
     $signature = Get-AuthenticodeSignature -LiteralPath $path
     if ($signature.Status -ne [Management.Automation.SignatureStatus]::Valid) { throw "Signature is not valid for ${path}: $($signature.Status)" }
     if (-not $signature.TimeStamperCertificate) { throw "Timestamp is missing for $path" }
   }
 }
+
+$hookBytes = [IO.File]::ReadAllBytes((Join-Path $hostRoot "CodexScriptLoader.RestartHook.dll"))
+$hookPeOffset = [BitConverter]::ToInt32($hookBytes, 0x3c)
+$hookMachine = [BitConverter]::ToUInt16($hookBytes, $hookPeOffset + 4)
+$hookCharacteristics = [BitConverter]::ToUInt16($hookBytes, $hookPeOffset + 22)
+$expectedHookMachine = if ($Architecture -eq "arm64") { 0xaa64 } else { 0x8664 }
+if ($hookMachine -ne $expectedHookMachine -or ($hookCharacteristics -band 0x2000) -eq 0) { throw "Restart hook is not a DLL for the target architecture." }
 
 Write-Output "PACKAGE_VERIFY_PASS version=$Version architecture=$Architecture files=$($appHashes.Count) installer=$installerName archive=$archiveName"

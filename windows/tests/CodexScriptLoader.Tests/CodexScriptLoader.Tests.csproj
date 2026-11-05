@@ -3,7 +3,15 @@
     <OutputType>Exe</OutputType>
     <AssemblyName>CodexScriptLoader.Tests</AssemblyName>
     <RootNamespace>CodexScriptLoader.Tests</RootNamespace>
+    <RestartFixtureArchitecture Condition="'$(NETCoreSdkRuntimeIdentifier)' == 'win-arm64'">arm64</RestartFixtureArchitecture>
+    <RestartFixtureArchitecture Condition="'$(RestartFixtureArchitecture)' == ''">x64</RestartFixtureArchitecture>
   </PropertyGroup>
+  <Target Name="BuildRestartFixture" BeforeTargets="BeforeBuild">
+    <Exec Command="pwsh -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\..\..\scripts\build-restart-hook.ps1&quot; -Fixture -Architecture $(RestartFixtureArchitecture) -OutputDirectory &quot;$(MSBuildProjectDirectory)\obj\restart-fixture&quot;" />
+  </Target>
+  <ItemGroup>
+    <Content Include="$(MSBuildProjectDirectory)\obj\restart-fixture\NativeRestartFixture.exe" Link="NativeRestartFixture.exe" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\CodexScriptLoader.Core\CodexScriptLoader.Core.csproj" />
     <ProjectReference Include="..\..\src\CodexScriptLoader.Interop\CodexScriptLoader.Interop.csproj" />
