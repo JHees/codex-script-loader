@@ -33,12 +33,12 @@ test("offline desktop probe detects removed composer anchors and malformed archi
       $results=@{}
       foreach($name in @('new','old','missing','broken')) {
         $stream=[IO.File]::OpenRead((Join-Path $env:PROBE_FIXTURES "$name.asar"))
-        try { $results[$name]=Read-RendererEvidence $stream '[data-codex-intelligence-trigger] [data-composer-navigation-target="reasoning"]' }
+        try { $results[$name]=(Read-RendererEvidence $stream '[data-codex-intelligence-trigger] [data-composer-navigation-target="reasoning"]').checks }
         catch { $results[$name]=@{error=$true} }
         finally {$stream.Dispose()}
       }
       $stream=[IO.File]::OpenRead((Join-Path $env:PROBE_FIXTURES 'new.asar'))
-      try { $results.oldHost=Read-RendererEvidence $stream '[data-codex-intelligence-trigger]' }
+      try { $results.oldHost=(Read-RendererEvidence $stream '[data-codex-intelligence-trigger]').checks }
       finally {$stream.Dispose()}
       $zip=Join-Path $env:PROBE_FIXTURES 'sample.msix'
       $archive=[IO.Compression.ZipFile]::Open($zip,[IO.Compression.ZipArchiveMode]::Create)

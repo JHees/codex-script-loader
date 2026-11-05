@@ -17,7 +17,8 @@ function Read-RendererEvidence([IO.Stream]$Stream, [string]$ComposerSource = (Ge
         $markers = @('data-codex-composer', 'data-composer-footer-responsive', 'composerController', 'conversationId',
             'hostId', 'executionTargetHostId', 'isAeonThread', 'data-codex-intelligence-trigger',
             'data-composer-navigation-target', 'reasoning', 'data-settings-panel-slug')
-        $files = 0; [long]$bytes = 0; $rendererEntry = $false
+        $files = 0; [long]$bytes = 0; $rendererEntry = $false; $assetCount = 0
+        $sample = [Collections.Generic.List[string]]::new()
         while ($pending.Count) {
             $item = $pending.Pop()
             if ($item.Depth -gt 32) { throw 'ASAR nesting exceeds limit' }
@@ -30,6 +31,7 @@ function Read-RendererEvidence([IO.Stream]$Stream, [string]$ComposerSource = (Ge
                 }
                 $files++
                 if ($files -gt 100000) { throw 'ASAR file count exceeds limit' }
+                if ($sample.Count -lt 10 -and $path -match '\.js(?:\.|$)') { $sample.Add($path) }
                 if ($entry.unpacked -or $entry.link) { continue }
                 [long]$offset = $entry.offset; [long]$size = $entry.size
                 if ($offset -lt 0 -or $size -lt 0 -or 8 + $headerSize + $offset + $size -gt $Stream.Length) { throw 'ASAR member outside archive' }
@@ -41,19 +43,20 @@ function Read-RendererEvidence([IO.Stream]$Stream, [string]$ComposerSource = (Ge
                 if ($name -eq 'index.html') {
                     if ($source -match 'id=["'']root["'']' -and $source -match '<script\b[^>]*src=') { $rendererEntry = $true }
                 } else {
+                    $assetCount++
                     foreach ($marker in $markers) { if ($source.Contains($marker)) { $null = $evidence.Add($marker) } }
                 }
             }
         }
         # shortcut: lexical markers do not prove mounting; use an interactive desktop runner for that assertion.
-        return [ordered]@{
+        return @{ checks = [ordered]@{
             rendererEntry = $rendererEntry
             composerEditor = $evidence.Contains('data-codex-composer') -and $evidence.Contains('data-composer-footer-responsive')
             composerController = $evidence.Contains('composerController')
             taskIdentity = $evidence.Contains('conversationId') -and ($evidence.Contains('hostId') -or ($evidence.Contains('executionTargetHostId') -and $evidence.Contains('isAeonThread')))
             modelControlAnchor = ($ComposerSource.Contains('[data-codex-intelligence-trigger]') -and $evidence.Contains('data-codex-intelligence-trigger')) -or ($ComposerSource.Contains('[data-composer-navigation-target="reasoning"]') -and $evidence.Contains('data-composer-navigation-target') -and $evidence.Contains('reasoning'))
             settingsNavigation = $evidence.Contains('data-settings-panel-slug')
-        }
+        }; evidence = @{ assetsScanned = $assetCount; bytesScanned = $bytes; javascriptPaths = @($sample) } }
     } finally { $reader.Dispose() }
 }
 
@@ -76,13 +79,13 @@ function Test-DesktopPackage([string]$Path) {
             $inputStream = $asar[0].Open(); $outputStream = [IO.File]::Create($temp)
             try { $inputStream.CopyTo($outputStream) } finally { $inputStream.Dispose(); $outputStream.Dispose() }
             $stream = [IO.File]::OpenRead($temp)
-            try { $checks = Read-RendererEvidence $stream } finally { $stream.Dispose() }
+            try { $renderer = Read-RendererEvidence $stream; $checks = $renderer.checks } finally { $stream.Dispose() }
         } finally { Remove-Item -LiteralPath $temp -Force }
         $checks.packageIdentity = $identity.Name -eq 'OpenAI.Codex'
         $checks.primaryApplication = $apps.Count -eq 1 -and $names.Contains($apps[0].Executable.Replace('\', '/'))
         return @{
             desktopVersion = [string]$identity.Version; architecture = [string]$identity.ProcessorArchitecture
-            sha256 = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant(); checks = $checks
+            sha256 = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant(); checks = $checks; evidence = $renderer.evidence
         }
     } finally { $archive.Dispose() }
 }
