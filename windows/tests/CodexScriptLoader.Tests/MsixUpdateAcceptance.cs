@@ -46,13 +46,8 @@ internal static partial class Program
                 if (result.TryGetProperty("exceptionDetails", out var exception)) throw new InvalidOperationException(exception.ToString());
                 return result.GetProperty("result").GetProperty("value").Clone();
             }
-            for (var i = 0; i < 30; i++)
-            {
-                var status = await Evaluate("globalThis.__codexScriptLoaderHostBridge?.lifecycleObserver ?? 'pending'");
-                if (status.GetString() == "attached") break;
-                if (i == 29) throw new InvalidOperationException("Fixture lifecycle observer did not attach.");
-                await Task.Delay(500, timeout.Token);
-            }
+            if (!(await Evaluate("globalThis.__codexScriptLoaderHostBridge?.lifecycleObserver === undefined")).GetBoolean())
+                throw new InvalidOperationException("Unexpected renderer update observer.");
             Console.WriteLine($"MSIX_INITIAL_HEALTHY pid={endpoint.OwnerPid} port={endpoint.Port} scripts={before.Scripts.Count}");
             using (var original = Process.GetProcessById(endpoint.OwnerPid))
             {
@@ -63,8 +58,6 @@ internal static partial class Program
                     await Task.Delay(remaining, timeout.Token);
                 }
             }
-            var preflight = await Evaluate("globalThis.__codexScriptLoaderHostBridge.request('codex_lifecycle_intent',{intent:'restart'})");
-            if (!preflight.GetProperty("restartRegistrationVerified").GetBoolean()) throw new InvalidOperationException("Preflight failed.");
             var deploy = new ProcessStartInfo("pwsh") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
             foreach (var argument in new[] { "-NoProfile", "-NonInteractive", "-File", Path.Combine(root, "deploy.ps1"), "-PackagePath", Path.Combine(root, "fixture-2.msix"), "-Family", family })
                 deploy.ArgumentList.Add(argument);

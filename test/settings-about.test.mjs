@@ -16,7 +16,7 @@ const flatten = node => [node, ...node.children.flatMap(flatten)];
 test("project introduction stays inside settings with bilingual copy and accessible external links", () => {
   for (const lang of ["zh-CN", "en"]) {
     const document = { documentElement: { lang }, createElement: tag => new Node(tag) };
-    const context = vm.createContext({ document, version: "0.6.1",
+    const context = vm.createContext({ document, version: "0.6.2",
       loaderIcon() {}, helpIcon() {}, renderLoaderPage() {}, pluginEntries: () => [{ id: "example:main" }],
     });
     vm.runInContext(source.slice(source.indexOf("  function loaderLabels()"), source.indexOf("  function settingsCard()")), context);

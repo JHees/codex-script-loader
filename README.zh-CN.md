@@ -6,7 +6,7 @@
 
 **打开 Codex 调试入口，加载用户脚本，并自动管理注入、重载与清理。**
 
-[![Version](https://img.shields.io/badge/version-0.6.1-f97316)](https://github.com/JHees/codex-script-loader)
+[![Version](https://img.shields.io/badge/version-0.6.2-f97316)](https://github.com/JHees/codex-script-loader)
 [![Windows](https://img.shields.io/badge/Windows-11-0078d4?logo=windows11)](#系统要求)
 [![macOS](https://img.shields.io/badge/macOS-未测试-999999?logo=apple)](#平台支持)
 [![.NET](https://img.shields.io/badge/.NET-10-512bd4?logo=dotnet)](global.json)
@@ -56,7 +56,7 @@ Windows 使用无控制台、无托盘图标的原生 .NET 10 后台宿主，是
 
 0.5.3 新增默认关闭、逐插件启用的 GitHub Release 更新。声明更新源的第三方插件会被独立扫描，通过相同的受限传输下载，经强制 `.sha256` 校验后以事务方式替换并原位重载。Loader 自有的示例插件仍随 Loader 打包，不进入第三方更新流程。
 
-0.6.1 恢复新版 Codex 的输入区插件入口，验证更新重启参数，并加入桌面包静态兼容预警。详情见[发布说明](docs/RELEASE-0.6.1.md)。
+0.6.2 恢复缺失的插件运行时，支持经过校验的分离聊天窗口，并移除官方更新流程上的 UI 钩子。详情见[发布说明](docs/RELEASE-0.6.2.md)。
 
 0.5.10 新增 **从 GitHub 安装**、已校验的同 ID 插件替换、插件附带 Skill 的一包安装，以及按操作白名单调用 renderer 插件的原生命令客户端。标准安装可沿用在线宿主更新，无需重新手工安装；启动器与接管协议保持不变。插件自动更新仍需单独开启。新增的 GitHub 安装入口仅使用公开 Release API 发现安装资产，不读取 GitHub 登录凭据。
 
@@ -77,12 +77,12 @@ build/
 ├── app/active.json
 ├── app/previous.json
 ├── app/update-manifest.json
-├── app/versions/0.6.1/win-x64/               # 完整 Loader 宿主
-├── CodexScriptLoader-0.6.1-windows-x64-setup.exe
-├── CodexScriptLoader-0.6.1-windows-x64-setup.exe.sha256
-├── CodexScriptLoader-0.6.1-windows-x64.zip
-├── CodexScriptLoader-0.6.1-windows-x64.zip.sha256
-└── CodexScriptLoader-0.6.1-x64.spdx.json
+├── app/versions/0.6.2/win-x64/               # 完整 Loader 宿主
+├── CodexScriptLoader-0.6.2-windows-x64-setup.exe
+├── CodexScriptLoader-0.6.2-windows-x64-setup.exe.sha256
+├── CodexScriptLoader-0.6.2-windows-x64.zip
+├── CodexScriptLoader-0.6.2-windows-x64.zip.sha256
+└── CodexScriptLoader-0.6.2-x64.spdx.json
 ```
 
 ### macOS live runtime（尚未测试）
@@ -97,7 +97,7 @@ macOS runtime 会发现 `Codex.app`，以随机 loopback CDP 端口启动它，�
 
 ### Windows 运行流程
 
-Loader 保留 Codex 原来的自动更新和 UI 通知。启动连接及进程归属验证成功后，通过短暂、定向的原生窗口钩子为该进程登记本机端口参数，读回确认后立即移除钩子；保留已有参数和重启标志。当前页面的更新入口会在调用原更新函数前再次复核，失败时显示提示而不静默开始更新。Windows 更新完成后仍负责首次启动新版，Loader 只验证并接回继承的端口，不接管下载安装，也不关闭或二次重启新版。登记或页面适配失败会显示在诊断和日志中；更新恢复等待超时后继续观察，不另行启动实例。普通退出保持原有行为。
+Loader 在启动时登记并读回本机重启端口，然后移除原生窗口钩子。Codex 的更新按钮、提示和安装流程均由 Codex 自己处理。旧进程消失后，Loader 在判定退出前检查 Windows 包部署日志；若当前用户正在注册同一包系列的更高版本，则额外等待最多三分钟，再按包版本和端口归属接回新版。没有部署证据时沿用普通退出宽限期。
 
 再次启动 Loader EXE 会打开诊断窗口。如需在不刷新、不聚焦 Codex 的情况下重载脚本，执行：
 

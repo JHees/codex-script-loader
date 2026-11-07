@@ -34,7 +34,7 @@ function fixture(source = buildComposerHostSource()) {
   const taskProps = { conversationId: "task-a", hostId: "local" };
   editor.parentElement = { __reactFiber$test: { memoizedProps: { composerController: { view, getText: () => nodes.map(n => n.textContent.replaceAll('_', '\\_')).join('\n') } }, return: { memoizedProps: taskProps } } };
   const listeners = new Map();
-  const context = vm.createContext({ TextEncoder, location: { href: "app://-/index.html" },
+  const context = vm.createContext({ URL, TextEncoder, location: { href: "app://-/index.html" },
     document: { documentElement: {}, querySelectorAll: () => [editor], createElement: () => ({ dataset: {}, style: {}, isConnected: false, remove() { this.isConnected = false; const i = row.children.indexOf(this); if (i >= 0) row.children.splice(i, 1); } }) },
     MutationObserver: class { constructor(callback) { refresh = callback; } observe() { observations++; } disconnect() { disconnects++; } },
     setTimeout, clearTimeout, getComputedStyle: element => ({ display: element === row ? "flex" : "contents" }), crypto: { randomUUID: () => `test-receipt-${++nextId}` }, __codexScriptLoader: {},

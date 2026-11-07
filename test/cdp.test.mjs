@@ -1,3 +1,4 @@
+import { isCodexChatRenderer } from "../src/cdp.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { CdpInjector, assertLoopbackEndpoint, buildCdpInjectionCommands, connectCdpSession, pickCodexTargets } from "../src/cdp.mjs";
@@ -128,4 +129,10 @@ test("CDP session times out commands and rejects non-loopback endpoints", async 
   const session = await connectCdpSession("ws://127.0.0.1:43127/devtools/page/codex", { WebSocketImpl: SilentWebSocket, timeoutMs: 10 });
   await assert.rejects(() => session.sendCommand("Runtime.enable"), /timed out/);
   session.close();
+});
+
+
+test("managed chat URLs exclude overlays and external pages", () => {
+  for (const url of ["app://-/index.html", "app://-/detached-window.html", "app://-/detached-window.html?initialRoute=%2Fdetached-window%3Fthread%3Dexample"]) assert.equal(isCodexChatRenderer(url), true, url);
+  for (const url of ["app://-/index.html?initialRoute=%2Favatar-overlay", "app://-/detached-window.html?initialRoute=https%3A%2F%2Fevil.test", "app://-/detached-window.html?initialRoute=%2Favatar-overlay", "https://example.com/index.html", "app://other/index.html", "app://-/index.html?initialRoute=%2F&extra=1"]) assert.equal(isCodexChatRenderer(url), false, url);
 });

@@ -104,9 +104,9 @@ The native Windows distribution includes `CodexScriptLoader.Command.exe`. It giv
 '{"value":42}' | & .\CodexScriptLoader.Command.exe plugin invoke --id local.example --operation inspect
 ```
 
-stdin is one UTF-8 JSON object. stdout is one JSON envelope containing `version`, `requestId`, `ok`, and either `result` or a stable `error`. Requests and results are limited to 64 KiB. The client connects only to the existing current-user Loader pipe; the Loader resolves the exact `app://-/index.html` target through its owned CDP session and rejects plugins or operations absent from the current enabled manifest.
+stdin is one UTF-8 JSON object. stdout is one JSON envelope containing `version`, `requestId`, `ok`, and either `result` or a stable `error`. Requests and results are limited to 64 KiB. The client connects only to the existing current-user Loader pipe; the Loader resolves a validated local Codex chat target through its owned CDP session and rejects plugins or operations absent from the current enabled manifest.
 
-The caller cannot supply a CDP port, target, method, selector, or JavaScript source. Ordinary CDP calls keep their short timeout; a plugin invocation may wait up to 120 seconds. The legacy `ShowStatus` and `ReloadScripts` single-instance commands remain compatible.
+The caller cannot supply a CDP port, target, method, selector, or JavaScript source. Managed targets are local main and detached chat pages; avatar routes, external pages, and unexpected URL parameters are excluded. With multiple windows, a payload containing task.hostId and task.taskId is matched against the composer context; a focused visible match is preferred, and ambiguous matches fail. Commands without task context use the unique primary window. Ordinary CDP calls keep their short timeout; a plugin invocation may wait up to 120 seconds. The legacy `ShowStatus` and `ReloadScripts` single-instance commands remain compatible.
 
 Only one plugin invocation can be active; overlapping requests fail with `COMMAND_BUSY`. A pending plugin Promise does not hold the supervisor's reload lock. Reload invalidates the old invocation with `SESSION_LOST`; it does not retry a send. Invalid UTF-8, oversized input, missing IDs, or malformed fields return bounded `INVALID_REQUEST` errors without stopping the pipe listeners. Oversized plugin output returns `RESULT_TOO_LARGE`. Per-connection read/write timeouts and a bounded listener pool prevent an idle client from monopolizing legacy commands.
 
@@ -123,7 +123,7 @@ A plugin that declares both an allowlisted host operation and the `trusted-input
 }
 ```
 
-The plugin must first focus the intended composer and place the complete message in it. Loader then sends one CDP `Input.dispatchKeyEvent` Enter key-down/key-up pair through the already verified `app://-/index.html` session and evaluates the same plugin operation again with the same payload. A second host-action request in the same command fails with `HOST_ACTION_LIMIT`; a missing permission fails with `HOST_ACTION_DENIED`; any extra or malformed directive field fails with `INVALID_PLUGIN_RESULT`.
+The plugin must first focus the intended composer and place the complete message in it. Loader then sends one CDP `Input.dispatchKeyEvent` Enter key-down/key-up pair through the already verified chat renderer session and evaluates the same plugin operation again with the same payload. A second host-action request in the same command fails with `HOST_ACTION_LIMIT`; a missing permission fails with `HOST_ACTION_DENIED`; any extra or malformed directive field fails with `INVALID_PLUGIN_RESULT`.
 
 This is a fixed continuation handshake, not a general input API. It cannot select another key or target and is unavailable through the command client's request schema.
 

@@ -87,7 +87,7 @@ internal static class ManagedCodexLifecyclePolicy
 
     internal static bool IsGrace(ManagedCodexLifecycleDecision decision) =>
         decision.Action == ManagedCodexLifecycleAction.Continue &&
-        decision.Reason is "close-grace" or "awaiting-package-registration";
+        decision.Reason is "close-grace" or "awaiting-package-registration" or "awaiting-package-deployment";
 
     internal static bool IsVersionUpgrade(Version? managedVersion, Version? installedVersion) =>
         managedVersion is not null && installedVersion is not null && installedVersion > managedVersion;
@@ -102,7 +102,7 @@ internal static class ManagedCodexLifecyclePolicy
 internal sealed class ManagedCodexLifecycleTracker
 {
     private readonly object gate = new();
-    private DateTimeOffset? restartUntil;
+    private DateTimeOffset? deploymentUntil;
     private DateTimeOffset? closeEmptySince;
     private bool updateReported;
     private bool? packageRegistered;
@@ -113,13 +113,13 @@ internal sealed class ManagedCodexLifecycleTracker
         int packageProcessCount,
         Version? managedVersion,
         Version? installedVersion,
-        bool packageRegistered = true)
+        bool packageRegistered = true, Func<DateTimeOffset, bool>? pendingRegistration = null)
     {
-        lock (gate) return ObserveCore(now, targetPresent, packageProcessCount, managedVersion, installedVersion, packageRegistered);
+        lock (gate) return ObserveCore(now, targetPresent, packageProcessCount, managedVersion, installedVersion, packageRegistered, pendingRegistration);
     }
 
     private ManagedCodexLifecycleDecision ObserveCore(DateTimeOffset now, bool targetPresent, int packageProcessCount,
-        Version? managedVersion, Version? installedVersion, bool packageRegistered)
+        Version? managedVersion, Version? installedVersion, bool packageRegistered, Func<DateTimeOffset, bool>? pendingRegistration)
     {
         if (this.packageRegistered != packageRegistered)
         {
@@ -130,12 +130,6 @@ internal sealed class ManagedCodexLifecycleTracker
             this.packageRegistered = packageRegistered;
         }
 
-        if (restartUntil is { } until && now >= until) restartUntil = null;
-        if (!targetPresent && restartUntil is not null && !updateReported)
-        {
-            updateReported = true;
-            return new(ManagedCodexLifecycleAction.ReportUpdate, null, "restart-requested");
-        }
         var decision = ManagedCodexLifecyclePolicy.Evaluate(new ManagedCodexLifecycleSnapshot(
             now,
             targetPresent,
@@ -147,6 +141,14 @@ internal sealed class ManagedCodexLifecycleTracker
             updateReported));
         closeEmptySince = decision.CloseEmptySince;
         if (decision.Action == ManagedCodexLifecycleAction.ReportUpdate) updateReported = true;
+        if (targetPresent || packageProcessCount > 0) deploymentUntil = null;
+        if (decision.Action == ManagedCodexLifecycleAction.Exit && packageRegistered)
+        {
+            if (deploymentUntil is null && pendingRegistration?.Invoke(now) == true)
+                deploymentUntil = now + ManagedCodexLifecyclePolicy.PackageUnregisteredGracePeriod;
+            if (now < deploymentUntil)
+                return new(ManagedCodexLifecycleAction.Continue, closeEmptySince, "awaiting-package-deployment");
+        }
         return decision;
     }
 
@@ -157,20 +159,7 @@ internal sealed class ManagedCodexLifecycleTracker
             closeEmptySince = null;
             updateReported = false;
             packageRegistered = null;
-            restartUntil = null;
-        }
-    }
-
-    internal void ReportIntent(string intent, DateTimeOffset now)
-    {
-        lock (gate)
-        {
-            restartUntil = intent switch
-            {
-                "restart" => now + ManagedCodexLifecyclePolicy.PackageUnregisteredGracePeriod,
-                "cancel-restart" => null,
-                _ => throw new ArgumentException("Unknown Codex lifecycle intent.", nameof(intent)),
-            };
+            deploymentUntil = null;
         }
     }
 }

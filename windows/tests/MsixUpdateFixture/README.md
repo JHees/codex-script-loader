@@ -16,7 +16,7 @@ Run the test executable with:
 --msix-acceptance <test-package-family> <test-root>
 ```
 
-The test waits for Windows' minimum application lifetime, requests the real Loader restart preflight, deploys version 2, and waits for the production recovery path. It asserts the replacement process inherited the port on its first launch, the installed package is version 2, a real renderer evaluates JavaScript, and the Loader-owned example plugin is running. It writes `acceptance-result.json` plus Loader logs and one launch receipt per process.
+The test waits for Windows' minimum application lifetime, deploys version 2 without sending a renderer restart signal, and waits for the production recovery path. It asserts the replacement process inherited the port on its first launch, the installed package is version 2, a real renderer evaluates JavaScript, and the Loader-owned example plugin is running. It writes `acceptance-result.json` plus Loader logs and one launch receipt per process.
 
 ## Cleanup and interpretation
 

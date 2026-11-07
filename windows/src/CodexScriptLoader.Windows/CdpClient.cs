@@ -35,7 +35,7 @@ internal sealed class CdpClient : IDisposable
         var targets = await GetTargetsAsync(cancellationToken).ConfigureAwait(false);
         return targets.Where(target =>
             string.Equals(target.Type, "page", StringComparison.Ordinal) &&
-            string.Equals(target.Url, "app://-/index.html", StringComparison.Ordinal) &&
+            CodexScriptLoader.Core.CodexRendererUrl.IsAllowed(target.Url) &&
             IsManagedEndpoint(target.WebSocketDebuggerUrl)).ToArray();
     }
 

@@ -17,7 +17,7 @@ internal enum ManagedCodexExitReason
 
 internal sealed class LiveSupervisor : IAsyncDisposable
 {
-    public const string Version = "0.6.1";
+    public const string Version = "0.6.2";
     private const string TrustedInputPermission = "trusted-input";
     private static readonly TimeSpan GracefulRestartShutdownTimeout = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan ForcedRestartShutdownTimeout = TimeSpan.FromSeconds(10);
@@ -29,7 +29,6 @@ internal sealed class LiveSupervisor : IAsyncDisposable
     private bool packageDiscoveryWarningReported;
     private bool monitorSamplingFailureReported;
     private string? restartRegistrationError;
-    private string? lifecycleObserverError;
     private string ManagedPackageFamilyName => package?.PackageFamilyName ?? PackageDiscovery.CodexPackageFamilyName;
     private readonly LoaderPaths paths;
     private readonly Func<CodexPackageIdentity> discoverPackage;
@@ -49,6 +48,7 @@ internal sealed class LiveSupervisor : IAsyncDisposable
     private CodexPackageIdentity? package;
     private CdpEndpointIdentity? endpoint;
     private IReadOnlyList<ScriptLoadResult> scripts = [];
+    private IReadOnlyList<ScriptDescriptor>? injectedDescriptors;
     private Task? monitorTask;
     private CancellationTokenSource? monitorLifetime;
     private int? activationProcessId;
@@ -106,13 +106,9 @@ internal sealed class LiveSupervisor : IAsyncDisposable
                 }
 
                 var targets = await activeClient.GetCodexTargetsAsync(cancellationToken).ConfigureAwait(false);
-                if (targets.Count != 1)
-                {
-                    throw new HostCommandException("RENDERER_UNAVAILABLE", "Exactly one managed Codex renderer is required.");
-                }
-
+                var target = await SelectCommandTargetAsync(targets, request.Payload, cancellationToken).ConfigureAwait(false);
                 expression = BuildHostCommandExpression(request.PluginId, request.Operation, request.Payload);
-                commandSession = await CdpSession.ConnectAsync(new Uri(targets[0].WebSocketDebuggerUrl), cancellationToken).ConfigureAwait(false);
+                commandSession = await CdpSession.ConnectAsync(new Uri(target.WebSocketDebuggerUrl), cancellationToken).ConfigureAwait(false);
                 activeHostCommand = lease;
             }
             finally { operation.Release(); }
@@ -229,6 +225,36 @@ internal sealed class LiveSupervisor : IAsyncDisposable
         return clone;
     }
 
+    private static async Task<CdpTarget> SelectCommandTargetAsync(IReadOnlyList<CdpTarget> targets, JsonElement payload, CancellationToken token)
+    {
+        if (targets.Count == 1) return targets[0];
+        if (!payload.TryGetProperty("task", out var task) || task.ValueKind != JsonValueKind.Object ||
+            !task.TryGetProperty("hostId", out var host) || host.ValueKind != JsonValueKind.String ||
+            !task.TryGetProperty("taskId", out var id) || id.ValueKind != JsonValueKind.String)
+        {
+            var main = targets.Where(target => target.Url == "app://-/index.html").ToArray();
+            if (main.Length == 1) return main[0];
+            throw new HostCommandException("RENDERER_UNAVAILABLE", "No unique primary renderer is available.");
+        }
+        var candidates = new List<(CdpTarget Target, bool Visible, bool Focused)>();
+        foreach (var target in targets)
+        {
+            await using var session = await CdpSession.ConnectAsync(new Uri(target.WebSocketDebuggerUrl), token).ConfigureAwait(false);
+            var query = "(() => {const c=globalThis.__codexScriptLoader?.composerHost?.getContext?.();return {matches:c?.hostId===" +
+                host.GetRawText() + "&&c?.taskId===" + id.GetRawText() + ",visible:document.visibilityState==='visible',focused:document.hasFocus()}})()";
+            var reply = await session.SendAsync("Runtime.evaluate", new { expression = query, returnByValue = true }, token).ConfigureAwait(false);
+            if (!reply.TryGetProperty("result", out var result) || !result.TryGetProperty("value", out var value)) continue;
+            if (value.GetProperty("matches").GetBoolean())
+                candidates.Add((target, value.GetProperty("visible").GetBoolean(), value.GetProperty("focused").GetBoolean()));
+        }
+        var focused = candidates.Where(candidate => candidate.Visible && candidate.Focused).ToArray();
+        if (focused.Length == 1) return focused[0].Target;
+        var visible = candidates.Where(candidate => candidate.Visible).ToArray();
+        if (visible.Length == 1) return visible[0].Target;
+        if (candidates.Count == 1) return candidates[0].Target;
+        throw new HostCommandException("RENDERER_UNAVAILABLE", "The task does not identify a unique managed chat window.");
+    }
+
     private static bool IsTrustedEnterRequest(JsonElement pluginResult)
     {
         if (pluginResult.ValueKind != JsonValueKind.Object || !pluginResult.TryGetProperty("$loaderHostAction", out var action)) return false;
@@ -328,7 +354,7 @@ internal sealed class LiveSupervisor : IAsyncDisposable
             }
 
             endpoint = new CdpEndpointIdentity(owner.Address, owner.Port, owner.ProcessId, ownerFamily!, targets[0].Url);
-            await EnsureRestartRegistrationAsync(required: false, cancellationToken).ConfigureAwait(false);
+            await EnsureRestartRegistrationAsync(cancellationToken).ConfigureAwait(false);
             injector = new CdpInjector(client);
             transport = new LoopbackTransportHost([port]);
             pageCompanions = new PageCompanionHost(client);
@@ -370,7 +396,7 @@ internal sealed class LiveSupervisor : IAsyncDisposable
             SetState(LoaderState.Starting, null);
             package = discoverPackage();
             if (!string.Equals(package.PackageFamilyName, transaction.Endpoint.OwnerPackageFamilyName, StringComparison.OrdinalIgnoreCase) ||
-                transaction.Endpoint.TargetUrl != "app://-/index.html" || !IPAddress.TryParse(transaction.Endpoint.Address, out var endpointAddress) || !IPAddress.IsLoopback(endpointAddress))
+                !CodexRendererUrl.IsAllowed(transaction.Endpoint.TargetUrl) || !IPAddress.TryParse(transaction.Endpoint.Address, out var endpointAddress) || !IPAddress.IsLoopback(endpointAddress))
             {
                 throw new InvalidOperationException("Handoff endpoint identity does not match the installed Codex package.");
             }
@@ -393,7 +419,7 @@ internal sealed class LiveSupervisor : IAsyncDisposable
 
             endpoint = transaction.Endpoint;
             activationProcessId = transaction.ActivationProcessId;
-            await EnsureRestartRegistrationAsync(required: false, cancellationToken).ConfigureAwait(false);
+            await EnsureRestartRegistrationAsync(cancellationToken).ConfigureAwait(false);
             injector = new CdpInjector(client);
             transport = new LoopbackTransportHost([transaction.Endpoint.Port]);
             pageCompanions = new PageCompanionHost(client);
@@ -472,6 +498,7 @@ internal sealed class LiveSupervisor : IAsyncDisposable
             if (pageCompanions is not null) await pageCompanions.SetAuthorizedPluginsAsync(plan.Scripts, cancellationToken).ConfigureAwait(false);
             await bridge.ReconnectAsync(targets, cancellationToken).ConfigureAwait(false);
             scripts = await injector.InjectAsync(plan.Source, plan.Scripts, targets, cancellationToken).ConfigureAwait(false);
+            injectedDescriptors = plan.Scripts;
             lastTargetCount = targets.Count;
             lastInjectionAt = DateTimeOffset.UtcNow;
             var failed = scripts.Count(script => script.LifecycleResult != "running");
@@ -598,7 +625,7 @@ internal sealed class LiveSupervisor : IAsyncDisposable
         }
     }
 
-    private async Task EnsureRestartRegistrationAsync(bool required, CancellationToken cancellationToken)
+    private async Task EnsureRestartRegistrationAsync(CancellationToken cancellationToken)
     {
         try
         {
@@ -606,7 +633,7 @@ internal sealed class LiveSupervisor : IAsyncDisposable
             void VerifyOwner()
             {
                 var owners = TcpOwnerLookup.GetIPv4LoopbackListeners(managed.Port);
-                if (managed.TargetUrl != "app://-/index.html" || owners.Count != 1 || owners[0].ProcessId != managed.OwnerPid ||
+                if (!CodexRendererUrl.IsAllowed(managed.TargetUrl) || owners.Count != 1 || owners[0].ProcessId != managed.OwnerPid ||
                     !string.Equals(ProcessIdentity.TryGetPackageFamilyName(managed.OwnerPid), managed.OwnerPackageFamilyName, StringComparison.OrdinalIgnoreCase))
                     throw new InvalidOperationException("Managed Codex listener ownership changed.");
             }
@@ -614,21 +641,14 @@ internal sealed class LiveSupervisor : IAsyncDisposable
             var settings = await Task.Run(() => RestartRegistration.Ensure(managed.OwnerPid, managed.Port,
                 Path.Combine(AppContext.BaseDirectory, RestartRegistration.LibraryName)), cancellationToken).ConfigureAwait(false);
             VerifyOwner();
-            var previousError = restartRegistrationError;
             restartRegistrationError = null;
-            if (required && previousError is not null && lastError == previousError)
-                SetState(scripts.All(script => script.LifecycleResult == "running") ? LoaderState.Healthy : LoaderState.Degraded, null);
             logger.Info("codex-restart-registration-verified", new { managed.OwnerPid, managed.Port, settings.Flags });
         }
         catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
         {
             restartRegistrationError = "Codex restart parameters could not be verified: " + JsonlLogger.Redact(exception.Message);
             logger.Warn("codex-restart-registration-failed", new { message = restartRegistrationError });
-            if (required)
-            {
-                SetState(LoaderState.Degraded, restartRegistrationError);
-                throw new InvalidOperationException(restartRegistrationError, exception);
-            }
+
         }
     }
 
@@ -652,6 +672,7 @@ internal sealed class LiveSupervisor : IAsyncDisposable
             package = null;
             endpoint = null;
             scripts = [];
+            injectedDescriptors = null;
             activationProcessId = null;
             lastTargetCount = 0;
             lastInjectionAt = null;
@@ -820,6 +841,7 @@ internal sealed class LiveSupervisor : IAsyncDisposable
     {
         var plan = await registry!.BuildPlanAsync(forceIds, cancellationToken).ConfigureAwait(false);
         scripts = await injector!.InjectAsync(plan.Source, plan.Scripts, targets, cancellationToken).ConfigureAwait(false);
+        injectedDescriptors = plan.Scripts;
         lastTargetCount = targets.Count;
         lastInjectionAt = DateTimeOffset.UtcNow;
         var failed = scripts.Count(script => script.LifecycleResult != "running");
@@ -827,34 +849,37 @@ internal sealed class LiveSupervisor : IAsyncDisposable
         logger.Info("scripts-injected", new { targetCount = targets.Count, scriptCount = plan.Scripts.Count, failed, plan.SafeMode });
     }
 
+    private async Task SyncRendererRuntimeAsync(IReadOnlyList<CdpTarget> targets, CancellationToken cancellationToken)
+    {
+        if (bridge is null || injector is null || registry is null || injectedDescriptors is null) return;
+        var actual = new List<ScriptLoadResult>();
+        foreach (var target in targets)
+        {
+            var state = await bridge.ReadRuntimeAsync(target, injectedDescriptors, cancellationToken).ConfigureAwait(false);
+            if (!state.Complete)
+            {
+                var plan = await registry.BuildPlanAsync(force: false, cancellationToken).ConfigureAwait(false);
+                await injector.InjectAsync(plan.Source, plan.Scripts, [target], cancellationToken).ConfigureAwait(false);
+                injectedDescriptors = plan.Scripts;
+                lastInjectionAt = DateTimeOffset.UtcNow;
+                state = await bridge.ReadRuntimeAsync(target, injectedDescriptors, cancellationToken).ConfigureAwait(false);
+                logger.Info("renderer-runtime-restored", new { targetId = target.Id, target.Url, complete = state.Complete });
+                if (!state.Complete) throw new InvalidOperationException("Renderer runtime did not initialize after repair.");
+            }
+            actual.AddRange(state.Scripts);
+        }
+        var changed = lastTargetCount != targets.Count || !scripts.SequenceEqual(actual);
+        lastTargetCount = targets.Count;
+        scripts = actual;
+        if (changed)
+        {
+            var failed = scripts.Count(script => script.LifecycleResult != "running");
+            SetState(failed == 0 ? LoaderState.Healthy : LoaderState.Degraded, failed == 0 ? null : $"{failed} plugin instances are not running.");
+        }
+    }
+
     private async Task<object> DispatchBridgeAsync(string command, JsonElement payload, CancellationToken cancellationToken)
     {
-        if (command == "codex_lifecycle_intent")
-        {
-            var intent = RequiredPayloadText(payload, "intent", 32);
-            if (intent == "restart")
-            {
-                if (!await operation.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false))
-                    throw new InvalidOperationException("Loader is busy; retry the Codex update shortly.");
-                try { await EnsureRestartRegistrationAsync(required: true, cancellationToken).ConfigureAwait(false); }
-                finally { operation.Release(); }
-            }
-            lifecycle.ReportIntent(intent, DateTimeOffset.UtcNow);
-            logger.Info("codex-lifecycle-intent", new { intent });
-            return new { accepted = true, restartRegistrationVerified = intent == "restart" };
-        }
-        if (command == "codex_lifecycle_observer_status")
-        {
-            var status = RequiredPayloadText(payload, "state", 32);
-            if (status is not ("attached" or "unavailable")) throw new InvalidDataException("Unknown lifecycle observer status.");
-            var previousError = lifecycleObserverError;
-            lifecycleObserverError = status == "unavailable" ? "Codex update preflight hook is unavailable; startup restart registration remains in effect." : null;
-            logger.Info("codex-lifecycle-observer", new { status });
-            if (lifecycleObserverError is not null) SetState(LoaderState.Degraded, lifecycleObserverError);
-            else if (previousError is not null && lastError == previousError)
-                SetState(scripts.All(script => script.LifecycleResult == "running") ? LoaderState.Healthy : LoaderState.Degraded, null);
-            return new { accepted = true };
-        }
         if (registry is null)
         {
             throw new InvalidOperationException("Managed runtime is not ready.");
@@ -1083,8 +1108,8 @@ internal sealed class LiveSupervisor : IAsyncDisposable
             safeMode = registry?.SafeMode ?? false,
             managedProcess = snapshot.ActivationProcessId.HasValue,
             targetCount = lastTargetCount,
-            enabledScripts = snapshot.Scripts.Count,
-            failedScripts = snapshot.Scripts.Count(script => script.LifecycleResult != "running"),
+            enabledScripts = snapshot.Scripts.Select(script => script.Id).Distinct().Count(),
+            failedScripts = snapshot.Scripts.Where(script => script.LifecycleResult != "running").Select(script => script.Id).Distinct().Count(),
             configHealthy = !(registry?.SafeMode ?? false),
             startedAt = snapshot.StartedAt,
             lastInjectionAt = snapshot.LastInjectionAt,
@@ -1123,7 +1148,7 @@ internal sealed class LiveSupervisor : IAsyncDisposable
 
     private IReadOnlyDictionary<string, ScriptLoadResult> RuntimeById() => scripts
         .GroupBy(script => script.Id, StringComparer.Ordinal)
-        .ToDictionary(group => group.Key, group => group.Last(), StringComparer.Ordinal);
+        .ToDictionary(group => group.Key, group => group.FirstOrDefault(item => item.LifecycleResult != "running") ?? group.Last(), StringComparer.Ordinal);
 
     private async Task ReloadAndVerifyPluginAsync(string id, CancellationToken cancellationToken)
     {
@@ -1286,6 +1311,7 @@ internal sealed class LiveSupervisor : IAsyncDisposable
                         var recovered = await bridge.SyncAsync(sample.Targets, cancellationToken).ConfigureAwait(false);
                         if (recovered > 0) logger.Info("managed-bridge-reconnected", new { targetCount = recovered });
                     }
+                    await SyncRendererRuntimeAsync(sample.Targets, cancellationToken).ConfigureAwait(false);
                     if (pageCompanions is not null) await pageCompanions.SyncAsync(cancellationToken).ConfigureAwait(false);
                     if (connectionDegraded || wasDetached)
                     {
@@ -1323,6 +1349,11 @@ internal sealed class LiveSupervisor : IAsyncDisposable
 
     private void LogManagedCodexGrace(ManagedCodexLifecycleSample sample)
     {
+        if (sample.Decision.Reason == "awaiting-package-deployment")
+        {
+            logger.Info("managed-codex-awaiting-package-deployment", new { package = package?.PackageFullName });
+            return;
+        }
         if (sample.Decision.Reason == "awaiting-package-registration")
         {
             logger.Info("managed-codex-awaiting-package-registration", new
@@ -1402,8 +1433,20 @@ internal sealed class LiveSupervisor : IAsyncDisposable
             packageProcessCount,
             package?.Version,
             installedVersion,
-            packageRegistered);
+            packageRegistered,
+            pendingRegistration: HasPendingRegistration);
         return new ManagedCodexLifecycleSample(decision, targets, connectionError, installedVersion, packageProcessCount, packageRegistered);
+    }
+
+    private bool HasPendingRegistration(DateTimeOffset now)
+    {
+        if (package is null) return false;
+        try { return PackageDeploymentEvidence.IsPending(package, now); }
+        catch (Exception exception) when (exception is System.Diagnostics.Eventing.Reader.EventLogException or UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            logger.Warn("codex-deployment-log-unavailable", new { message = JsonlLogger.Redact(exception.Message) });
+            return false;
+        }
     }
 
     private int CountPackageProcesses(string packageFamilyName)
@@ -1439,7 +1482,7 @@ internal sealed class LiveSupervisor : IAsyncDisposable
 
     private void SetState(LoaderState state, string? error)
     {
-        if (state == LoaderState.Healthy && (restartRegistrationError ?? lifecycleObserverError) is { } registrationError)
+        if (state == LoaderState.Healthy && restartRegistrationError is { } registrationError)
         {
             state = LoaderState.Degraded;
             error = registrationError;

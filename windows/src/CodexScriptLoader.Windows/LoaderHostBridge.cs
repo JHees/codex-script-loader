@@ -1,3 +1,4 @@
+using CodexScriptLoader.Core;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -52,6 +53,30 @@ internal sealed class LoaderHostBridge : IAsyncDisposable
         {
             sync.Release();
         }
+    }
+
+    internal async Task<(bool Complete, IReadOnlyList<ScriptLoadResult> Scripts)> ReadRuntimeAsync(
+        CdpTarget target, IReadOnlyList<ScriptDescriptor> expected, CancellationToken cancellationToken)
+    {
+        if (!sessions.TryGetValue(target.Id, out var state)) throw new InvalidOperationException("Renderer bridge is not attached.");
+        var ids = JsonSerializer.Serialize(expected.Select(script => script.Id));
+        var expression = "(() => {const r=globalThis.__codexScriptLoader;return {hosts:typeof r?.settingsHost?.registerPage==='function' && typeof r?.composerHost?.register==='function',scripts:" +
+            ids + ".map(id=>{const s=r?.scripts?.[id];return {id,status:s?.status??'missing',hash:s?.fingerprint??''}})}})()";
+        var reply = await state.Session.SendAsync("Runtime.evaluate", new { expression, returnByValue = true }, cancellationToken).ConfigureAwait(false);
+        var value = reply.GetProperty("result").GetProperty("value");
+        var actual = value.GetProperty("scripts").EnumerateArray().ToDictionary(row => row.GetProperty("id").GetString()!, StringComparer.Ordinal);
+        var complete = value.GetProperty("hosts").GetBoolean();
+        var scripts = new List<ScriptLoadResult>();
+        foreach (var descriptor in expected)
+        {
+            var found = actual.TryGetValue(descriptor.Id, out var row);
+            var status = found ? row.GetProperty("status").GetString()! : "missing";
+            var hash = found ? row.GetProperty("hash").GetString() : null;
+            complete &= status != "missing" && hash == descriptor.Fingerprint;
+            scripts.Add(new ScriptLoadResult(descriptor.Id, descriptor.Version, descriptor.Fingerprint, "granted",
+                status, status == "running" ? null : "SCRIPT_" + status.ToUpperInvariant()));
+        }
+        return (complete, scripts);
     }
 
     private async Task<bool> IsHealthyAsync(BridgeSession state, CancellationToken cancellationToken)
@@ -110,7 +135,7 @@ internal sealed class LoaderHostBridge : IAsyncDisposable
             await session.SendAsync("Runtime.enable", cancellationToken: cancellationToken).ConfigureAwait(false);
             await session.SendAsync("Page.enable", cancellationToken: cancellationToken).ConfigureAwait(false);
             await session.SendAsync("Runtime.addBinding", new { name = bindingName }, cancellationToken).ConfigureAwait(false);
-            var source = BuildClientSource() + ManagedCodexLifecycleObserver.Source;
+            var source = BuildClientSource();
             var registration = await session.SendAsync("Page.addScriptToEvaluateOnNewDocument", new { source }, cancellationToken).ConfigureAwait(false);
             registrationId = registration.TryGetProperty("identifier", out var identifier) ? identifier.GetString() : null;
             session.EventReceived += message => HandleEvent(target.Id, message);
@@ -187,8 +212,6 @@ internal sealed class LoaderHostBridge : IAsyncDisposable
 
             var command = root.GetProperty("command").GetString();
             if (command is not (
-                "codex_lifecycle_intent" or
-                "codex_lifecycle_observer_status" or
                 "get_app_status" or
                 "list_plugins" or
                 "set_plugin_enabled" or
@@ -354,7 +377,6 @@ internal sealed class LoaderHostBridge : IAsyncDisposable
         },
         dispose(reason = "Loader sidecar disconnected") {
           if (disposed) return;
-          this.stopLifecycleObserver?.();
           disposed = true;
           this.connected = false;
           for (const item of pending.values()) { clearTimeout(item.timer); item.reject(new Error(reason)); }

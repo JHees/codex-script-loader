@@ -17,6 +17,7 @@ internal static partial class Program
 
     private static async Task<int> Main(string[] args)
     {
+        if (args.Length == 3 && args[0] == "--renderer-recovery") return await RunRendererRecoveryAsync(int.Parse(args[1]), args[2]);
         if (args.Length == 3 && args[0] == "--msix-acceptance") return await RunMsixAcceptanceAsync(args[1], args[2]);
         var testRoot = Path.Combine(Path.GetTempPath(), $"codex-loader-tests-{Guid.NewGuid():N}");
         try
@@ -25,6 +26,8 @@ internal static partial class Program
             await TestGitHubPluginInstallAsync(testRoot);
             await TestHostCommandReloadAsync(testRoot);
             await TestBridgeRecoveryAsync();
+            await TestRendererRuntimeRecoveryAsync(testRoot);
+            await TestCommandWindowSelectionAsync();
             await TestRestartRegistrationAsync();
             await TestMonitorTimeoutRecoveryAsync(testRoot);
             await TestBundledSkillInstallAsync(testRoot);
@@ -205,7 +208,7 @@ internal static partial class Program
         var plan = await registry.BuildPlanAsync(force: true);
         Equal(1, plan.Scripts.Count, "Bundled script count");
         Equal("dev.codex-script-loader.example-ui", plan.Scripts[0].Id, "Bundled script id");
-        True(plan.Source.Contains("runtime.runtimeVersion = \"0.6.1\"", StringComparison.Ordinal), "Runtime version source");
+        True(plan.Source.Contains("runtime.runtimeVersion = \"0.6.2\"", StringComparison.Ordinal), "Runtime version source");
         True(plan.Source.Contains("__codexScriptLoaderExampleUi", StringComparison.Ordinal), "Lifecycle source");
         True(plan.Source.Contains("installSettingsHost", StringComparison.Ordinal), "Settings host source");
         True(plan.Source.Contains("sha256-" + plan.Scripts[0].Fingerprint, StringComparison.Ordinal), "Integrity source");

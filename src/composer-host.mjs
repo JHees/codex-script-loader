@@ -221,7 +221,7 @@ function createSubmissionReceipts() {
 function installComposerHost() {
   const runtime = globalThis.__codexScriptLoader;
   if (!runtime) return;
-  const revision = "composer-native-submission-13";
+  const revision = "composer-native-submission-14";
   if (runtime.composerHost?.revision === revision) return;
   runtime.composerHost?.stop();
   const registrations = new Map();
@@ -229,6 +229,18 @@ function installComposerHost() {
   let observer = null, timer = null;
   let listening = false;
   const fail = code => { throw Object.assign(new Error(code), { code }); };
+  function isCodexChatRenderer(value) {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "app:" || url.hostname !== "-" || url.port || url.username || url.password || url.hash ||
+        !["/index.html", "/detached-window.html"].includes(url.pathname)) return false;
+    if (!url.search) return true;
+    if ([...url.searchParams.keys()].length !== 1 || !url.searchParams.has("initialRoute")) return false;
+    const route = url.searchParams.get("initialRoute");
+    if (!route?.startsWith("/") || route.startsWith("//") || route.includes("\\")) return false;
+    return route.split(/[?#]/)[0] === (url.pathname === "/index.html" ? "/" : "/detached-window");
+  } catch { return false; }
+}
   const sameIdentity = (a, b) => !!a && !!b && a.taskId === b.taskId && a.hostId === b.hostId && a.draftId === b.draftId;
   const outgoing = event => { for (const record of registrations.values()) record.receipts.outgoing(event.detail, event.__codexForwardedViaBridge === true); };
   const incoming = event => {
@@ -244,7 +256,7 @@ function installComposerHost() {
     listening = false;
   }
   function locate() {
-    if (typeof document === "undefined" || globalThis.location?.href !== "app://-/index.html") return null;
+    if (typeof document === "undefined" || !isCodexChatRenderer(globalThis.location?.href)) return null;
     const editors = [...document.querySelectorAll('[data-codex-composer][contenteditable="true"]')].filter(e => e.isConnected && e.getClientRects().length > 0);
     if (editors.length !== 1) return null;
     const editor = editors[0], parent = editor.parentElement;
@@ -426,6 +438,7 @@ function installComposerHost() {
     observer.observe(document.documentElement, { childList: true, subtree: true });
   }
   runtime.composerHost = Object.freeze({
+    getContext: () => { const found = locate(); return found?.identity ? { ...found.identity } : null; },
     revision,
     register(pluginId, spec) {
       if (!spec || !/^[a-zA-Z0-9._-]{1,64}$/.test(spec.id) || typeof spec.render !== "function" || (spec.onChange !== undefined && typeof spec.onChange !== "function")) fail("INVALID_ACCESSORY");

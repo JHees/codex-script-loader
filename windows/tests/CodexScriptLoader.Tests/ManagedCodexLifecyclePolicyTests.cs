@@ -12,23 +12,26 @@ internal static partial class Program
         var older = new Version(26, 9, 30, 0);
         var upgraded = new Version(26, 10, 2, 0);
 
-        var intentTracker = new ManagedCodexLifecycleTracker();
-        intentTracker.ReportIntent("restart", LifecycleTestStart);
-        Equal(ManagedCodexLifecycleAction.Continue, intentTracker.Observe(LifecycleTestStart, true, 2, managed, managed).Action,
-            "An update request does not interrupt a connected renderer");
-        Equal(ManagedCodexLifecycleAction.ReportUpdate, intentTracker.Observe(LifecycleTestStart.AddSeconds(1), false, 2, managed, managed).Action,
-            "Explicit update intent starts recovery before Store registration changes");
-        intentTracker.Reset();
-        intentTracker.ReportIntent("restart", LifecycleTestStart);
-        intentTracker.ReportIntent("cancel-restart", LifecycleTestStart);
-        Equal(ManagedCodexLifecycleAction.Continue, intentTracker.Observe(LifecycleTestStart, false, 0, managed, managed).Action,
-            "A rejected update request clears restart intent");
-        Equal(ManagedCodexLifecycleAction.Exit, intentTracker.Observe(LifecycleTestStart.AddSeconds(2), false, 0, managed, managed).Action,
-            "Ordinary exit still follows a rejected update");
-        intentTracker.Reset();
-        intentTracker.ReportIntent("restart", LifecycleTestStart);
-        Equal(ManagedCodexLifecycleAction.Continue, intentTracker.Observe(LifecycleTestStart.AddMinutes(4), false, 0, managed, managed).Action,
-            "An old update request expires before a later ordinary close");
+        var identity = new CodexScriptLoader.Interop.CodexPackageIdentity("Fixture_1.0.0.0_x64__pub", "Fixture_pub", "App", "Fixture_pub!App", "x64", new Version(1, 0, 0, 0));
+        bool Match(string operation, string name, string user) => PackageDeploymentEvidence.IsNewRegistration(operation, name, user, "current", identity);
+        True(Match("6", "Fixture_2.0.0.0_x64__pub", "current"), "Newer registration for this user and package matches");
+        True(!Match("4", "Fixture_2.0.0.0_x64__pub", "current") && !Match("6", "Fixture_2.0.0.0_x64__pub", "other"), "Staging and another user's deployment do not match");
+        True(!Match("6", "Fixture_2.0.0.0_x64__other", "current") && !Match("6", "Fixture_1.0.0.0_x64__pub", "current"), "Unrelated family or unchanged version cannot delay an ordinary close");
+
+        var deployment = new ManagedCodexLifecycleTracker();
+        var queries = 0;
+        bool Pending(DateTimeOffset _) { queries++; return true; }
+        ManagedCodexLifecycleAction Sample(int seconds, Version registered) =>
+            deployment.Observe(LifecycleTestStart.AddSeconds(seconds), false, 0, managed, registered, true, Pending).Action;
+        Equal(ManagedCodexLifecycleAction.Continue, Sample(0, managed), "Ordinary close grace begins");
+        Equal(0, queries, "No deployment log access before an exit decision");
+        Equal(ManagedCodexLifecycleAction.Continue, Sample(3, managed), "In-flight newer registration delays exit without a renderer signal");
+        Equal(ManagedCodexLifecycleAction.Continue, Sample(40, managed), "Survive the observed 40-second empty-process interval");
+        Equal(1, queries, "One deployment lookup per close decision window");
+        Equal(ManagedCodexLifecycleAction.ReportUpdate, Sample(43, upgraded), "New version enters normal reconnect path");
+        deployment.Reset();
+        Sample(0, managed); Sample(3, managed);
+        Equal(ManagedCodexLifecycleAction.Exit, Sample(184, managed), "Aborted deployment cannot keep Loader alive indefinitely");
 
         // A renderer target can disappear while Codex is still alive (hidden
         // window, renderer reload, update staging). Only package processes and

@@ -6,7 +6,7 @@
 
 **Open Codex for user scripts, with automatic injection, reload, and cleanup.**
 
-[![Version](https://img.shields.io/badge/version-0.6.1-f97316)](https://github.com/JHees/codex-script-loader)
+[![Version](https://img.shields.io/badge/version-0.6.2-f97316)](https://github.com/JHees/codex-script-loader)
 [![Windows](https://img.shields.io/badge/Windows-11-0078d4?logo=windows11)](#requirements)
 [![macOS](https://img.shields.io/badge/macOS-untested-999999?logo=apple)](#platform-support)
 [![.NET](https://img.shields.io/badge/.NET-10-512bd4?logo=dotnet)](global.json)
@@ -58,7 +58,7 @@ Version 0.5.2 isolates update errors inside the update card and uses the Windows
 
 Version 0.5.3 adds opt-in, per-plugin GitHub Release updates. Update-aware third-party plugins are scanned independently, downloaded through the same restricted transport, verified against a required `.sha256` asset, replaced transactionally, and reloaded in place. The Loader-owned example plugin remains bundled and is not part of the third-party update flow.
 
-Version 0.6.1 restores composer accessories on newer Codex builds, verifies update restart arguments, and adds a static desktop compatibility watch. See [release notes](docs/RELEASE-0.6.1.md).
+Version 0.6.2 restores missing plugin runtimes, supports validated detached chat windows, and removes UI hooks from official updates. See [release notes](docs/RELEASE-0.6.2.md).
 
 Version 0.5.10 added **Install from GitHub**, verified same-ID package replacement,
 single-package optional agent Skills, and an allowlisted native command client
@@ -84,12 +84,12 @@ build/
 ├── app/active.json
 ├── app/previous.json
 ├── app/update-manifest.json
-├── app/versions/0.6.1/win-x64/               # complete Loader host
-├── CodexScriptLoader-0.6.1-windows-x64-setup.exe
-├── CodexScriptLoader-0.6.1-windows-x64-setup.exe.sha256
-├── CodexScriptLoader-0.6.1-windows-x64.zip
-├── CodexScriptLoader-0.6.1-windows-x64.zip.sha256
-└── CodexScriptLoader-0.6.1-x64.spdx.json
+├── app/versions/0.6.2/win-x64/               # complete Loader host
+├── CodexScriptLoader-0.6.2-windows-x64-setup.exe
+├── CodexScriptLoader-0.6.2-windows-x64-setup.exe.sha256
+├── CodexScriptLoader-0.6.2-windows-x64.zip
+├── CodexScriptLoader-0.6.2-windows-x64.zip.sha256
+└── CodexScriptLoader-0.6.2-x64.spdx.json
 ```
 
 The setup executable at the top of `build` is the normal local installation entry. The `build\app` directory is packaging payload, not the recommended launch path. The installer keeps scripts and settings under `%LOCALAPPDATA%\CodexScriptLoader` when upgrading or uninstalling.
@@ -111,7 +111,7 @@ The macOS runtime discovers `Codex.app`, starts it with a random loopback CDP po
 3. It activates Codex with a random loopback CDP port.
 4. It verifies the listener PID, package family, and exact renderer URL before injection.
 5. Enabled renderer plugins start through the same manifest and lifecycle contract.
-6. Codex keeps its original automatic updater and notifications. After validating the managed connection and process ownership, Loader briefly installs a targeted native window hook to register the loopback arguments, verifies them by reading them back, and removes the hook. Existing arguments and restart flags are preserved. The current renderer update action verifies registration again before calling the original updater; failure is reported instead of silently proceeding. Windows still performs the first launch after installation. Loader only adopts the inherited port: it does not download/install Codex or close/restart the updated app. Registration and renderer-hook failures are reported in diagnostics and logs; delayed reconnection keeps waiting without launching another instance.
+6. Loader registers and reads back the managed restart arguments at startup, then removes the native window hook. Codex handles its own update controls, notifications, and installation. Before classifying an empty process list as an ordinary exit, Loader checks Windows deployment events for an in-flight newer registration for the same user and package family. A match extends the close grace by up to three minutes; version detection and verified loopback ownership still govern reconnection.
 7. After an ordinary managed Codex close, the Loader releases its connections and exits automatically.
 
 Start the Loader executable a second time to open diagnostics. To reload installed scripts without focusing or refreshing Codex, run the same compatible executable as a second instance:

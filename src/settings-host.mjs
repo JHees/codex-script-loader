@@ -1,4 +1,4 @@
-const SETTINGS_HOST_VERSION = "0.6.1";
+const SETTINGS_HOST_VERSION = "0.6.2";
 
 /*
  * Renderer-only settings host inspired by b-nnett/codex-plusplus.
@@ -11,7 +11,7 @@ function installSettingsHost(version) {
   // Using the approved mark as a mask keeps the sidebar icon aligned with
   // Codex's currentColor-based system settings icons in light and dark themes.
   const loaderBrandMask = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAYAAACNiR0NAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAEYSURBVDhP7dK9K4ZhFMfxj1LkJQMp5CULEjYZFH+ASZn8DwaDyWSRySSLyWgQk1UGYhIZDLIgWQwmyUtXnXJ39eh5PKN8l7vfOdc517nu3+GvUIs21OeJakmNrnCD1jxZLUd4w2ye+C018d3GA2ayfMX04hIDoQ9whjE0ZWfL0oNn7IZewCO6sYFrNGQ1P9KBJ+yEnsI7JkM34xgXaCnUlSS5eYu9Qmwd94WGibRGpzgp/OOSpGe8YLMQm48Ji7HEFu7KNUyM4BUroeuwhg8MRyxd8hkGVcR4FCyFTk9M06xiKHJzWU1ZkhmpcCImSUYt4jAaV8VgOLmPczSiMz/0G7owGnu3jOnYxapJ0/ShHf1hWNrTf775Amv8Ll/zMvAfAAAAAElFTkSuQmCC";
-  const implementationRevision = "settings-footer-14";
+  const implementationRevision = "settings-footer-15";
   const current = runtime.settingsHost;
   if (current?.version === version && current?.implementationRevision === implementationRevision) {
     current.start();
@@ -1954,12 +1954,37 @@ function installSettingsHost(version) {
     }, 80);
   }
 
+  async function openNativeSettings() {
+    const buses = new Set();
+    for (const script of document.querySelectorAll('script[type="module"][src]')) {
+      const url = new URL(script.src, document.baseURI);
+      if (url.protocol !== "app:" || url.host !== "-") continue;
+      const runtime = (await import(url.href)).__webpack_require__;
+      if (!runtime?.c) continue;
+      for (const entry of Object.values(runtime.c)) {
+        for (const key of Object.keys(entry.exports ?? {})) {
+          try {
+            const value = entry.exports[key];
+            if (!value || typeof value !== "object") continue;
+            const handlers = Object.getOwnPropertyDescriptor(value, "handlers")?.value;
+            if (!(handlers instanceof Map) || !handlers.has("navigate-to-route")) continue;
+            if (typeof Object.getOwnPropertyDescriptor(Object.getPrototypeOf(value), "dispatchHostMessage")?.value === "function") buses.add(value);
+          } catch {}
+        }
+      }
+    }
+    if (buses.size > 1) throw Object.assign(new Error("SETTINGS_NAVIGATION_AMBIGUOUS"), {code:"SETTINGS_NAVIGATION_AMBIGUOUS"});
+    if (buses.size !== 1) return false;
+    [...buses][0].dispatchHostMessage({type:"navigate-to-route", path:"/settings"});
+    return true;
+  }
+
   // A registered page handle can navigate only to itself, never to an arbitrary route.
   function openRegisteredPage(entry) {
     const failure = code => Object.assign(new Error(code), { code });
     if (stopped || pages.get(entry.id) !== entry) return Promise.reject(failure("SETTINGS_PAGE_UNREGISTERED"));
     if (openingPage) return openingPage.entry === entry ? openingPage.promise : Promise.reject(failure("SETTINGS_NAVIGATION_BUSY"));
-    let timer = 0, settled = false, clickedSettings = false, openedProfile = false;
+    let timer = 0, settled = false, requestedSettings = false;
     let resolve, reject;
     const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
     const finish = code => {
@@ -1970,31 +1995,16 @@ function installSettingsHost(version) {
     };
     openingPage = { entry, promise, cancel: () => finish("SETTINGS_PAGE_UNREGISTERED") };
     const deadline = Date.now() + 5000;
-    const unique = selector => {
-      const nodes = [...document.querySelectorAll(selector)].filter(node => visibleBox(node) && !node.closest("[data-codex-loader-settings]"));
-      if (nodes.length > 1) throw failure("SETTINGS_NAVIGATION_AMBIGUOUS");
-      return nodes[0];
-    };
-    const tick = () => {
+    const tick = async () => {
       try {
         if (stopped || pages.get(entry.id) !== entry) { finish("SETTINGS_PAGE_UNREGISTERED"); return; }
         if (findSidebar()) {
           sync(); activate(entry.id);
           if (activeId === entry.id && panelHost?.isConnected) { finish(); return; }
-        } else if (!clickedSettings) {
-          const items = [...document.querySelectorAll('[role="menuitem"],button[aria-label="Settings"],button[aria-label="设置"]')]
-            .filter(node => visibleBox(node) && !node.closest("[data-codex-loader-settings]") && /^(settings|设置)(?:\s*(?:ctrl\s*\+\s*,|⌘\s*,))?$/i.test(compact(node.getAttribute("aria-label") || node.textContent)));
-          if (items.length > 1) throw failure("SETTINGS_NAVIGATION_AMBIGUOUS");
-          if (items.length === 1) { clickedSettings = true; items[0].click(); }
-          else if (!openedProfile) {
-            const profile = unique('button[aria-haspopup="menu"][aria-label="打开个人资料菜单"],button[aria-haspopup="menu"][aria-label="Open profile menu"]');
-            if (!profile || typeof PointerEvent !== "function") { finish("SETTINGS_NAVIGATION_UNAVAILABLE"); return; }
-            openedProfile = true;
-            if (profile.getAttribute("aria-expanded") !== "true") {
-              profile.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, button: 0, pointerType: "mouse" }));
-              profile.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, button: 0, pointerType: "mouse" }));
-            }
-          }
+        } else if (!requestedSettings) {
+          requestedSettings = true;
+          if (!await openNativeSettings()) { finish("SETTINGS_NAVIGATION_UNAVAILABLE"); return; }
+          if (settled) return;
         }
         if (Date.now() >= deadline) { finish("SETTINGS_NAVIGATION_TIMEOUT"); return; }
         timer = setTimeout(tick, 80);
