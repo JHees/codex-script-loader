@@ -1,6 +1,8 @@
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.RegularExpressions;
+using System.Xml.Linq;
 
 namespace CodexScriptLoader.Interop;
 
@@ -176,6 +178,37 @@ public static partial class PackageDiscovery
         }
     }
 
+    internal static string? FindApplicationExecutable(string packageFullName, string applicationId)
+    {
+        uint length = 0;
+        if (GetPackagePathByFullName(packageFullName, ref length, null) != ErrorInsufficientBuffer) return null;
+        var root = new StringBuilder(checked((int)length));
+        if (GetPackagePathByFullName(packageFullName, ref length, root) != 0) return null;
+        try
+        {
+            return ReadApplicationExecutable(root.ToString(), applicationId);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Xml.XmlException)
+        {
+            // The Store can retire the old registration while its processes are exiting.
+            return null;
+        }
+    }
+
+    internal static string? ReadApplicationExecutable(string packageRoot, string applicationId)
+    {
+        var manifest = XElement.Load(Path.Combine(packageRoot, "AppxManifest.xml"));
+        var ns = manifest.Name.Namespace;
+        var entries = manifest.Element(ns + "Applications")?.Elements(ns + "Application")
+            .Where(app => (string?)app.Attribute("Id") == applicationId).ToArray();
+        if (entries is not { Length: 1 }) return null;
+        var relative = (string?)entries[0].Attribute("Executable");
+        if (string.IsNullOrWhiteSpace(relative) || Path.IsPathRooted(relative)) return null;
+        var path = Path.GetFullPath(relative, packageRoot);
+        var prefix = Path.TrimEndingDirectorySeparator(packageRoot) + Path.DirectorySeparatorChar;
+        return path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ? path : null;
+    }
+
     private static int ArchitectureRank(string architecture) => architecture.ToLowerInvariant() switch
     {
         "x64" when RuntimeInformation.ProcessArchitecture == Architecture.X64 => 0,
@@ -186,6 +219,9 @@ public static partial class PackageDiscovery
 
     [GeneratedRegex(@"_(\d+\.\d+\.\d+\.\d+)_(x64|arm64|x86|neutral)_", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex PackageVersionRegex();
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetPackagePathByFullName(string packageFullName, ref uint pathLength, StringBuilder? path);
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetPackagesByPackageFamily(

@@ -153,7 +153,7 @@ internal sealed class LoaderApplicationContext : ApplicationContext
         try
         {
             logger.Info("codex-update-recovery-started");
-            await supervisor.RecoverAfterUpdateAsync(CancellationToken.None);
+            if (!await supervisor.RecoverAfterUpdateAsync(CancellationToken.None)) return;
             logger.Info("codex-update-recovery-succeeded", new
             {
                 package = supervisor.Snapshot.PackageFullName,

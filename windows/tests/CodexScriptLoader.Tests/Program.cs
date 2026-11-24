@@ -29,6 +29,7 @@ internal static partial class Program
             await TestRendererRuntimeRecoveryAsync(testRoot);
             await TestCommandWindowSelectionAsync();
             await TestRestartRegistrationAsync();
+            await TestUnmanagedWindowCloseAsync();
             await TestMonitorTimeoutRecoveryAsync(testRoot);
             await TestBundledSkillInstallAsync(testRoot);
             await TestComposerInterfaceAsync(testRoot);
@@ -56,6 +57,7 @@ internal static partial class Program
             TestPackageProcessTerminationBoundary();
             TestCodexPackageUpgradeClassification();
             TestManagedCodexLifecyclePolicy();
+            TestManagedCodexUpdateRecoveryPolicy(testRoot);
             TestCodexPrimaryApplicationSelection();
             TestLogRedaction(testRoot);
             await TestAtomicUpdateStateAsync(testRoot);
@@ -208,7 +210,7 @@ internal static partial class Program
         var plan = await registry.BuildPlanAsync(force: true);
         Equal(1, plan.Scripts.Count, "Bundled script count");
         Equal("dev.codex-script-loader.example-ui", plan.Scripts[0].Id, "Bundled script id");
-        True(plan.Source.Contains("runtime.runtimeVersion = \"0.6.3\"", StringComparison.Ordinal), "Runtime version source");
+        True(plan.Source.Contains("runtime.runtimeVersion = \"0.6.4\"", StringComparison.Ordinal), "Runtime version source");
         True(plan.Source.Contains("__codexScriptLoaderExampleUi", StringComparison.Ordinal), "Lifecycle source");
         True(plan.Source.Contains("installSettingsHost", StringComparison.Ordinal), "Settings host source");
         True(plan.Source.Contains("sha256-" + plan.Scripts[0].Fingerprint, StringComparison.Ordinal), "Integrity source");

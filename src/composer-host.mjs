@@ -60,7 +60,7 @@ function createSubmissionContext(adapter, pluginId) {
       observed = JSON.stringify([block]);
       presentation = adapter.fold(block, adapter.restoredSummary ?? "Saved plugin instructions", removed, disclosure) ?? null;
     },
-    prepare(input) {
+    prepare(input, reuseMatching = false) {
       if (stopped) fail("COMPOSER_STOPPED");
       const fields = input?.draftId !== undefined ? ["draftId", "revision", "text"] : ["taskId", "hostId", "revision", "text"];
       if (input?.summary !== undefined) fields.push("summary");
@@ -76,8 +76,13 @@ function createSubmissionContext(adapter, pluginId) {
         if (current.revision === input.revision) return status();
       }
       const next = { ...input, block: `[Loader context: ${pluginId} / ${input.revision}]\n${input.text}\n[/Loader context]` };
-      if (!current && adapter.hasPrefix(`[Loader context: ${pluginId} / `)) fail("CONTEXT_EXISTS");
+      const prefix = `[Loader context: ${pluginId} / `;
       if (current) adapter.replace(current.block, next.block);
+      else if (adapter.hasPrefix(prefix)) {
+        if (!reuseMatching) fail("CONTEXT_EXISTS");
+        const saved = adapter.paragraphs().filter(text => text.startsWith(prefix));
+        if (saved.length !== 1 || saved[0] !== next.block) fail("CONTEXT_EDITED");
+      }
       else adapter.insert(next.block);
       current = next;
       restored = null; observed = JSON.stringify([next.block]);
@@ -221,7 +226,7 @@ function createSubmissionReceipts() {
 function installComposerHost() {
   const runtime = globalThis.__codexScriptLoader;
   if (!runtime) return;
-  const revision = "composer-native-submission-15";
+  const revision = "composer-native-submission-16";
   if (runtime.composerHost?.revision === revision) return;
   runtime.composerHost?.stop();
   const registrations = new Map();
@@ -497,7 +502,7 @@ function installComposerHost() {
             return result;
           } catch (error) { record.context.clear(); throw error; }
         },
-        prepareContext: input => { if (record.closed) fail("COMPOSER_STOPPED"); if (!snapshot(record).available) fail("COMPOSER_UNAVAILABLE"); return record.context.prepare(input); },
+        prepareContext: (input, options) => { if (record.closed) fail("COMPOSER_STOPPED"); if (!snapshot(record).available) fail("COMPOSER_UNAVAILABLE"); return record.context.prepare(input, options?.reuseMatching === true); },
         clearContext: () => {
           if (record.closed) return;
           if (!snapshot(record).available) fail("COMPOSER_UNAVAILABLE");

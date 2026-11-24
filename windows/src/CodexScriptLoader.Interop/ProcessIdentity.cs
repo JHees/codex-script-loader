@@ -9,6 +9,22 @@ public sealed record PackageProcessTerminationResult(
     IReadOnlyList<int> TerminatedProcessIds,
     IReadOnlyDictionary<int, int> FailureCodes);
 
+public sealed class PackageApplicationProcesses
+{
+    private readonly List<int> applicationIds = [];
+    public IReadOnlyList<int> ProcessIds => applicationIds;
+    public int FamilyCount { get; private set; }
+    public int UnresolvedCount { get; private set; }
+    public int BlockingCount => applicationIds.Count + UnresolvedCount;
+
+    internal void Observe(int processId, string? processImage, string? applicationImage)
+    {
+        FamilyCount++;
+        if (processImage is null || applicationImage is null) UnresolvedCount++;
+        else if (string.Equals(processImage, applicationImage, StringComparison.OrdinalIgnoreCase)) applicationIds.Add(processId);
+    }
+}
+
 public static class ProcessIdentity
 {
     private const uint ProcessTerminate = 0x0001;
@@ -111,6 +127,41 @@ public static class ProcessIdentity
 
     public static IReadOnlyList<int> FindProcessesByPackageFamily(string packageFamilyName)
     {
+        var results = new List<int>();
+        VisitPackageProcesses(packageFamilyName, (id, _) => results.Add(id));
+        return results;
+    }
+
+    public static PackageApplicationProcesses FindApplicationProcesses(CodexPackageIdentity application)
+    {
+        var snapshot = new PackageApplicationProcesses();
+        var declaredImages = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        var packageName = new StringBuilder(256);
+        var imageName = new StringBuilder(32768);
+        VisitPackageProcesses(application.PackageFamilyName, (id, handle) =>
+        {
+            uint nameLength = (uint)packageName.Capacity;
+            uint imageLength = (uint)imageName.Capacity;
+            if (GetPackageFullName(handle, ref nameLength, packageName) != 0 ||
+                !QueryFullProcessImageNameW(handle, 0, imageName, ref imageLength))
+            {
+                snapshot.Observe(id, null, null);
+                return;
+            }
+            // Resolve the manifest for this process's version. Old and new packages may overlap.
+            var fullName = packageName.ToString();
+            if (!declaredImages.TryGetValue(fullName, out var executable))
+            {
+                executable = PackageDiscovery.FindApplicationExecutable(fullName, application.ApplicationId);
+                declaredImages.Add(fullName, executable);
+            }
+            snapshot.Observe(id, imageName.ToString(), executable);
+        });
+        return snapshot;
+    }
+
+    private static void VisitPackageProcesses(string packageFamilyName, Action<int, IntPtr> visit)
+    {
         ArgumentException.ThrowIfNullOrWhiteSpace(packageFamilyName);
         var snapshot = CreateToolhelp32Snapshot(Th32csSnapProcess, 0);
         if (snapshot == InvalidHandleValue)
@@ -121,25 +172,28 @@ public static class ProcessIdentity
         try
         {
             var entry = new ProcessEntry32 { Size = checked((uint)Marshal.SizeOf<ProcessEntry32>()) };
-            var results = new List<int>();
             if (!Process32First(snapshot, ref entry))
             {
-                return results;
+                return;
             }
 
             do
             {
                 var processId = checked((int)entry.ProcessId);
-                if (string.Equals(TryGetPackageFamilyName(processId), packageFamilyName, StringComparison.OrdinalIgnoreCase))
+                var process = OpenProcess(ProcessQueryLimitedInformation, false, entry.ProcessId);
+                if (process != IntPtr.Zero)
                 {
-                    results.Add(processId);
+                    try
+                    {
+                        if (string.Equals(TryGetPackageFamilyName(process), packageFamilyName, StringComparison.OrdinalIgnoreCase))
+                            visit(processId, process);
+                    }
+                    finally { CloseHandle(process); }
                 }
 
                 entry.Size = checked((uint)Marshal.SizeOf<ProcessEntry32>());
             }
             while (Process32Next(snapshot, ref entry));
-
-            return results;
         }
         finally
         {
@@ -172,6 +226,12 @@ public static class ProcessIdentity
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetPackageFamilyName(IntPtr process, ref uint packageFamilyNameLength, StringBuilder? packageFamilyName);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetPackageFullName(IntPtr process, ref uint packageFullNameLength, StringBuilder packageFullName);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+    private static extern bool QueryFullProcessImageNameW(IntPtr process, uint flags, StringBuilder imageName, ref uint length);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint processId);

@@ -218,6 +218,50 @@ internal static partial class Program
             "The Loader exits after the short close grace that follows re-registration");
     }
 
+    private static void TestManagedCodexUpdateRecoveryPolicy(string testRoot)
+    {
+        var wait = ManagedCodexUpdateRecoveryPolicy.InheritedEndpointWait;
+        True(!ManagedCodexUpdateRecoveryPolicy.ShouldTakeOver(wait - TimeSpan.FromSeconds(1), 3, false),
+            "Update recovery waits for the inherited endpoint");
+        True(!ManagedCodexUpdateRecoveryPolicy.ShouldTakeOver(wait, 0, false),
+            "Update recovery never takes over without a running Codex");
+        True(!ManagedCodexUpdateRecoveryPolicy.ShouldTakeOver(wait, 3, true),
+            "The update takeover is attempted at most once");
+        True(ManagedCodexUpdateRecoveryPolicy.ShouldTakeOver(wait, 3, false),
+            "An unmanaged Codex without the inherited endpoint is taken over after the bounded wait");
+        True(!ManagedCodexUpdateRecoveryPolicy.ShouldRelaunch(wait, 0, false, false),
+            "An ordinary close cannot trigger an update relaunch");
+        True(!ManagedCodexUpdateRecoveryPolicy.ShouldRelaunch(wait, 2, true, true),
+            "A still-running app blocks the managed relaunch");
+        True(ManagedCodexUpdateRecoveryPolicy.ShouldRelaunch(wait, 0, true, false),
+            "A closed app is relaunched after the takeover request");
+
+        var root = Directory.CreateDirectory(Path.Combine(testRoot, "application-images")).FullName;
+        File.WriteAllText(Path.Combine(root, "AppxManifest.xml"), """
+            <Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"><Applications>
+              <Application Id="CommandRunner" Executable="tools/Desktop.exe" />
+              <Application Id="App" Executable="app/Desktop.exe" />
+            </Applications></Package>
+            """);
+        var declared = CodexScriptLoader.Interop.PackageDiscovery.ReadApplicationExecutable(root, "App");
+        Equal(Path.Combine(root, "app", "Desktop.exe"), declared, "The primary application is located by its manifest ID");
+        var processes = new CodexScriptLoader.Interop.PackageApplicationProcesses();
+        processes.Observe(41, Path.Combine(root, "tools", "Desktop.exe"), declared);
+        Equal(1, processes.FamilyCount, "The helper still belongs to the package");
+        Equal(0, processes.BlockingCount, "A helper with the same basename does not block managed startup");
+        True(!ManagedCodexUpdateRecoveryPolicy.ShouldRelaunch(TimeSpan.Zero, processes.BlockingCount, false, true),
+            "The Store gets time to relaunch its updated desktop");
+        True(ManagedCodexUpdateRecoveryPolicy.ShouldRelaunch(wait, processes.BlockingCount, false, true),
+            "A confirmed update with just a surviving helper can relaunch without closing any windows");
+        processes.Observe(42, declared, declared);
+        processes.Observe(43, null, declared);
+        processes.Observe(44, declared, null);
+        True(processes.ProcessIds.SequenceEqual([42]), "Only the confirmed desktop image is eligible for a normal close");
+        Equal(3, processes.BlockingCount, "Unresolved identities and a windowless desktop block a second launch");
+        True(!ManagedCodexUpdateRecoveryPolicy.ShouldTakeOver(wait + TimeSpan.FromHours(1), processes.BlockingCount, true),
+            "Waiting for a tray-resident desktop never starts a second close attempt");
+    }
+
     private static ManagedCodexLifecycleDecision EvaluateLifecycle(
         DateTimeOffset now,
         bool targetPresent,

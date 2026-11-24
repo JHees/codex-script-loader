@@ -53,6 +53,27 @@ internal static partial class Program
         True(!RestartRegistration.Matches("\"--remote-debugging-port=53171 extra\"", port), "Quoted lookalike arguments do not pass verification");
     }
 
+    private static async Task TestUnmanagedWindowCloseAsync()
+    {
+        Equal(0, ProcessWindowCloser.RequestClose(Array.Empty<int>()), "No window close is requested without target processes");
+        var start = new ProcessStartInfo(Path.Combine(AppContext.BaseDirectory, "NativeRestartFixture.exe"))
+        { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true };
+        start.ArgumentList.Add("--close-fixture");
+        using var fixture = Process.Start(start)!;
+        try
+        {
+            _ = await fixture.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(10));
+            True(!fixture.HasExited, "The fixture window process is running before the close request");
+            True(ProcessWindowCloser.RequestClose([fixture.Id]) >= 1, "A normal window close is requested for the fixture window");
+            await fixture.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+            Equal(0, fixture.ExitCode, "The fixture exits through its normal window close path");
+        }
+        finally
+        {
+            if (!fixture.HasExited) fixture.Kill(entireProcessTree: true);
+        }
+    }
+
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern bool PostMessageW(IntPtr window, uint message, UIntPtr wp, IntPtr lp);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]

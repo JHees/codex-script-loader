@@ -8,6 +8,7 @@ function fixture() {
   let edits = 0;
   const adapter = {
     identity: () => identity,
+    paragraphs: () => paragraphs,
     count: text => paragraphs.filter(p => p === text).length,
     hasPrefix: prefix => paragraphs.some(p => p.startsWith(prefix)),
     insert: text => { paragraphs.push(text); edits++; },
@@ -18,6 +19,19 @@ function fixture() {
     get edits() { return edits; }, navigate: value => { identity = value; } };
 }
 const request = { taskId: "task-a", hostId: "local", revision: "r1", text: "Use the installed example workflow." };
+
+test("explicit re-preparation reuses only one identical block without editing the draft", () => {
+  const block = `[Loader context: example.workflow / r1]\n${request.text}\n[/Loader context]`;
+  for (const saved of [[block], [block, block], [block.replace(request.text, "My edits")]]) {
+    const f = fixture();
+    f.paragraphs.push(...saved);
+    const before = [...f.paragraphs];
+    if (saved.length === 1 && saved[0] === block) assert.equal(f.context.prepare(request, true).state, "prepared");
+    else assert.throws(() => f.context.prepare(request, true), {code: "CONTEXT_EDITED"});
+    assert.equal(f.edits, 0);
+    assert.deepEqual(f.paragraphs, before);
+  }
+});
 
 test("optional summary is presentation metadata, never an extra submitted instruction", () => {
   const f = fixture();

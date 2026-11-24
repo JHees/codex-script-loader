@@ -299,8 +299,11 @@ through the transaction. Context is limited to 8 KiB UTF-8, with a 1–128 chara
 opaque revision. Repeating an unchanged active revision is idempotent; changing
 its text returns `CONTEXT_CONFLICT`. Updating to another revision replaces only
 the exact owned paragraph. Input-method composition returns `COMPOSER_COMPOSING`.
-An existing paragraph with the same plugin's context marker is not adopted by a
-new registration: preparation returns `CONTEXT_EXISTS` without editing it.
+A new registration normally receives `CONTEXT_EXISTS` if the draft contains its
+plugin marker. With Loader 0.6.4, `prepareContext(input, { reuseMatching: true })`
+can reuse one paragraph in the same mounted task when the plugin ID, revision and
+full text match. Reuse leaves the draft text in place. An edited or duplicate
+block returns `CONTEXT_EDITED`. This option applies only to plain context preparation.
 
 The status `prepared` means the paragraph is in the draft, **not** that a message
 was submitted or accepted. When it disappears, status becomes `missing-or-edited`;

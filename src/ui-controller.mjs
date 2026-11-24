@@ -105,7 +105,7 @@ export class UiController {
 
   getUpdateStatus() {
     return {
-      currentVersion: "0.6.3",
+      currentVersion: "0.6.4",
       availableVersion: null,
       state: "idle",
       lastCheckedAt: null,
