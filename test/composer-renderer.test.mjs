@@ -56,6 +56,17 @@ function windowsComposerSource() {
   return `(() => {${module.slice(start,end)}\ninstallComposerHost();})()`;
 }
 
+test("background task ownership does not grant a visible composer", () => {
+  const f = fixture(windowsComposerSource());
+  f.view.dom.getClientRects = () => [];
+  assert.equal(f.host.getContext(), null);
+  assert.equal(f.host.hasMountedTask("local", "task-a"), true);
+  assert.equal(f.host.hasMountedTask("other", "task-a"), false);
+  assert.equal(f.host.hasMountedTask("local", "task-b"), false);
+  f.view.dom.isConnected = false;
+  assert.equal(f.host.hasMountedTask("local", "task-a"), false);
+});
+
 test("the installed Windows extraction contract includes optional presentation helpers", () => {
   const f=fixture(windowsComposerSource());
   const handle=f.host.register("example.context",{id:"control",render(){}});

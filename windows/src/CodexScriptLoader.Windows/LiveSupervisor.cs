@@ -17,7 +17,7 @@ internal enum ManagedCodexExitReason
 
 internal sealed class LiveSupervisor : IAsyncDisposable
 {
-    public const string Version = "0.6.2";
+    public const string Version = "0.6.3";
     private const string TrustedInputPermission = "trusted-input";
     private static readonly TimeSpan GracefulRestartShutdownTimeout = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan ForcedRestartShutdownTimeout = TimeSpan.FromSeconds(10);
@@ -106,7 +106,8 @@ internal sealed class LiveSupervisor : IAsyncDisposable
                 }
 
                 var targets = await activeClient.GetCodexTargetsAsync(cancellationToken).ConfigureAwait(false);
-                var target = await SelectCommandTargetAsync(targets, request.Payload, cancellationToken).ConfigureAwait(false);
+                var target = await SelectCommandTargetAsync(targets, request.Payload,
+                    !descriptor.Permissions.Contains(TrustedInputPermission, StringComparer.Ordinal), cancellationToken).ConfigureAwait(false);
                 expression = BuildHostCommandExpression(request.PluginId, request.Operation, request.Payload);
                 commandSession = await CdpSession.ConnectAsync(new Uri(target.WebSocketDebuggerUrl), cancellationToken).ConfigureAwait(false);
                 activeHostCommand = lease;
@@ -225,33 +226,38 @@ internal sealed class LiveSupervisor : IAsyncDisposable
         return clone;
     }
 
-    private static async Task<CdpTarget> SelectCommandTargetAsync(IReadOnlyList<CdpTarget> targets, JsonElement payload, CancellationToken token)
+    private static async Task<CdpTarget> SelectCommandTargetAsync(IReadOnlyList<CdpTarget> targets, JsonElement payload, bool allowBackgroundTask, CancellationToken token)
     {
-        if (targets.Count == 1) return targets[0];
         if (!payload.TryGetProperty("task", out var task) || task.ValueKind != JsonValueKind.Object ||
             !task.TryGetProperty("hostId", out var host) || host.ValueKind != JsonValueKind.String ||
             !task.TryGetProperty("taskId", out var id) || id.ValueKind != JsonValueKind.String)
         {
+            if (targets.Count == 1) return targets[0];
             var main = targets.Where(target => target.Url == "app://-/index.html").ToArray();
             if (main.Length == 1) return main[0];
             throw new HostCommandException("RENDERER_UNAVAILABLE", "No unique primary renderer is available.");
         }
         var candidates = new List<(CdpTarget Target, bool Visible, bool Focused)>();
+        var background = new List<CdpTarget>();
         foreach (var target in targets)
         {
             await using var session = await CdpSession.ConnectAsync(new Uri(target.WebSocketDebuggerUrl), token).ConfigureAwait(false);
-            var query = "(() => {const c=globalThis.__codexScriptLoader?.composerHost?.getContext?.();return {matches:c?.hostId===" +
-                host.GetRawText() + "&&c?.taskId===" + id.GetRawText() + ",visible:document.visibilityState==='visible',focused:document.hasFocus()}})()";
+            var query = "(() => {const h=globalThis.__codexScriptLoader?.composerHost,c=h?.getContext?.(),host=" +
+                host.GetRawText() + ",id=" + id.GetRawText() + ";return {matches:c?.hostId===host&&c?.taskId===id," +
+                "mounted:h?.hasMountedTask?.(host,id)===true,visible:document.visibilityState==='visible',focused:document.hasFocus()}})()";
             var reply = await session.SendAsync("Runtime.evaluate", new { expression = query, returnByValue = true }, token).ConfigureAwait(false);
             if (!reply.TryGetProperty("result", out var result) || !result.TryGetProperty("value", out var value)) continue;
             if (value.GetProperty("matches").GetBoolean())
                 candidates.Add((target, value.GetProperty("visible").GetBoolean(), value.GetProperty("focused").GetBoolean()));
+            else if (allowBackgroundTask && value.TryGetProperty("mounted", out var mounted) && mounted.ValueKind == JsonValueKind.True)
+                background.Add(target);
         }
         var focused = candidates.Where(candidate => candidate.Visible && candidate.Focused).ToArray();
         if (focused.Length == 1) return focused[0].Target;
         var visible = candidates.Where(candidate => candidate.Visible).ToArray();
         if (visible.Length == 1) return visible[0].Target;
         if (candidates.Count == 1) return candidates[0].Target;
+        if (candidates.Count == 0 && background.Count == 1) return background[0];
         throw new HostCommandException("RENDERER_UNAVAILABLE", "The task does not identify a unique managed chat window.");
     }
 

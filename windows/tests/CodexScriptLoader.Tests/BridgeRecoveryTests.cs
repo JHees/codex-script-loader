@@ -95,8 +95,8 @@ internal static partial class Program
         var main = server.Target;
         var detached = new CdpTarget("detached", "page", "app://-/detached-window.html", $"ws://127.0.0.1:{server.Port}/detached");
         var method = typeof(LiveSupervisor).GetMethod("SelectCommandTargetAsync", BindingFlags.Static | BindingFlags.NonPublic)!;
-        async Task<CdpTarget> Select(string json) => await (Task<CdpTarget>)method.Invoke(null,
-            new object[] { new CdpTarget[] { main, detached }, JsonSerializer.Deserialize<JsonElement>(json), server.Token })!;
+        async Task<CdpTarget> Select(string json, bool allowBackground = true) => await (Task<CdpTarget>)method.Invoke(null,
+            new object[] { new CdpTarget[] { main, detached }, JsonSerializer.Deserialize<JsonElement>(json), allowBackground, server.Token })!;
         Equal(main, await Select("{}"), "Context-free command uses primary chat");
         Equal(main, await Select("{\"task\":null}"), "Malformed task context does not crash routing");
         const string payload = "{\"task\":{\"hostId\":\"local\",\"taskId\":\"fixture-task\"}}";
@@ -108,6 +108,15 @@ internal static partial class Program
         server.CommandContexts["/renderer"] = new { matches = true, visible = true, focused = false };
         try { await Select(payload); throw new InvalidOperationException("Ambiguous context must be rejected"); }
         catch (HostCommandException exception) { Equal("RENDERER_UNAVAILABLE", exception.Code, "Ambiguous windows fail without sending"); }
+        server.CommandContexts["/renderer"] = new { matches = false, mounted = true, visible = true, focused = true };
+        Equal(detached, await Select(payload), "Visible task takes precedence over a mounted background tab");
+        server.CommandContexts["/detached"] = new { matches = false, mounted = false, visible = true, focused = false };
+        Equal(main, await Select(payload), "A unique mounted background task owns the command");
+        try { await Select(payload, false); throw new InvalidOperationException("Trusted input requires a foreground composer"); }
+        catch (HostCommandException exception) { Equal("RENDERER_UNAVAILABLE", exception.Code, "Hidden tasks cannot receive trusted input"); }
+        server.CommandContexts["/detached"] = new { matches = false, mounted = true, visible = true, focused = false };
+        try { await Select(payload); throw new InvalidOperationException("Duplicate background owners must be rejected"); }
+        catch (HostCommandException exception) { Equal("RENDERER_UNAVAILABLE", exception.Code, "Duplicate background owners fail closed"); }
     }
 
     private sealed class RecoveryCdpServer : IAsyncDisposable

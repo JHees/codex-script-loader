@@ -221,7 +221,7 @@ function createSubmissionReceipts() {
 function installComposerHost() {
   const runtime = globalThis.__codexScriptLoader;
   if (!runtime) return;
-  const revision = "composer-native-submission-14";
+  const revision = "composer-native-submission-15";
   if (runtime.composerHost?.revision === revision) return;
   runtime.composerHost?.stop();
   const registrations = new Map();
@@ -255,11 +255,12 @@ function installComposerHost() {
     globalThis.removeEventListener("message", incoming);
     listening = false;
   }
-  function locate() {
-    if (typeof document === "undefined" || !isCodexChatRenderer(globalThis.location?.href)) return null;
-    const editors = [...document.querySelectorAll('[data-codex-composer][contenteditable="true"]')].filter(e => e.isConnected && e.getClientRects().length > 0);
-    if (editors.length !== 1) return null;
-    const editor = editors[0], parent = editor.parentElement;
+  function mountedEditors() {
+    if (typeof document === "undefined" || !isCodexChatRenderer(globalThis.location?.href)) return [];
+    return [...document.querySelectorAll('[data-codex-composer][contenteditable="true"]')].filter(editor => editor.isConnected);
+  }
+  function readBinding(editor) {
+    const parent = editor.parentElement;
     const key = Object.getOwnPropertyNames(parent || {}).find(k => k.startsWith("__reactFiber$"));
     let fiber = parent?.[key], controller = null, identity = null, hasTask = false, conversationId = null, executionHost = null;
     for (let depth = 0; fiber && depth < 60; depth++, fiber = fiber.return) {
@@ -288,10 +289,20 @@ function installComposerHost() {
       if (identity && (identity.taskId !== conversationId || identity.hostId !== executionHost)) return null;
       identity = { taskId: conversationId, hostId: executionHost };
     }
+    if (!controller || (hasTask && !identity)) return null;
+    return { controller, identity, executionHost };
+  }
+  function locate() {
+    const editors = mountedEditors().filter(editor => editor.getClientRects().length > 0);
+    if (editors.length !== 1) return null;
+    const editor = editors[0], binding = readBinding(editor);
+    if (!binding) return null;
+    const { controller, executionHost } = binding;
+    let { identity } = binding;
     const footer = editor.closest("[data-composer-footer-responsive]");
     let anchor = footer?.querySelector("[data-codex-intelligence-trigger]")
       ?? footer?.querySelector('[data-composer-navigation-target="reasoning"]');
-    if (!controller || !anchor || typeof controller.view.dispatch !== "function" || !controller.view.state?.schema?.nodes?.paragraph) return null;
+    if (!anchor || typeof controller.view.dispatch !== "function" || !controller.view.state?.schema?.nodes?.paragraph) return null;
     // Skip the model control's tooltip wrappers. Insert in its native flex row,
     // immediately before that control (after the context indicator when present).
     let layoutFound = false;
@@ -303,7 +314,7 @@ function installComposerHost() {
     }
     if (!layoutFound) return null;
     if (!identity) {
-      if (hasTask || typeof globalThis.crypto?.randomUUID !== "function") return null;
+      if (typeof globalThis.crypto?.randomUUID !== "function") return null;
       if (!draftIds.has(controller) || draftIds.get(controller).host !== executionHost)
         draftIds.set(controller, { id: "draft-" + globalThis.crypto.randomUUID(), host: executionHost });
       identity = { draftId: draftIds.get(controller).id, ...(executionHost ? { executionHostId: executionHost } : {}) };
@@ -439,6 +450,10 @@ function installComposerHost() {
   }
   runtime.composerHost = Object.freeze({
     getContext: () => { const found = locate(); return found?.identity ? { ...found.identity } : null; },
+    hasMountedTask: (hostId, taskId) => mountedEditors().some(editor => {
+      const owner = readBinding(editor)?.identity;
+      return !!owner && owner.hostId === hostId && owner.taskId === taskId;
+    }),
     revision,
     register(pluginId, spec) {
       if (!spec || !/^[a-zA-Z0-9._-]{1,64}$/.test(spec.id) || typeof spec.render !== "function" || (spec.onChange !== undefined && typeof spec.onChange !== "function")) fail("INVALID_ACCESSORY");
